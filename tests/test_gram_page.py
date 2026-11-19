@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import polars_online as po
+import rheon as po
 from doc_recipes import recipes
 
 TIER = "essential"

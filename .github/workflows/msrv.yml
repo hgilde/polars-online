@@ -39,7 +39,7 @@ jobs:
           toolchain: "1.95"
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
       # `+1.95`, because the repository's rust-toolchain.toml names `stable`,
-      # which a bare `cargo` inside the checkout would use instead. online-py
+      # which a bare `cargo` inside the checkout would use instead. rheon-py
       # builds pyo3 for `abi3-py312`, whose build script wants a Python of at
       # least 3.12, and the image's own moves with the image.
       - name: cargo check, the whole workspace, from the lock as committed

@@ -15,7 +15,7 @@ done
 unset _dir
 export PATH
 
-# online-py builds against pyo3's abi3-py312, so the Rust build needs a >= 3.12
+# rheon-py builds against pyo3's abi3-py312, so the Rust build needs a >= 3.12
 # interpreter. `uv run cargo ...` handles this via VIRTUAL_ENV; for a bare
 # `cargo ...` this makes the project venv the one pyo3 finds.
 # `dirname` rather than `${BASH_SOURCE%/*}`: the latter strips nothing when

@@ -50,7 +50,7 @@ passes: over 3,000 streams of 50-500 rows, ``y = 1 + 2x + 0.5 e`` with a
 level added to up to 45% of the rows with ``x > 0``, 50 passes ran out on
 142, none below 20% of the rows; run on, every one met the rule, the
 slowest after 880 passes. At 200 passes 6 run out, all past 39%
-(``online_core``'s ``slow_refit_stream``; the Rust tests ``a_refit_that_runs_to_its_cap_is_counted``
+(``rheon_core``'s ``slow_refit_stream``; the Rust tests ``a_refit_that_runs_to_its_cap_is_counted``
 and ``a_refit_that_runs_to_its_cap_is_a_solve_failure`` hold the count).
 """
 
@@ -66,9 +66,9 @@ import pytest
 from sklearn.linear_model import Lasso
 
 import ledger
-import polars_online as po
-import polars_online.gram as gram
 import reference_cluster as ref
+import rheon as po
+import rheon.gram as gram
 
 TIER = "mixed"
 
@@ -492,7 +492,7 @@ class TestGramLassoPath:
 
 
 def slow_refit_stream(trial: int) -> pl.DataFrame:
-    """``online_core``'s ``slow_refit_stream``, written out again: a xorshift
+    """``rheon_core``'s ``slow_refit_stream``, written out again: a xorshift
     stream whose length, share of moved rows and level are drawn from
     ``trial``. Trial 687 is 71 rows, 39% of the rows with ``x > 0`` moved,
     whose refit needs 880 IRLS passes."""

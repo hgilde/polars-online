@@ -37,8 +37,8 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-import polars_online as po
-from polars_online import corr, sim, stream
+import rheon as po
+from rheon import corr, sim, stream
 
 
 def _seed(*parts: object) -> int:

@@ -78,7 +78,7 @@ which is gitignored on purpose: downloaded material stays out of the repo.
 The request: dig into XGBoost, the papers and the code; find how to make
 gradient-boosted trees work as online as possible; improve the ability to fit
 in parallel; reduce memory. Anything proposed has to fit the trait every
-model here implements (`crates/online-core/src/model.rs`):
+model here implements (`crates/rheon-core/src/model.rs`):
 
 ```
 step(x, y, d_clock, weight) -> Step { pred, n_eff, extra }   // pred BEFORE the update
@@ -97,7 +97,7 @@ and the hard rules that make the models interchangeable in a bank:
 - **Decay is `lam = 0.5^(d_clock/halflife)`** on an irregular clock, the same
   semantics as `ewridge`.
 - **Memory is O(state), not O(data)**; no allocation in the hot path after
-  warm-up; `f64` everywhere; no `unsafe` in `online-core`; models know
+  warm-up; `f64` everywhere; no `unsafe` in `rheon-core`; models know
   nothing about Polars.
 - **No new static linking without raising it** (rule 12). This rules out
   linking XGBoost or LightGBM as a library, and the design does not want to:
@@ -510,7 +510,7 @@ the design removes.
   Huber, pseudo-Huber and logistic are twice-differentiable and drop in;
   quantile (pinball) has `h = 0` and needs the smoothing XGBoost uses
   (`src/objective/quantile_obj.cc:42-76`). The robust family's `ψ` in
-  `online-core` is the natural source of `g`.
+  `rheon-core` is the natural source of `g`.
 - Multi-target: one ensemble per target, as `ewridge` keeps one set of
   sufficient statistics per target. Shared structure across targets
   (XGBoost's `multi_strategy`) is possible but not proposed.
@@ -823,7 +823,7 @@ live trees.
 
 ## 9. What building it in Rust would take
 
-- `online-core`: `gbt.rs` (model, `OnlineModel` impl), `gbt/hist.rs`,
+- `rheon-core`: `gbt.rs` (model, `OnlineModel` impl), `gbt/hist.rs`,
   `gbt/tree.rs`; ~1 000 lines plus tests. Node arrays preallocated to
   `M · (2^(d+1) − 1)` and histograms to `P` at construction — allocation at
   construction, none after, which is the existing rule. The warm-up buffer
@@ -844,7 +844,7 @@ live trees.
 - Plumbing: every place in `docs/EXTENDING.md` — `ModelKind::KINDS`, the
   builders, the namespace, the sweeps, the golden bank, the API snapshot,
   the README list; the registry tests will name each omission.
-- Tests: the model-contract test (`crates/online-core/tests/model_contract.rs`)
+- Tests: the model-contract test (`crates/rheon-core/tests/model_contract.rs`)
   for `n_eff` and zero-weight rows; the chunk-invariance and out-of-sample
   tests in `tests/`; a numpy oracle (`scripts/ogbt_proto.py` is one, and
   the prototype's batch code is checked against XGBoost already); a

@@ -14,9 +14,9 @@ These steps need the library:
 - polars-online installed, with numpy for the recipes. Each recipe builds
   its own data and saves it to a parquet file.
 - The parameters of
-  [`po.spec.sgd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.sgd),
-  [`po.spec.ftrl`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl)
-  and [`po.spec.pa`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa),
+  [`po.spec.sgd`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.sgd),
+  [`po.spec.ftrl`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.ftrl)
+  and [`po.spec.pa`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.pa),
   which their docstrings define. Each model's entry in MODELS.md gives its
   update equation: [`sgd`](../MODELS.md#sgd--stochastic-gradient-descent),
   [`ftrl`](../MODELS.md#ftrl--online-logistic-regression) and
@@ -52,7 +52,7 @@ import math
 
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # y = slope·x plus noise, where the slope jumps from 1 to 3 at row 3,000.
 rng = np.random.default_rng(3)
@@ -108,7 +108,7 @@ import functools
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # y = b x0 + 0.5 x1 + noise, where b wanders as a slow random walk.
 rng = np.random.default_rng(10)
@@ -157,7 +157,7 @@ row, however large the error. Here `f` is the decay factor over one row's
 clock, `0.5 ** (1 / half_life)` at one row a clock unit. Just after the
 break, before the sums have grown, a coefficient moves faster, by up to
 about `alpha` in one row. The
-[`ftrl` docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl)'s
+[`ftrl` docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.ftrl)'s
 Notes, under *Breaks*, measure how far each `alpha` stays from the
 decayed least-squares fit after a break.
 

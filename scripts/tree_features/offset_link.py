@@ -30,7 +30,7 @@ import polars as pl  # noqa: E402
 from leafrefit import bank  # noqa: E402
 from sklearn.metrics import roc_auc_score  # noqa: E402
 
-import polars_online as po  # noqa: E402
+import rheon as po  # noqa: E402
 
 
 def trees(X, yy, tr, va, obj):

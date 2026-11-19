@@ -8,7 +8,7 @@ under another `POLARS_ONLINE_MAX_THREADS`, and on a machine with another
 core count, and `ew_cov`'s principal components likewise. The pool is
 built once per process, from the variable, so each count runs in a child
 interpreter of its own, and the children's outputs are compared by digest.
-The Rust tests in `crates/online-core/src/solve/pool_tests.rs` and
+The Rust tests in `crates/rheon-core/src/solve/pool_tests.rs` and
 `ewridge/tests.rs` hold the same per factorization and per fit, and failed
 on the build before the fix.
 """
@@ -30,7 +30,7 @@ pytestmark = pytest.mark.extended(reason="four child interpreters, each fitting 
 SCRIPT = """\
 import sys, hashlib
 import polars as pl
-import polars_online as po
+import rheon as po
 df = pl.read_parquet(sys.argv[1])
 k = int(sys.argv[2])
 features = [f"x{j}" for j in range(k)]

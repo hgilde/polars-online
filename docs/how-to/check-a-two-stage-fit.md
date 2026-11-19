@@ -72,7 +72,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # A quote a second for 17 hours. mid = p + u: p is a random walk (the efficient price) and u a
 # transient that halves every 30 s. Three reference series s1-s3 follow p, each with noise of its own; none

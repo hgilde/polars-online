@@ -21,9 +21,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online import _polars_online as native
-from polars_online import _spec
+import rheon as po
+from rheon import _rheon as native
+from rheon import _spec
 
 TIER = "essential"
 
@@ -32,7 +32,7 @@ LIMIT_REASON = "above_max_error_inflation"
 
 def resolved_limit(spec: dict) -> object:
     """The ``max_error_inflation`` a spec resolves to in the bank, as the API
-    snapshot reads it (``_polars_online.resolved_defaults``)."""
+    snapshot reads it (``_rheon.resolved_defaults``)."""
     import json
 
     return json.loads(native.resolved_defaults(_spec._json(spec)))["stream"]["max_error_inflation"]

@@ -43,10 +43,10 @@ from pathlib import Path
 
 import polars as pl
 
-import polars_online as po
-from polars_online import _polars_online as native
-from polars_online import _spec
-from polars_online import spec as spec_mod
+import rheon as po
+from rheon import _rheon as native
+from rheon import _spec
+from rheon import spec as spec_mod
 
 TIER = "essential"
 
@@ -95,7 +95,7 @@ def unstable_label(name: str) -> str:
 
 def describe_api(cli: Path | None = None) -> str:
     """The snapshot's text. `cli` is the `polars-online` executable (the
-    `online_cli` fixture): its configuration's own keys, its flags and the
+    `rheon_cli` fixture): its configuration's own keys, its flags and the
     words its format options take are read from it, and left out without it
     (`test_model_registry` reads the field grammar alone)."""
     out: list[str] = []
@@ -111,7 +111,7 @@ def describe_api(cli: Path | None = None) -> str:
     w("")
 
     w("[common parameters]  # every constructor accepts these via **common")
-    from polars_online import _spec as _impl
+    from rheon import _spec as _impl
 
     for p in inspect.signature(_impl._common).parameters.values():
         if p.name in ("name", "model") or p.kind is inspect.Parameter.VAR_KEYWORD:
@@ -138,7 +138,7 @@ def describe_api(cli: Path | None = None) -> str:
     w("")
 
     w("[ModelBank]  # name and signature: a parameter added or a default moved is a diff here")
-    from polars_online._renamed import is_renamed
+    from rheon._renamed import is_renamed
 
     for name in sorted(dir(po.ModelBank)):
         # A name kept only under its old spelling (a refusal stub, or a
@@ -170,7 +170,7 @@ def describe_api(cli: Path | None = None) -> str:
     w("[helper modules]  # po.<module>.<function> with its signature, keyword names and defaults")
     for mod in helper_modules():
         w(f"  {mod}:{unstable_label(mod)}")
-        module = importlib.import_module(f"polars_online.{mod}")
+        module = importlib.import_module(f"rheon.{mod}")
         for name in sorted(module.__all__):
             w(f"    {name}{signature_of(getattr(module, name))}")
     w("")
@@ -457,7 +457,7 @@ def _flatten(prefix: str, value: object, into: dict[str, str]) -> None:
 
 def resolved_lines(spec: dict) -> dict[str, str]:
     """`path -> value` for what `spec` resolves to in the bank
-    (`_polars_online.resolved_defaults`)."""
+    (`_rheon.resolved_defaults`)."""
     lines: dict[str, str] = {}
     for part, value in json.loads(native.resolved_defaults(_spec._json(spec))).items():
         _flatten(part, value, lines)
@@ -477,7 +477,7 @@ def resolved_defaults_section() -> list[str]:
 
     out = [
         "[resolved defaults]  # what a spec left out resolves to, read off the bank's own build"
-        " of the spec shown (_polars_online.resolved_defaults): a moved default is a diff here",
+        " of the spec shown (_rheon.resolved_defaults): a moved default is a diff here",
         f"  chunk_size = {native.default_chunk_size()}",
     ]
     minimal: dict[str, tuple[dict[str, object], dict[str, str]]] = {}
@@ -968,7 +968,7 @@ def env_vars() -> list[str]:
             consts[m.group(1)] = m.group(2)
     names: set[str] = set()
     sources = [(p, _RUST_READ) for p in rust] + [
-        (p, _PY_READ) for p in sorted((REPO / "python" / "polars_online").glob("*.py"))
+        (p, _PY_READ) for p in sorted((REPO / "python" / "rheon").glob("*.py"))
     ]
     for path, pattern in sources:
         text = path.read_text(encoding="utf-8")
@@ -1066,8 +1066,8 @@ def test_every_word_valued_parameter_is_probed():
 PROBED_BY_HAND = {"spec.session_gap"}
 
 
-def test_api_surface_matches_the_snapshot(online_cli):
-    got = describe_api(online_cli)
+def test_api_surface_matches_the_snapshot(rheon_cli):
+    got = describe_api(rheon_cli)
     if os.environ.get("UPDATE_API_SURFACE"):
         SNAPSHOT.write_text(got, encoding="utf-8")
         return

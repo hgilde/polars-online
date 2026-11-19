@@ -2,7 +2,7 @@
 # Add a model
 
 This how-to is for a contributor adding a model kind to polars-online: it
-lists every layer a new model touches, from the recursion in `online-core`
+lists every layer a new model touches, from the recursion in `rheon-core`
 to its line in the feature index, with the test that fails if you skip
 each step. It assumes you know the library's words (spec, [model
 bank](GLOSSARY.md#the-model-bank-and-what-it-reads), state, `weight_sum`)
@@ -19,17 +19,17 @@ what the layer it touches holds, since you need that to write the step.
 
 **Put new code in the file each step names, which is often not the file
 the type lives in.** `tests/test_repo_hygiene.py` holds every source file
-to 250,000 bytes (`MAX_SOURCE_BYTES`). `crates/online-polars/src/bank.rs`
+to 250,000 bytes (`MAX_SOURCE_BYTES`). `crates/rheon-polars/src/bank.rs`
 and `src/stream.rs` stand within a few hundred bytes of it, and
-`python/polars_online/_spec.py` within ten kilobytes; `wc -c` gives each
+`python/rheon/_spec.py` within ten kilobytes; `wc -c` gives each
 one's size. So a new model's builder, its build configuration and its
 output layout each go in a smaller file beside them: steps 7, 8 and 9 name
 each one. Step 7 still adds arms to `stream.rs`, so it starts by moving
 code out of it.
 
-**The registry is `ModelKind::KINDS`** in `crates/online-polars/src/spec.rs`:
+**The registry is `ModelKind::KINDS`** in `crates/rheon-polars/src/spec.rs`:
 the spec `type` names, in enum order. Python reaches it as
-`polars_online._polars_online.model_kinds()`. Every other list is held to
+`rheon._rheon.model_kinds()`. Every other list is held to
 it.
 
 To add a common parameter, an output field or a kind of input column
@@ -68,15 +68,15 @@ The seventeen steps, each with the check that fails if you skip it:
 
 | step | file | what you add | the check that fails if you skip it |
 |---|---|---|---|
-| [1](#step-1--srcmodelrs) | `crates/online-core/src/<model>.rs` | the model: `<Model>Cfg`, `new`, `impl OnlineModel` | the trait, and the checks in the step |
+| [1](#step-1--srcmodelrs) | `crates/rheon-core/src/<model>.rs` | the model: `<Model>Cfg`, `new`, `impl OnlineModel` | the trait, and the checks in the step |
 | [2](#step-2--srclibrs) | `src/lib.rs` | the `pub use` | the compiler |
 | [3](#step-3--srcmodelrs) | `src/model.rs` | a `ModelState` variant and its `kind()` arm, its frozen name and its fixture case | `kind()` is exhaustive; `every_model_state_variant_is_probed_here`; `the_variant_names_are_frozen` |
 | [4](#step-4--testsmodel_contractrs) | `tests/model_contract.rs` | the contract probe and the predict-parity test | `every_model_with_a_recovery_test_has_a_predict_parity_test` |
 | [5](#step-5--testsgoldenrs) | `tests/golden.rs` | `fn <kind>_golden()` | `test_the_core_golden_file_pins_every_model` |
-| [6](#step-6--srcspecrs) | `crates/online-polars/src/spec.rs` | the `ModelKind` variant, its `kind_name()` arm, the name in `KINDS` | `kinds_lists_every_variant_in_order`, and the checks in the step |
+| [6](#step-6--srcspecrs) | `crates/rheon-polars/src/spec.rs` | the `ModelKind` variant, its `kind_name()` arm, the name in `KINDS` | `kinds_lists_every_variant_in_order`, and the checks in the step |
 | [7](#step-7--srcstreamrs) | `src/stream.rs`, `src/stream/model_cfgs.rs` | the `AnyModel` variant and its arms, and the model's build configuration | exhaustive matches; the save/load sweeps for `restore` |
 | [8](#step-8--srcbankfieldsrs) | `src/bank/fields.rs` | nothing, unless the outputs or the positions in `coef` differ | `test_names_match_the_realized_struct_for_every_model`; `test_every_model_lays_out_as_coef_index` |
-| [9](#step-9--_spec_familypy-_specpy-and-specpy) | `python/polars_online/_spec_<family>.py`, `_spec.py`, `_spec_words.py`, `spec.py` | the builder | `test_every_rust_kind_has_exactly_one_builder`, and the checks in the step |
+| [9](#step-9--_spec_familypy-_specpy-and-specpy) | `python/rheon/_spec_<family>.py`, `_spec.py`, `_spec_words.py`, `spec.py` | the builder | `test_every_rust_kind_has_exactly_one_builder`, and the checks in the step |
 | [10](#step-10--testsapi_surfacetxt) | `tests/api_surface.txt` | the regenerated snapshot | `test_api_surface_matches_the_snapshot`; `test_the_api_snapshot_pins_every_models_output_fields` |
 | [11](#step-11--teststest_modelpy) | `tests/test_<model>.py` | the Python-side oracle | `test_every_builder_has_a_per_model_test_file` |
 | [12](#step-12--per-model-sweeps) | four sweep lists, and `tests/convergence.py` | one entry each; a model that predicts a target registers its convergence: a known-truth stream, a third-party oracle and its classes; a grid against an oracle registers with the oracle ledger | `test_the_sweeps_cover_every_regression_model`; `test_every_regression_registers_its_convergence`; `test_every_module_with_a_grid_registers_or_is_pending` |
@@ -84,11 +84,11 @@ The seventeen steps, each with the check that fails if you skip it:
 | [14](#step-14--teststest_golden_pipelinepy) | `tests/test_golden_pipeline.py` | a spec in `specs()`, and its lines in `GOLDEN` | `test_the_golden_pipeline_pins_every_model` |
 | [15](#step-15--docsmodelsmd-and-docsfeaturesmd) | `docs/MODELS.md`, `docs/FEATURES.md`, `docs/OUTPUTS.md`, `llms.txt` | the model's heading, its row and its API links; its line in the feature index; its family and field meanings in the OUTPUTS generator; the model count | `test_the_models_page_documents_every_model`, the `test_api_links` pair, `test_feature_index`, the `test_outputs_doc` trio, `test_it_says_how_many_models_there_are` |
 | [16](#step-16--changelogmd-and-the-design-note) | `CHANGELOG.md`, and the design note | an entry | **no check** |
-| [17](#step-17--cratesonline-benchsrcscalingrs) | `crates/online-bench/src/scaling.rs`, `docs/PERFORMANCE.md` | a `<kind>.history` cell and a cell for each size the model has, each with its declared growth, and their rows in the table | `every_kind_has_its_cells`; each cell's own test in `crates/online-bench/tests/scaling.rs` |
+| [17](#step-17--cratesrheon-benchsrcscalingrs) | `crates/rheon-bench/src/scaling.rs`, `docs/PERFORMANCE.md` | a `<kind>.history` cell and a cell for each size the model has, each with its declared growth, and their rows in the table | `every_kind_has_its_cells`; each cell's own test in `crates/rheon-bench/tests/scaling.rs` |
 
-## The recursion — `crates/online-core`
+## The recursion — `crates/rheon-core`
 
-The model's arithmetic lives in `crates/online-core`, which knows nothing
+The model's arithmetic lives in `crates/rheon-core`, which knows nothing
 of Polars, Python or the bank. Its Rust tests are the only ones `cargo
 mutants` sees, so the recursion is pinned here.
 
@@ -140,15 +140,15 @@ handle. Each such case overrides a method, and each has its check:
 | if the model … | it implements | the check |
 |---|---|---|
 | keeps a ring of past rows: a lag ring, a window | **`clear_lags`**, dropping that ring and nothing else | `probe_with` in `tests/model_contract.rs`, against `KEEPS_LAGS` |
-| has a `window_size` | its snapshots in `online_core::Snapshots`, a **`Footprint`** for the snapshot type (the numbers it holds, in bytes) and a **`Pack`** (`online_core::pack_fields!`, every field named, which writes its `refill` too), which writes every snapshot but the oldest as its numbers alone; where forming the snapshot first would cost a copy, an **`Offer`** view that writes the same words straight from the model, which debug builds check against the snapshot it forms; **`set_window_budget`** and **`window_over_budget`** reaching the ring, so that `window_budget` bounds it, with **`window_shadow`** and **`window_could_refuse`** sizing its next snapshot alike; **`set_window_closed`** reaching the ring too, so that the spec's `closed` decides its edge, and a `closed` field in its `ModelKind` variant; where it reads its window on every row or solve, that view **kept and written over** (`window::truncated_into`, `gaps::Acc::window_into`, in a `window::Kept`), not formed afresh | the compiler, for `Pack`; `tests/test_window_budget.py`: `test_every_windowed_model_holds_its_budget` and `test_the_budget_table_names_every_windowed_builder`; `crates/online-core/tests/window_refusal.rs`, in whose list it belongs; `crates/online-bench/tests/window_memory.rs`, likewise; `crates/online-polars/tests/window_edge.rs`, every test of which runs each model under a hard window under both edges; `crates/online-bench/tests/allocations.rs`' `a_windowed_row_reads_its_window_in_kept_buffers`, in whose list it belongs |
+| has a `window_size` | its snapshots in `rheon_core::Snapshots`, a **`Footprint`** for the snapshot type (the numbers it holds, in bytes) and a **`Pack`** (`rheon_core::pack_fields!`, every field named, which writes its `refill` too), which writes every snapshot but the oldest as its numbers alone; where forming the snapshot first would cost a copy, an **`Offer`** view that writes the same words straight from the model, which debug builds check against the snapshot it forms; **`set_window_budget`** and **`window_over_budget`** reaching the ring, so that `window_budget` bounds it, with **`window_shadow`** and **`window_could_refuse`** sizing its next snapshot alike; **`set_window_closed`** reaching the ring too, so that the spec's `closed` decides its edge, and a `closed` field in its `ModelKind` variant; where it reads its window on every row or solve, that view **kept and written over** (`window::truncated_into`, `gaps::Acc::window_into`, in a `window::Kept`), not formed afresh | the compiler, for `Pack`; `tests/test_window_budget.py`: `test_every_windowed_model_holds_its_budget` and `test_the_budget_table_names_every_windowed_builder`; `crates/rheon-core/tests/window_refusal.rs`, in whose list it belongs; `crates/rheon-bench/tests/window_memory.rs`, likewise; `crates/rheon-polars/tests/window_edge.rs`, every test of which runs each model under a hard window under both edges; `crates/rheon-bench/tests/allocations.rs`' `a_windowed_row_reads_its_window_in_kept_buffers`, in whose list it belongs |
 | has a hard window and predicts a target | an entry in `ModelKind::window_and_cadence`, which returns the window and its snapshot cadence, so the stream cuts its `sigma` and `zscore` at the fit's window | `test_second_opinion::TestWindowedSpread`, in whose parametrization it belongs |
 | has a `window_size` and decays its moments | **`Snapshots::learn_decayed(&mut clock, d_clock, &[lam], make)`** on every row it learns, a row of weight 0 included, so the ring's running product takes each row's decay factor; and its window's edge read through **`Snapshots::cut(clock, decay, which)`**, which decays the snapshot by that product (a model with two decays, as `lasso` has, passes both factors and reads each with its index `which`). One factor of the summed clock instead differs from the live moments' decay by the per-row factor's rounding times the rows in the window, so a target held at one value can read a variance near 1e-15 instead of 0. No model calls `offer` itself | **no check**: chunk invariance and the window tests pass either way, so the model's own unit tests must hold the edge |
 | keeps a weight per target: the rows each target was present on | **`target_n_eff_into`** | `test_a_sparse_target_warms_up_on_its_own_weight` in `tests/test_bank.py`, to which it is added |
 | reads a number out of `y` that it does not regress | **`predict_with(x, y, d_clock)`** | `predict_is_the_step_without_the_step` and `a_value_in_the_targets_slot_reaches_predict` |
-| emits a `Step` (every model) | **`step_into`**, which the trait requires: every slot of the `Step`'s predictions, its weight and its `extra` written into the caller's `Step` whatever it held -- `pred` by `clear` and `resize` (or the model's own fill), and an `extra`'s vector reused where the buffer already holds that variant (`lasso`'s `lam_selected`, `huber`'s `scale`). A helper that builds the row's answer writes into a `&mut Vec<f64>` too, with a wrapper that returns a new one for `predict`. The bank steps every model through `step_into`, into one `Step` kept per model instance, so a row allocates no answer: a new `Step` a row would be a heap allocation and a free, on Linux a third of the cheapest model's row | `predict_is_the_step_without_the_step` in `tests/model_contract.rs`, which steps a twin through `step_into` on a buffer left with another row's answer (either `extra` variant, of the wrong length) and holds its answer and state to `step`'s bits, and `refuses_unusable_values`; `crates/online-bench/tests/allocations.rs` for the count a row |
-| counts a value that is not usable, as `audit` does, where other models refuse it | no `refused_step`; its kind in `model_contract.rs`'s `COUNTS_UNUSABLE`, which `refuses_unusable_values` passes by; an arm in `ModelKind::reads_every_row` (`spec.rs`), so the stream hands it every row, and one in `Instance::reset` (`stream.rs`) if a reset must not rebuild it | the model's own tests of each kind of value; `crates/online-polars/tests/audit.rs` for the rows the stream hands it |
-| solves on a schedule, as `ewridge`, `lasso`, `huber` and `quantile` do | **`set_solve_share`** and **`solve_share`**, reaching the cfg's `solve_share`. The spec's default share goes into the cfg when the model is built, and the stream calls `set_solve_share` with the spec's share on every model it restores (`crates/online-polars/src/stream.rs`), so a state saved before the rule runs at the spec's cadence | `exactly_the_scheduled_solvers_report_a_solve_share` in `tests/model_contract.rs`, which names the four, and to which it is added |
-| refits its first rows to convergence, as `huber`, `sgd`'s Huber loss, `quantile` and `marginal(bin_stat="huber")` do | a buffer of its first learned rows and a `RefitStatus` a target ([`huber_refit.rs`](../crates/online-core/src/huber_refit.rs)), and: a default count beside **`default_refit_rows`** and `default_bin_refit_rows`, with `0` for off; its buffer's bytes through **`refit_reservation`**, against which an arm in **`ModelKind::refit_budget_mib`** (`spec.rs`) bounds a spec's groups under `refit_budget`; arms in `AnyModel::refit_status` and `refit_give_up` (`stream.rs`), which `summary()`'s `refit_given_up` and the budget's notice read; a refit at its pass cap counted in `solve_failures`, and named by `ModelBank.check`'s wording for its kind (`python/polars_online/_check.py`, the `solve_failures` finding); a state saved before the refit loading with it off | **no check**: `refit_status`, `refit_give_up` and `refit_budget_mib` end in a catch-all, so a model left out never refits under the budget and reports nothing. Its own test file holds it, as `tests/test_huber_refit.py` and `tests/test_quantile_refit.py` do: the converged fit against a third-party one on the buffer, one chunk or many, a bank saved before, at and after the refit, the activation (the fit moves only after the buffer fills), and the budget giving up the later groups, which `tests/test_summary.py`'s column list pins |
+| emits a `Step` (every model) | **`step_into`**, which the trait requires: every slot of the `Step`'s predictions, its weight and its `extra` written into the caller's `Step` whatever it held -- `pred` by `clear` and `resize` (or the model's own fill), and an `extra`'s vector reused where the buffer already holds that variant (`lasso`'s `lam_selected`, `huber`'s `scale`). A helper that builds the row's answer writes into a `&mut Vec<f64>` too, with a wrapper that returns a new one for `predict`. The bank steps every model through `step_into`, into one `Step` kept per model instance, so a row allocates no answer: a new `Step` a row would be a heap allocation and a free, on Linux a third of the cheapest model's row | `predict_is_the_step_without_the_step` in `tests/model_contract.rs`, which steps a twin through `step_into` on a buffer left with another row's answer (either `extra` variant, of the wrong length) and holds its answer and state to `step`'s bits, and `refuses_unusable_values`; `crates/rheon-bench/tests/allocations.rs` for the count a row |
+| counts a value that is not usable, as `audit` does, where other models refuse it | no `refused_step`; its kind in `model_contract.rs`'s `COUNTS_UNUSABLE`, which `refuses_unusable_values` passes by; an arm in `ModelKind::reads_every_row` (`spec.rs`), so the stream hands it every row, and one in `Instance::reset` (`stream.rs`) if a reset must not rebuild it | the model's own tests of each kind of value; `crates/rheon-polars/tests/audit.rs` for the rows the stream hands it |
+| solves on a schedule, as `ewridge`, `lasso`, `huber` and `quantile` do | **`set_solve_share`** and **`solve_share`**, reaching the cfg's `solve_share`. The spec's default share goes into the cfg when the model is built, and the stream calls `set_solve_share` with the spec's share on every model it restores (`crates/rheon-polars/src/stream.rs`), so a state saved before the rule runs at the spec's cadence | `exactly_the_scheduled_solvers_report_a_solve_share` in `tests/model_contract.rs`, which names the four, and to which it is added |
+| refits its first rows to convergence, as `huber`, `sgd`'s Huber loss, `quantile` and `marginal(bin_stat="huber")` do | a buffer of its first learned rows and a `RefitStatus` a target ([`huber_refit.rs`](../crates/rheon-core/src/huber_refit.rs)), and: a default count beside **`default_refit_rows`** and `default_bin_refit_rows`, with `0` for off; its buffer's bytes through **`refit_reservation`**, against which an arm in **`ModelKind::refit_budget_mib`** (`spec.rs`) bounds a spec's groups under `refit_budget`; arms in `AnyModel::refit_status` and `refit_give_up` (`stream.rs`), which `summary()`'s `refit_given_up` and the budget's notice read; a refit at its pass cap counted in `solve_failures`, and named by `ModelBank.check`'s wording for its kind (`python/rheon/_check.py`, the `solve_failures` finding); a state saved before the refit loading with it off | **no check**: `refit_status`, `refit_give_up` and `refit_budget_mib` end in a catch-all, so a model left out never refits under the budget and reports nothing. Its own test file holds it, as `tests/test_huber_refit.py` and `tests/test_quantile_refit.py` do: the converged fit against a third-party one on the buffer, one chunk or many, a bank saved before, at and after the refit, the activation (the fit moves only after the buffer fills), and the budget giving up the later groups, which `tests/test_summary.py`'s column list pins |
 | reports the readiness statistics: effective degrees of freedom, each coefficient's data share, a row's leverage | **`error_inflation_into`**, **`error_inflation_gate_into`** (where a bound may stand in below the gate's limit), **`row_error_inflation_into`** and **`support_coef`** (MODELS.md's [Warm-up gates](MODELS.md#warm-up-gates) says what each gates). Which models report them is the table of predicates under [What a model reads for the diagnostics](#what-a-model-reads-for-the-diagnostics), and `Spec::validate` refuses the parameters that read them for every other model, so a new one that reports them is added there | `a_model_without_the_optional_statistics_reports_none_of_them` (`model.rs`) for the defaults; `tests/readiness.rs` for `ewridge` |
 
 **Clear a lag ring on the two events that break it.** The stream calls
@@ -216,7 +216,7 @@ rows that leave would give that spread as rounding noise.
 
 | if the model … | the check |
 |---|---|
-| standardizes by, divides by or reports a spread | `crates/online-core/tests/held_values.rs`, to which it is added |
+| standardizes by, divides by or reports a spread | `crates/rheon-core/tests/held_values.rs`, to which it is added |
 | has a `window_size` over such moments | a held-slot test beside it, as `window.rs` and `marginal.rs` have |
 
 #### Restoring
@@ -235,7 +235,7 @@ running sums (`EwCov`, `EwLagCov`, `MarginalLags`, `MarginalBins`,
 **Check:** the model's own `a_state_of_the_wrong_shape_is_refused` unit
 test, which every model module carries. `sgd` and `kalman` check the shape
 in their `TryFrom`, as a saved state is read, so their tests go through the
-encoding. `crates/online-polars/tests/summary.rs`'s corruption sweeps cut
+encoding. `crates/rheon-polars/tests/summary.rs`'s corruption sweeps cut
 and bit-flip a saved state of every model kind. They run `fit_predict` on
 every one that loads, and fail on a panic
 (`every_model_kind_refuses_or_loads_a_corrupt_file_never_panics`, held to
@@ -251,7 +251,7 @@ of every model's state and requires the load to fail.
 
 Export the model: `pub use <model>::{<Model>, <Model>Cfg};`.
 
-**Check:** the compiler, as soon as `online-polars` names the type.
+**Check:** the compiler, as soon as `rheon-polars` names the type.
 
 ### Step 3 — `src/model.rs`
 
@@ -263,13 +263,13 @@ state](contributing/add-an-output-or-a-parameter.md#what-each-change-does-to-a-s
 
 **Add the variant's name to the frozen list, and a fixture case.** The
 variant name is the tag in every state file, so the names are frozen in
-`FROZEN`, in `crates/online-core/tests/state_fixtures.rs`'s
+`FROZEN`, in `crates/rheon-core/tests/state_fixtures.rs`'s
 `the_variant_names_are_frozen`. Add a case to
-`crates/online-core/tests/cases/mod.rs` that keeps what the model's state
+`crates/rheon-core/tests/cases/mod.rs` that keeps what the model's state
 can keep, then write its fixture:
 
 ```sh
-PRINT_STATE_FIXTURES=1 cargo test -p online-core --test state_fixtures
+PRINT_STATE_FIXTURES=1 cargo test -p rheon-core --test state_fixtures
 ```
 
 **Check:** `kind()` is an exhaustive match. Then
@@ -306,7 +306,7 @@ Pin the core arithmetic on the fixed 60-row stream:
 2. Generate the constant:
 
    ```sh
-   PRINT_GOLDEN=1 cargo test -p online-core --test golden -- --nocapture
+   PRINT_GOLDEN=1 cargo test -p rheon-core --test golden -- --nocapture
    ```
 
 3. The run prints `GOLDEN <kind>: &[...];`. Declare
@@ -325,9 +325,9 @@ never pytest.
 reads this file, and fails for a kind in `KINDS` with no
 `fn <kind>_golden()`.
 
-## The bank — `crates/online-polars`
+## The bank — `crates/rheon-polars`
 
-The bank in `crates/online-polars` turns a spec into a model, steps it over
+The bank in `crates/rheon-polars` turns a spec into a model, steps it over
 each chunk's rows and lays its outputs out as columns. A new model joins it
 in three files.
 
@@ -418,7 +418,7 @@ output leaves the bank through `Bank::closed_groups` when the group closes.
 **Give a parameter measured in clock units the type `Span`,** so a temporal clock can give it as a duration. A window, a solve cadence
 and a half-life of the model's own are such parameters, and one value per
 slot is a `SpanList`. Each goes into the tables of
-`crates/online-polars/src/spec/clock.rs`:
+`crates/rheon-polars/src/spec/clock.rs`:
 
 | the parameter | where it goes |
 |---|---|
@@ -439,7 +439,7 @@ entry it reads as a number.
 of the cap, and the variant and arms this step adds take a few hundred
 bytes for any model. Move a self-contained block of it into a submodule under
 `src/stream/`, declared with `mod` as `model_cfgs.rs` and `last_row.rs`
-are, until `wc -c crates/online-polars/src/stream.rs` leaves room for the
+are, until `wc -c crates/rheon-polars/src/stream.rs` leaves room for the
 addition. `tests/test_repo_hygiene.py`'s `test_no_tracked_file_is_data_sized`
 fails while it does not.
 
@@ -475,7 +475,7 @@ model is in their lists, which step 12 enforces.
 **Add nothing, unless the outputs are not one `pred`/`resid` pair per
 target per [grid point](GLOSSARY.md#grids), or the coefficient vector is
 not `[intercept] + features` per target and grid point.** The output
-layout lives in `crates/online-polars/src/bank/fields.rs`: `FieldMeta`,
+layout lives in `crates/rheon-polars/src/bank/fields.rs`: `FieldMeta`,
 `Source`, `output_index` and `coef_fields`. `src/bank.rs` is within a few
 hundred bytes of the source cap, so put the new model's cases in `fields.rs`.
 
@@ -544,23 +544,23 @@ to `COEF_SPECS` there, which
 `test_the_layout_test_covers_every_kind_with_a_coef` holds to every builder
 `coef_index` lays out.
 
-**`crates/online-cli` needs nothing, and `crates/online-py` nothing for a
+**`crates/rheon-cli` needs nothing, and `crates/rheon-py` nothing for a
 model whose product is its output**: both build from the spec. A model
 whose product is read from its state needs a binding, as `marginal`'s
 pairs have (`ModelBank.marginal`) and `audit`'s counts (`ModelBank.audit`).
 A model whose state says something about the data also goes into
-`python/polars_online/_check.py`, as `audit` does (`_audit_findings`), with
+`python/rheon/_check.py`, as `audit` does (`_audit_findings`), with
 each threshold measured on `tests/check_streams.py`'s clean and planted
 streams.
 
-## The Python surface — `python/polars_online`
+## The Python surface — `python/rheon`
 
 A model reaches Python users through a builder in `po.spec`, whose
 signature and output fields the API snapshot pins.
 
 ### Step 9 — `_spec_<family>.py`, `_spec.py` and `spec.py`
 
-Write the builder in a `python/polars_online/_spec_<family>.py` of its
+Write the builder in a `python/rheon/_spec_<family>.py` of its
 family, as `_spec_robust.py` holds `huber` and `quantile` and
 `_spec_changepoint.py` holds `bocpd` and `corrchange`, or in a new one.
 `_spec.py` is within ten kilobytes of the source cap, so a builder and
@@ -590,7 +590,7 @@ the sum scale says so in words `tests/test_weight_scale.py` pins.
 | `test_production_hardening`, the API reference's examples | every example in the docstring runs |
 | `test_error_messages::test_the_inf_table_matches_the_rust_side` | `_INF_OK` to what Rust's parser and `validate` accept, for each builder in that file's `BUILDERS`, which `test_the_float_sweeps_name_every_builder` holds to `MINIMAL` |
 | `test_kwargs_typing::test_each_builder_takes_common_as_the_typed_dict` | `**common` typed `Unpack[CommonKwargs]`; add the name to that file's `BUILDERS`, which `test_model_registry::test_the_builder_list_covers_every_builder` holds to the builders |
-| `crates/online-polars/tests/spec_inf.rs` | `validate` to the same verdicts from TOML, where it is the only gate |
+| `crates/rheon-polars/tests/spec_inf.rs` | `validate` to the same verdicts from TOML, where it is the only gate |
 
 ### Step 10 — `tests/api_surface.txt`
 
@@ -683,7 +683,7 @@ a model key no case uses, or a spec key the kind takes that no case of it
 uses.
 
 **Add the model to two lists that have no check.** Nothing holds them to
-the registered models. `crates/online-bench/src/lib.rs`'s `MODEL_CASES` is
+the registered models. `crates/rheon-bench/src/lib.rs`'s `MODEL_CASES` is
 the instruction-count cases: at least one per model, and one more for each
 costlier option, as `huber_k20_sets` is. Add the model's case there,
 with its `[instructions.<case>]` entry in `budgets.toml`, and set the budget
@@ -761,7 +761,7 @@ a model whose state accumulates over the whole stream a long-run case** in
 runs a hundred times longer, at 1e8 rows, weekly. Neither file has a list
 held to the registered models: **no check**.
 
-**Add a regression to `python/polars_online/_check.py`'s `_REGRESSIONS`**,
+**Add a regression to `python/rheon/_check.py`'s `_REGRESSIONS`**,
 which `ModelBank.check` reads for `few_rows`. If the model does not center
 its features, measure the level and the spread ratio at which its
 out-of-sample R² falls by 0.05, as the docstring of `check` describes. Add
@@ -819,10 +819,10 @@ its `entry` link to the new heading. Add a line for its builder in
 `test_model_registry::test_the_models_page_documents_every_model`. And
 `test_api_links`: `test_the_model_table_links_every_builder_to_its_page`
 wants the table row to link ``
-[`<name>`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.<name>)
+[`<name>`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.<name>)
 ``. `test_every_model_section_links_its_builder_and_its_source` wants the
 heading's section to carry an `*API:*` link to the builder and a `*Rust:*`
-link to `crates/online-core/src/<file>.rs`, which must exist.
+link to `crates/rheon-core/src/<file>.rs`, which must exist.
 `test_feature_index::test_every_public_name_has_a_line_in_the_index` fails
 until `docs/FEATURES.md` has the builder's line.
 
@@ -869,7 +869,7 @@ the defaults. The note is kept with the project's records, which
 
 **No check.**
 
-### Step 17 — `crates/online-bench/src/scaling.rs`
+### Step 17 — `crates/rheon-bench/src/scaling.rs`
 
 Add the model's cells to the scaling table:
 

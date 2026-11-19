@@ -1,7 +1,7 @@
-``polars_online.ops``
+``rheon.ops``
 =====================
 
-.. automodule:: polars_online.ops
+.. automodule:: rheon.ops
    :no-members:
 
 Window operators

@@ -121,7 +121,7 @@ import os
 os.environ["POLARS_MAX_THREADS"] = "4"           # before import polars: sizes the reader's read-ahead
 
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # The run itself does not change.
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1", "x2"], clock="t",
@@ -179,7 +179,7 @@ and the group that would pass the bound, with every new group after it,
 gives its refit up.** Under the MAD, a group reserves `(features + 26) · 8`
 bytes for each target and each row of the count. Under `"rms"` it reserves
 `(features + 20) · 8`. The [`huber`
-docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber)'s
+docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.huber)'s
 Notes give both. A group that gives its refit up keeps its one-pass fit, and a
 [readiness warning](../GLOSSARY.md#warm-up-and-readiness) says so once.
 
@@ -211,7 +211,7 @@ import warnings
 
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # 20 groups of 150 rows, y = 2x plus noise, saved.
 rng = np.random.default_rng(4)

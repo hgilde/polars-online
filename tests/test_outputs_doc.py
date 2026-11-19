@@ -84,7 +84,7 @@ def test_every_field_gives_its_dtype_and_where_else_it_is_null():
     ``po.spec.output_index`` declares, and fills the *also null* column for
     every field, so no reader has to find out where a field is null by
     running it."""
-    import polars_online as po
+    import rheon as po
 
     sys.path.insert(0, str(REPO / "tests"))
     from test_model_registry import MINIMAL, _build

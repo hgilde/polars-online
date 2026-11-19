@@ -44,7 +44,7 @@ import math
 import numba as nb
 import numpy as np
 
-# Acklam's rational approximation, as `online_core::conformal::norm_ppf` and
+# Acklam's rational approximation, as `rheon_core::conformal::norm_ppf` and
 # tests/test_conformal.py evaluate it.
 _A = (
     -3.969683028665376e01,
@@ -74,7 +74,7 @@ _D = (7.784695709041462e-03, 3.224671290700398e-01, 2.445134137142996e00, 3.7544
 
 @nb.njit(cache=True)
 def ln_basic(x):
-    """`ln x` as `online_core::ln_basic` computes it, in basic arithmetic:
+    """`ln x` as `rheon_core::ln_basic` computes it, in basic arithmetic:
     `x = 2^k f`, `f` in `[sqrt(1/2), sqrt(2))`, `ln f = 2 atanh(s)` by its odd
     series, `k ln 2` added in two parts (`math.frexp` gives the same `f` and
     `k` as the bits, subnormals included)."""
@@ -102,7 +102,7 @@ def ln_basic(x):
 
 
 def exp_neg(x: float) -> float:
-    """`e^{-x}` as `online_core::conformal::exp_neg` computes it."""
+    """`e^{-x}` as `rheon_core::conformal::exp_neg` computes it."""
     if x <= 0.0:
         return 1.0
     k = math.floor(x / 0.6931471805599453)

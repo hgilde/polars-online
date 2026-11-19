@@ -1,10 +1,10 @@
-``polars_online.corr``
+``rheon.corr``
 ======================
 
-.. automodule:: polars_online.corr
+.. automodule:: rheon.corr
    :no-members:
 
-.. autodata:: polars_online.corr.Z_CLIP
+.. autodata:: rheon.corr.Z_CLIP
 
 Repairing and reading a matrix
 ------------------------------

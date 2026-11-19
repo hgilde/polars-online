@@ -83,7 +83,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from test_every_kind import frame_for
 from test_model_registry import MINIMAL, REGRESSIONS
 

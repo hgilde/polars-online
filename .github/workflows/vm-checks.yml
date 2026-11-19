@@ -59,7 +59,7 @@ on:
         description: "The package the filter's tests are in"
         required: false
         type: string
-        default: "online-core"
+        default: "rheon-core"
       qemu_cpu:
         description: "Also run those tests under qemu-x86_64 as this CPU (e.g. Nehalem: no AVX2 or FMA); empty skips"
         required: false

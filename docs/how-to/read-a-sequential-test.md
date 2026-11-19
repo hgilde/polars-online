@@ -55,7 +55,7 @@ import math
 
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # Gains of 0.1 on 60% of the rows and losses of 1.0 on the rest; and a column with no edge.
 rng = np.random.default_rng(9)
@@ -135,9 +135,9 @@ on a column you know has no edge, as the recipe's `fair`.
 
 The fields are defined in [OUTPUTS.md](../OUTPUTS.md#seqtest), and every
 parameter in `seqtest`'s
-[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.seqtest).
+[docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.seqtest).
 For the same test over a frame in memory, use
-[`po.eval.seqtest`](https://hgilde.github.io/polars-online/eval.html#polars_online.eval.seqtest).
+[`po.eval.seqtest`](https://hgilde.github.io/polars-online/eval.html#rheon.eval.seqtest).
 To test which of two specs predicts closer, [Compare two
 models](compare-two-models.md#read-the-comparison-on-every-row) names them
 in `seqtest`'s `a` and `b`, and its evidence is read the same way.

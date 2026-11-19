@@ -1,0 +1,1086 @@
+"""Spec builders: ``rheon.spec.ewridge("m", targets=[...], ...)``.
+
+A spec is what a model bank runs: one model, the columns it reads, and the
+parameters every model shares -- the clock, the decay, the groups, the weights
+and the warm-up. It is a plain dict, JSON-able, and the same thing as a
+``[[specs]]`` entry in the CLI's TOML. A builder assembles one, checks it and
+returns it. :class:`rheon.ModelBank`, the ``online`` namespaces and
+the ``polars-online`` command line take lists of them.
+
+The builders are the documented way to write a spec. A dict written by hand is
+checked the same way when it is used. Only a builder can tell a misspelt
+keyword from a missing one at the call.
+
+.. rubric:: The stream parameters
+
+Every builder takes these after its own parameters, with the meaning, units and
+refusals below. `What every spec takes
+<https://github.com/hgilde/polars-online/blob/main/docs/MODELS.md#what-every-spec-takes>`_
+shows them at work.
+
+``targets``, ``features``
+    Column names. A target is what the model predicts. A feature is what it
+    reads from the same row. A model with no target (``ew_cov``, ``kmeans``,
+    ``micro``, ``deco``, ``bocpd``, ``corrchange``, ``hmm`` and ``rcov``) takes
+    ``features`` alone, and ``audit`` takes ``columns`` in their place.
+    ``ew_class`` takes a ``label`` column in the target's place. ``holt`` and
+    ``seqtest`` take no features. A target computed from its own row's columns,
+    such as a return against the mid, is a column: make it with Polars'
+    ``with_columns`` before the bank. A log ratio ``(pl.col("price_5m") /
+    pl.col("mid")).log()`` or a difference sits about zero, where ``hit_rate``
+    takes its sign. A :func:`rheon.target` is a column under a name of
+    its own. A target may also be a window expression looking ahead
+    (:mod:`rheon.ops`), named by its alias: ``(po.ewm_mean("mid",
+    half_life="10s", window_size="1m", reverse=True) - pl.col("mid")).alias("fwd")``. The
+    bank resolves it when the row's window closes, and learns the row then,
+    under the ``embargo``. ``fit_predict`` asks the embargo to cover the
+    longest forward ``window_size``. Under ``group`` it needs a ``clock``.
+    :func:`rheon.stream.with_windows` with ``like=`` the spec writes
+    the same target as a column.
+``fit_intercept``
+    Whether the fit has a level of its own: a constant 1 is put in front of
+    the features. Default ``True``. Without it nothing is centred, and a fit
+    through the origin is least squares through the origin.
+``clock``
+    Why: rows are not evenly spaced, and forgetting should follow the stream's
+    own time. What: a column that never runs backwards within a group; the row
+    count when ``None``. A ``Datetime``, ``Date`` or ``Duration`` column is a
+    temporal clock, and the parameters measured in clock units are then
+    durations (*Clock units*, below). A numeric column is a clock in its own
+    units, and need not be a time. Sort by a feature and clock on it:
+    ``half_life`` becomes a bandwidth in that feature's units, and the fit a
+    local regression in it.
+``half_life``, ``lam``
+    Why: a stream drifts, so older rows should count less. What: the decay.
+    ``half_life`` is the clock distance over which a row's weight halves;
+    ``lam`` is the factor per clock unit, ``0.5 ** (1 / half_life)``. ``inf``
+    forgets nothing. A list of half-lives fits one instance per value, side by
+    side. Units: clock units.
+``gap_cap``
+    Why: a gap in the stream, a weekend or a feed that stopped, would otherwise
+    forget everything at once. What: a ceiling on the clock step between two
+    rows a model learns from, finite and above ``0``, and required with
+    ``clock``. The ceiling also caps the step a run of skipped rows hands the
+    row after them, however long the run. A step the ceiling cut is a break.
+    ``ew_cov`` and ``marginal`` clear their lagged co-moments there, and
+    ``rcov`` and ``corrchange`` their rings, because a lag counts rows, and the
+    row before such a gap is not one row back from the row after it. A break
+    releases nothing an ``embargo`` holds (its entry, below). For no forgetting
+    at all, set ``half_life = "inf"``. Units: clock units.
+``restart_after_step_back``
+    What a clock that runs backwards within a group means. Why: a step back
+    can be a new start, such as a replayed day or a restarted feed. Or it can
+    be a late row: a transposed pair, a row a minute late, two sources never
+    merged. Only the caller knows which size is which. What: unset (the
+    default), every step back is refused: the chunk is refused naming the
+    row, and the bank is untouched. Given, a step back no larger than it is
+    a late row, refused the same way. A larger one starts the model over;
+    ``0`` starts over at every step back. Needs ``clock``. It guards
+    learning: ``predict`` scores a row before the last learned clock against
+    the state as it stands, either way. Units: clock units.
+``session``, ``session_gap``
+    Why: a stream in market-data-like sessions has boundaries where the clock
+    stops measuring time -- overnight, over a weekend. What: ``session`` names
+    a column whose value changes at such a boundary. ``session_gap`` is the
+    clock step to apply there, finite and at least 0, and capped at
+    ``gap_cap`` like any other step; ``"reset"`` starts the model over
+    instead. Units: clock units.
+``weight``
+    A row-weight column. A row of weight 0 is scored, advances the clock and
+    teaches nothing; a null weight skips the row. ``seqtest`` and ``audit``
+    refuse a weight column, and ``rcov`` takes only weights of 0 and 1, since
+    each counts rows: a chunk with another weight is refused, naming the row.
+``min_weight``
+    Why: a model should report only once it has seen enough data to have
+    converged, so it never reports a number it is not yet informed enough to
+    give. What: the weight a model must have seen before its outputs stop being
+    null; the model learns from every row either way. A list gives one
+    threshold per target. Eleven models keep a weight per target: ``ewridge``,
+    ``lasso``, ``kalman``, ``huber``, ``quantile``, ``holt``, ``sgd``, ``pa``,
+    ``ftrl``, ``rls`` and ``marginal``, whose table's ``corr``, ``beta`` and
+    ``t_stat`` are gated per target. Each checks a target's threshold against
+    that target's own weight: the rows it was present on, at their raw weights,
+    decayed, and inside the window under one. ``rls`` learns only from rows on
+    which every target is present, so its targets' weights are equal. The other
+    models check the shared ``weight_sum``. The ``weight_sum`` field is the
+    shared weight in every model. So a target that is often null is gated on
+    its own rows, and its first prediction comes later than the others'. Units:
+    ``weight_sum`` units, not rows. ``rcov`` reports nothing per row, and its
+    ``min_weight`` withholds a closed block's ``rcov`` and ``rcorr``: each row
+    weighs 0 or 1 there, so the floor is a count of the block's returns, and
+    a block with fewer is reported as one too short to estimate from. A
+    finite number: a floor at ``inf`` would withhold every row for good while
+    the model learned from each. The default depends on the model:
+
+    .. list-table::
+       :header-rows: 1
+       :widths: 45 55
+
+       * - the default
+         - models
+       * - one per unknown: the features, and the intercept when there is
+           one
+         - ``lasso``, ``kalman``, ``huber``, ``quantile``, ``rls``, ``sgd``,
+           ``pa``, ``ftrl``
+       * - the feature count plus one (1 for ``holt``)
+         - ``ew_cov``, ``ew_class``, ``kmeans``, ``micro``, ``holt``
+       * - 3
+         - ``marginal``, ``deco``
+       * - 1
+         - ``bocpd``
+       * - 0, each having a gate of its own or nothing to gate
+         - ``ewridge``, ``seqtest``, ``rcov``, ``hmm``, ``corrchange``,
+           ``audit``
+``min_settled_frac``
+    Why: a history shorter than the half-life may not represent the process,
+    such as regimes or seasons the half-life was chosen to average across.
+    What: predictions are withheld while ``settled_frac``, how far the decay
+    window has filled toward its steady state (``1 - 2 ** (-T /
+    half_life)``, ``T`` the decay time seen), is below it. A fraction in
+    ``[0, 1)``: ``0.5`` waits one half-life, ``0.75`` two. Default ``0``,
+    off, since a fit kept as weighted means is unbiased from its first row
+    when the process is stationary. Needs a decay: a finite ``half_life``, or
+    ``lam`` below 1. ``marginal`` predicts nothing, so it withholds its
+    table's ``corr``, ``beta``, ``t_stat``, ``t_stat_serial`` and split
+    instead, as ``min_weight`` does, at the fraction the next row would read.
+``max_error_inflation``
+    ``ewridge``, ``rls``, ``kalman`` and ``lasso``. Why: a fit from too
+    little data adds its estimation error to every prediction's. What:
+    predictions are withheld while ``sqrt(1 + estimation variance / noise)``
+    is at or above it, the factor by which estimation error is expected to
+    inflate the prediction error over the noise floor. Per model:
+
+    .. code-block:: text
+
+        ewridge   sqrt(1 + edf / n_kish)          default sqrt(2)
+        rls       sqrt(1 + k_total / n_kish)      off unless set
+        lasso     sqrt(1 + df / n_kish)           off unless set, per path point
+        kalman    sqrt(1 + z' P⁻ z / R)           off unless set, per row
+
+    ``edf`` is the effective degrees of freedom the last solve used, at most
+    ``k_total`` (``rls``'s fading prior makes its bound conservative);
+    ``df`` the active coefficients plus the intercept (Zou, Hastie and
+    Tibshirani 2007); ``n_kish`` Kish's effective sample size. ``kalman``'s
+    is exact and per row: ``P⁻`` the coefficients' covariance carried
+    through the row's clock gap, ``R`` the noise, ``obs_var`` or the
+    residual variance, so a row far from the design reads larger. A ratio
+    above 1; ``inf`` switches it off. It reads Kish's count, so uneven
+    weights withhold for longer, and adding a feature moves the gate with
+    the model.
+``emit_error_inflation``
+    ``ewridge``, ``rls`` and ``kalman``: write ``error_inflation_<slot>``,
+    the same factor for the row's own features (*What a spec writes*,
+    below). Default ``False``. Not ``lasso``, which keeps no factor to read
+    a row's leverage from.
+``coef_every``, ``max_rows_between_coefs``
+    How often the ``coef`` field is filled, as ``solve_every`` and
+    ``max_rows_between_solves`` schedule a solve. ``coef_every`` writes a
+    ``coef`` row once the clock has moved that far since the group's last
+    one, or since the group's first row before the first. It is a number of
+    the clock's units, a duration on a temporal clock (``"5m"``), or ``0``
+    for every row. ``max_rows_between_coefs`` writes one after that many
+    rows the group's stream accepts: a row whose features and weight are
+    usable, rows of weight zero and rows with a null target included. With
+    both, whichever comes first. The clock is the one the models are stepped
+    on, so a gap capped at ``gap_cap`` counts as the cap. Without a clock
+    column it is the row's number, the first row being 1: ``coef_every=10``
+    writes the tenth row, the twentieth and so on. A reset of the clock
+    starts the count over. Under either, the ``coef`` rows are the same
+    however the stream is chunked. ``predict`` reads neither: it fills
+    ``coef`` on each chunk's last accepted row of each group. With neither, the default, ``coef`` is
+    filled on **each group's** last row within every chunk: one row per
+    group per chunk, not one per chunk. Only that schedule follows the
+    chunking; every other field is chunk-invariant, so one chunk or a
+    thousand gives the same numbers. Refused on a model that reports no
+    coefficients. Units: clock units, and accepted rows.
+``embargo``
+    Why: a target that is a forward quantity over ``h`` clock units is not
+    known at the row it sits on. Learning it there hands the model ``h`` of
+    the future before it predicts the rows in between. What: each row is
+    scored where it sits and held back from learning until the clock has
+    moved this much further on. The residual, ``sigma``, the metrics, drift,
+    the conformal band, ``weight_sum`` and ``min_weight`` all see it then.
+    The delay counts the time that passed on the clock column, skipped rows
+    included, not the capped step the models decay by. Where a session
+    change restarts the clock it counts ``session_gap``. A row exactly the
+    delay later releases a row, and the time is held exactly: in integer
+    nanoseconds on a temporal clock, and by one subtraction of the two rows'
+    values on a number clock, in integers on an integer clock. A break
+    releases nothing early: its events
+    wait with the row after it, and run when that row is learned. A reset
+    drops the held rows. Units: clock units, or without a ``clock`` the
+    group's rows, a skipped row included.
+``label_clock``, ``max_held_rows``, ``held_overflow``
+    Why: when each label arrives at a time of its own, a flight's delay at
+    its landing, one delay for every row learns some labels before they are
+    known and others late. What: a column of each row's label time, on the
+    clock's own type. Each row is scored where it sits, from the labels
+    known by then, and held until the first row whose clock reaches its
+    label time, exactly at the time included. Then its label is scored
+    against the prediction, interval and spread the row was served with,
+    and the row is learned at its label time, so a short delay can be
+    learned before an earlier long one. ``resid`` on the row is its label
+    less that served prediction. ``embargo=d`` is the case
+    ``label_clock = clock + d``, and gives the same numbers wherever the
+    clock adds up exactly. A row with weight 0 is scored and not held, and
+    so is a row whose label time is null: its label never arrives, and
+    :meth:`~rheon.ModelBank.summary` counts it in
+    ``labels_missing``. A label time before its row's clock is refused,
+    naming the row. A list gives one column per target; this version takes
+    a list only when every entry names the same column. ``max_held_rows``
+    bounds the rows a group holds; past it ``held_overflow="refuse"`` (the
+    default) refuses the chunk and ``"drop_oldest"`` drops the row that
+    arrived first, counted in ``labels_dropped``, as a clock reset's drop
+    is. Rows still held at the end are not learned unless the state is saved
+    and resumed. Refused beside ``embargo``, a window-expression target,
+    ``group_close``, a ``session`` column and ``drift_action="reset"``, and
+    for ``holt``, ``kalman``, ``hmm`` and ``micro``, whose score reaches from
+    the newest learned row. Cost: a held row is placed in label-time order
+    by bisection, moving the shorter side of the buffer, 0.006 microseconds
+    a row with about 100 rows held and 0.38 with about 800 (Apple M4 Pro).
+``group``, ``group_close``
+    One model state per value of the ``group`` column. ``group_close`` says
+    when a key is finished, so its state can be dropped. ``"monotone"``: the
+    key column never decreases, so a key below the largest one fed is done.
+    ``"session"``: a key's span ends where its ``session`` value changes. A
+    finished group's accumulators are emitted through
+    :meth:`rheon.ModelBank.closed_groups`, which is what keeps a bank
+    over an unbounded key space bounded. Without it every key ever seen stays
+    in memory.
+the diagnostics
+    ``emit_sigma``, ``emit_zscore``, ``emit_se_coef``, ``emit_selected``,
+    ``emit_averaged`` with ``average_eta``, ``emit_metrics``, ``conformal``
+    with ``conformal_rate`` (default 0.05, or ``"auto"``), ``resid_quantiles``,
+    ``emit_autocorr`` with ``resid_autocorr_lag``, ``emit_drift`` with
+    ``drift_delta``, ``drift_threshold`` and ``drift_action``,
+    ``emit_calibration`` with ``calibration_half_life``, ``emit_breaks`` with
+    ``breaks_half_life``, ``emit_robust_se`` with ``robust_se_half_life`` and
+    ``robust_se_lags``, ``emit_specification`` with ``specification_half_life``
+    and ``ljung_box_lags``, ``horizon_rows`` beside any of those four,
+    ``emit_tails`` with ``tails_half_life``, ``emit_influence`` with
+    ``influence_half_life``, ``emit_feature_health`` with
+    ``feature_health_half_life``, and ``emit_clocks``. Each adds fields to the
+    output, listed below. A model with no residual refuses them by name, all
+    but ``emit_clocks``. A ``*_half_life`` beside a switch is that diagnostic's
+    own memory, in clock units: when left out, four times the fit's memory for
+    the calibration and the fit's memory for the others; ``inf`` is the
+    run-once form, which forgets nothing. The fit's memory is the instance's
+    half-life, with two exceptions. Under ``window_size`` it is the half-life
+    whose exponential weights have the window's Kish size ``n``,
+    ``ln 2 / ln((n + 1) / (n - 1))`` rows. With nothing decaying inside the
+    window ``n`` is ``window_size``, and the half-life is about
+    ``window_size / 2.885`` rows, or ``window_size * ln 2 / 2`` clock units on
+    a clock column. Beside a decay ``n`` is the Kish size of the decayed
+    weights inside the window, taken in its continuous form on a clock column.
+    The windowed CUSUM's null share reads the window itself instead, since a
+    window absorbs a level as a mean over its rows (``emit_breaks`` below).
+    For ``kalman`` the fit's memory is its ``coef_half_life``, the shortest
+    finite one where a list gives one per coefficient; the windowed CUSUM's
+    null share reads the list's intercept entry instead, the memory at which
+    a level is absorbed, and a pinned intercept leaves the plain sum. A
+    diagnostic folds a row
+    only once the instance is ready: the row's prediction past every gate, the
+    stream 95% settled on the longest finite memory the model keeps where it
+    forgets, and a standardizing ``sgd`` or ``pa`` past its scaler's warm-up.
+    That memory is the fit's, but ``holt``'s trend (``trend_half_life``, four
+    times its level's by default), the longest of ``kalman``'s
+    ``coef_half_life`` and ``half_life``, ``ewridge``'s ``long_half_life``,
+    ``lasso``'s ``select_half_life`` and the Huber scale's
+    ``huber_scale_half_life`` of ``huber`` and ``sgd``. The twin fits of ``break_wald`` and
+    feature health read no prediction, and fold every row. ``horizon_rows`` is
+    the target's horizon in rows: the rows a target that looks ahead shares its
+    shocks over, so that its residuals overlap. Without a clock column it
+    defaults to ``embargo``, rounded up; with one it is 0 unless given, since
+    ``embargo`` is in clock units there, and each diagnostic that reads it says
+    so once in a :class:`rheon.ReadinessWarning`. Under it the
+    calibration's, Breusch and Pagan's and RESET's tests take Newey and West's
+    variance at twice it in lags, the CUSUMs and ``break_wald`` the long-run
+    variance, and Ljung and Box skip the lags inside it. ``se_coef_hac``'s lags
+    default to twice the horizon too: an ``embargo`` of 2.5 is a horizon of 3
+    rows, and 6 lags. A horizon read from ``embargo`` gives at most 64 lags,
+    and a :class:`rheon.ReadinessWarning` says so past it.
+    `docs/DIAGNOSTICS.md
+    <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_
+    orders them by the question each answers, with their thresholds,
+    false-alarm rates, costs and the theory behind them, and a recipe for each.
+
+``standardize``, which eight models take, defaults to ``False`` in ``ewridge``,
+``huber`` and ``quantile``, and to ``True`` in ``kalman``, ``sgd``, ``pa``,
+``kmeans`` and ``micro``. Each builder says what it scales.
+
+.. rubric:: Clock units
+
+A parameter measured in clock units is written one of two ways, and the
+clock column decides which:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 34 36
+
+   * - the clock
+     - a clock parameter is
+     - for example
+   * - none
+     - a number of rows
+     - ``half_life=500``
+   * - a numeric column
+     - a number of the column's own units
+     - ``half_life=600`` on a clock in seconds
+   * - a ``Datetime``, ``Date`` or ``Duration`` column
+     - a duration
+     - ``half_life=pl.duration(minutes=10)``
+
+A duration is a polars expression that reads no column, such as
+``pl.duration(minutes=10)``, or a ``datetime.timedelta``. It may also be
+polars' duration text, such as ``"10m"`` or ``"1h30m"``: whole numbers of
+``ns``, ``us``, ``ms``, ``s``, ``m``, ``h``, ``d`` or ``w``, added up in any
+order, as polars reads them (``"30m1h"`` is ``"1h30m"``). A month, a quarter
+and a year have no fixed length, so ``"1mo"``, ``"1q"`` and ``"1y"`` are
+refused. The spec keeps a duration as text, the form the command line's TOML
+takes. A ``half_life`` grid names its instances by it (``@h10m``). ``0`` and
+``inf`` mean the same in every unit, so they may stay numbers beside durations;
+the word ``"inf"`` (or ``"infinity"``, in any case) is kept as the number.
+
+The clock parameters are ``half_life``, ``gap_cap``, ``restart_after_step_back``,
+``session_gap``, ``coef_every`` and ``embargo`` above, ``drift_threshold``
+and each diagnostic's own ``*_half_life`` below, and in the models
+``window_size``,
+``snapshot_every``, ``solve_every``, ``ew_cov``'s ``pca_every``, ``micro``'s
+``prune_every`` and the model half-lives: ``long_half_life``,
+``select_half_life``, ``coef_half_life``,
+``revert_half_life``, ``trend_half_life`` and ``huber_scale_half_life``.
+
+One parameter takes either form, with a meaning for each: ``bocpd``'s
+``hazard``. A number, finite and above 1, is the expected rows between
+changepoints, on any clock.
+It binds to no clock unit, so it stands beside durations on a temporal clock.
+A duration is the expected time between changepoints. It is a clock
+parameter like the rest, so it needs a temporal clock and refuses a plain
+number beside it. :func:`rheon.spec.bocpd` says when each form's
+chance of a break applies.
+
+Each mixture is refused, naming the column, the parameter and the fix: a
+temporal clock with a clock parameter given as a plain number, a numeric clock
+with a duration, and one spec that gives both. A rate per clock unit has no
+duration form, so a temporal clock refuses one too: ``lam``, and ``kalman``'s
+``q``. Give the half-life the rate stands for as a duration instead.
+
+A temporal clock is read in its own integer nanoseconds, and a duration in
+seconds, so the column's own unit never reaches the fit. The same instants as
+``Datetime("ms")``, ``Datetime("us")`` or ``Datetime("ns")`` give the same
+numbers. A model reads only the gap between consecutive rows. The bank takes
+that gap in integer nanoseconds before it becomes seconds, so a nanosecond
+timestamp keeps its nanoseconds whatever the stream's age. The previous row's
+instant is part of the state, so a loaded bank goes on exactly. A clock must
+lie between the years 1677 and 2262, the range nanoseconds in a 64-bit integer
+cover. A ``Date`` or a coarse ``Datetime`` past that is refused, naming the
+row. A time zone changes nothing, because a ``Datetime`` is stored in UTC, so a
+change of clocks for summer time neither stretches nor folds the clock. Where a
+clock quantity reaches an output, it is in seconds: ``holt``'s trend is per
+second. :meth:`rheon.ModelBank.summary`,
+:meth:`rheon.ModelBank.groups` and
+:meth:`rheon.ModelBank.closed_groups` give clock values in the clock
+column's own type, as ``emit_clocks``' two fields do. A ``Time`` column is
+refused, because a time of day starts again at midnight.
+
+.. rubric:: What a spec writes
+
+A bank adds one struct column per spec, named after the spec. Every field but
+``coef``, ``support_coef`` and the standard errors (``se_coef``,
+``se_coef_hc0`` and ``se_coef_hac``) is computed from the state *before* the
+row updates it, so a prediction is out-of-sample and a diagnostic never sees
+the row it describes. Those fields report the fit *after* the row: ``coef`` on
+row *t* is the fit row *t + 1* is predicted with. Under an ``embargo`` the
+row's own update waits for the delay, so ``coef`` on row *t* is the fit after
+the rows *t* released, and row *t + 1* is predicted with it only when *t + 1*
+releases none. A regression writes, with ``<t>`` a target:
+
+``pred_<t>``
+    The prediction. Null until ``min_weight`` is reached, and on a row the
+    model skipped (a null feature or weight).
+``resid_<t>``
+    ``y - pred``; null where the target is null.
+``weight_sum``
+    The accumulated weight before this row's update and before its own decay.
+    ``0`` on a stream's first row. One behind the row count while nothing is
+    forgotten. ``1 / (1 - lam**d)`` once forgetting balances arrival, for
+    unit rows ``d`` clock units apart (``lam = 0.5 ** (1 / half_life)``). A
+    weight, not a count of rows: at a half-life of 600 with rows 0.1 apart it
+    settles near 8,657, and Kish's ``n_kish`` is the sample size.
+``coef``
+    The coefficients of the fit after the row's update, the ones the next row
+    is predicted with (under an ``embargo``, as above). They are one flat
+    list: per (target, grid combination) slot in the order the ``pred``
+    fields declare them, the intercept and then one entry per feature. Null
+    on rows where it is not filled (``coef_every``), which are most rows, and
+    a list stores nothing for a null row. :func:`coef_index` maps each
+    position to its term, and ``.list.get(position)`` reads it. For an
+    ``(n, k)`` matrix, ``k`` being :func:`coef_index`'s height, keep the rows
+    that carry it and fix the width: ``.list.to_array(k)``, then
+    ``to_numpy()``. :func:`coef_fields` names the column each becomes when
+    the struct is unnested.
+``settled_frac``
+    How far the decay window had filled toward steady state before this row:
+    ``1 - 2 ** (-T / half_life)`` with ``T`` the decay time the models have
+    seen, so ``0.5`` at one half-life, ``0.75`` at two, whatever the row rate.
+    Null where nothing decays. What ``min_settled_frac`` gates on.
+``withheld_reason``
+    Which gate withheld the row's predictions, as an ``Enum``, and null where
+    no gate did. ``below_min_settled_frac``, ``below_min_weight``,
+    ``above_max_error_inflation``, ``below_warm_rows``, ``ill_conditioned``
+    and ``unstable_rate`` are named in that order, the first that withheld
+    anything.
+    ``below_warm_rows`` is the model's own warm-up: the rows ``kmeans``,
+    ``hmm`` and ``bocpd`` hold to seed their centres, states or prior from
+    (``warm_rows``), a count of rows, where ``min_weight`` is a weight, and
+    the rows ``kalman`` takes a target's prior from before it is sized.
+    ``ill_conditioned`` is an ``ewridge`` fit withheld because its normal
+    equations are past the condition at which a solve keeps a digit: its
+    ``coef`` and ``support_coef`` are null too, and the solve is counted in
+    ``solve_failures``. The estimate and the limit are in the ``ewridge``
+    builder's docstring. ``unstable_rate`` is an ``sgd`` target whose
+    learning rate is past its stability bound: its recent steps' gains
+    ``q`` have a mean square above twice their mean, so each step grows its
+    own row's residual in mean square, and the fit diverges; the ``sgd``
+    builder's docstring has the gain. Fields null for another reason,
+    such as a skipped row or a statistic not yet due, leave it null. An
+    ``Enum`` rather than a string, because a string column costs sixteen
+    bytes a row even when every value is null.
+``support_coef``
+    Each coefficient's data share, how much of it the data determined rather
+    than the ridge: on ``coef``'s rows, of the same fit after the row, for
+    ``ewridge``, ``huber`` and ``quantile``. It is ``1 - ridge * (S^-1)_jj`` in
+    ``[0, 1]``, with ``S`` the system the solve inverts (for the robust models,
+    the Gram as the loss weighs the rows), laid out like ``coef``. A duplicated
+    pair reads ``0.5`` each, a clean design ``1``, a column the standardiser
+    dropped ``0``; the intercept is not a share and is null. Not ``lasso``,
+    whose L1 penalty has no such matrix.
+
+A model that is not a regression writes fields of its own, which its builder
+describes. Per model, the fields of the plainest spec are listed in
+`docs/OUTPUTS.md
+<https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md>`_, and
+:func:`output_fields` lists them for the exact spec you built.
+
+A grid writes one set of fields per instance or slot, suffixed. A grid is a
+list of half-lives, a list of ``ridge`` values, two or more ``feature_sets``,
+or ``penalties``. A half-life grid is one instance per entry, and suffixes
+every field (``@h…``). The other grids are slots within an instance, and suffix
+the fields of each slot, ``pred``, ``resid`` and the per-slot diagnostics, by
+its combination. ``lasso`` also writes the path point it has selected, once per
+instance. ``emit_selected`` and ``emit_averaged`` choose across every slot of a
+target, so their fields take no suffix:
+
+.. code-block:: text
+
+    pred_{target}{combo}{instance}     combo    = ""             single ridge, no feature sets
+    resid_{target}{combo}{instance}             | __r{ridge}      ridge grid
+    sigma_{target}{combo}{instance}             | __{set}         feature sets, single ridge
+    weight_sum{instance}                        | __{set}_r{ridge}
+    settled_frac{instance}                      | __p{penalty}    penalties point
+    withheld_reason{instance}
+    coef{instance}                     instance = ""             single half-life
+    support_coef{instance}                      | @h{half-life}    half-life grid (@h600, @h10m)
+    se_coef{instance}                           emit_se_coef
+    se_coef_hc0{instance}, se_coef_hac{instance}  emit_robust_se
+    penalty_selected_{target}{instance}         lasso: the path point in force
+    selected_{target}                           emit_selected: the chosen slot
+    pred_{target}__selected                     emit_selected: its prediction
+    pred_{target}__averaged                     emit_averaged
+
+**Every name follows one grammar, which is stable.** Read left to right, a
+name is the kind (``pred``, ``abs_resid``, ``lag_corr``), then its qualifier,
+then the target or the columns it is about, then the grid point after ``__``
+and the instance after ``@``. A qualifier is a number glued to the letter that
+says what it is: ``q`` a quantile level, ``l`` a lag (``abs_resid_q0.05_y``,
+``mahal_q0.99``, ``lag_corr_l1_x0_x1``). The grid point uses letters too:
+``r`` a ridge and ``p`` a lasso penalty, and the instance ``h``, a half-life.
+A thing the spec has several of is numbered where it is named, glued to its
+word: a principal component ``pc0`` (``pc0_var``, ``pc0_loading_x0``), an
+``hmm`` state ``state0`` (``filtered_state0``), a ``kmeans`` centre
+``cluster0`` (``coef_cluster0_x1``).
+
+``<slot>`` below is a target with its suffix. :func:`output_index` gives every
+field with the values its name encodes, so a field is reached without building
+its name. Avoid ``__`` and ``@`` in target names and feature-set labels if you
+parse the names downstream.
+
+The diagnostics add, per slot:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 18 30 52
+
+   * - switch
+     - fields
+     - what they hold
+   * - ``emit_sigma``
+     - ``sigma_<slot>``
+     - The EW standard deviation of the slot's out-of-sample residuals.
+       Its weight ages on every row the model sees, a row with no
+       prediction or with weight 0 included, so it forgets across a gap
+       as the clock says. Under a ``window_size`` it is the window's, as the
+       fit is, and so is everything below that reads it. The residuals
+       of the predictions a readiness gate withholds are among them: a
+       gate withholds output only, so ``sigma`` -- and ``zscore``, the
+       drift detector's scale, the ranking of ``emit_selected`` and
+       ``emit_averaged`` and the conformal interval ``m * sigma`` -- is the same
+       whatever ``min_weight``, ``min_settled_frac`` or
+       ``max_error_inflation`` says, and can be a number on a row whose
+       prediction is withheld. On ``ewridge`` it reads none below the
+       model's own floor of a row per unknown (a weight, as ``min_weight``
+       is), where its system has fewer rows than unknowns, unless
+       ``min_weight`` sets the floor lower. Under ``embargo`` each row's
+       is the residual of the prediction it was scored with.
+   * - ``emit_zscore``
+     - ``zscore_<slot>``
+     - ``resid / sigma``: how surprising the row was, in units of the
+       model's own recent error.
+   * - ``emit_error_inflation``
+     - ``error_inflation_<slot>``
+     - ``sqrt(1 + h(x))`` for *this* row, ``h(x)`` the estimation variance
+       of its prediction over the noise. It says how much estimation error
+       is expected to inflate this prediction's error over the noise floor.
+       Large for a row leaning on a direction the data never showed.
+       ``ewridge``: ``x' S^-1 x / n_kish``, the row's leverage against the
+       factor the fit came from; ``rls``: ``z' A^-1 z * s2 / s1``, the same
+       in the sum form it keeps; ``kalman``: ``z' P⁻ z / R``, exact. One
+       triangular solve or quadratic form a row, which is why it is opt-in.
+       ``ewridge``'s and ``rls``'s gates read the stream average, which is
+       free; ``kalman``'s reads this value.
+   * - ``emit_se_coef``
+     - ``se_coef``
+     - On ``coef``'s rows and laid out like it, each coefficient's standard
+       error, in ``coef``'s own units (the intercept's included). ``ewridge``:
+       ``sigma * sqrt(diag(T M T'))``, ``M = S^-1 / n_kish`` the
+       coefficients' covariance over the noise and ``T`` the map ``coef`` is
+       read out by; it leaves out the ridge's sandwich, so it errs large.
+       ``rls``: ``sigma * sqrt(s2 / s1 * diag(A^-1))``, the same in sum form.
+       ``kalman``: ``sqrt(diag(T P T'))``, its posterior, exact. ``sigma`` is
+       the row's EW out-of-sample residual std, which during warm-up still
+       carries the estimation error, ``sqrt(1 + h)`` too large, so the error
+       errs large there too; null until there is one. A report, not a gate.
+       Refused for ``lasso`` (post-selection), ``huber`` and ``quantile``
+       (an M-estimator's covariance is a sandwich), ``holt`` (no covariance
+       of its coefficients) and the gradient models (no second moment).
+   * - ``emit_robust_se``
+     - ``se_coef_hc0``, ``se_coef_hac``
+     - Beside ``se_coef``, on ``coef``'s rows and laid out like it, the
+       standard errors of the least-squares sandwich ``B^-1 M B^-1`` at
+       ``robust_se_half_life``: ``B`` the EW Gram of ``(1, x)``, and ``M``
+       White's ``sum(w**2 * e**2 * z z')`` for ``se_coef_hc0``, with Newey
+       and West's lag products to ``robust_se_lags`` at Bartlett's weights
+       ``1 - l / (L + 1)`` for ``se_coef_hac``, written when there is a
+       lag. ``e`` is the row's out-of-sample residual, which carries its
+       estimation error where the classical sandwich's in-sample residual
+       does not, so it tends to read above statsmodels' ``cov_type="HC0"``
+       and ``"HAC"``, though not always: run once on 1,500 rows over 50
+       seeds the ratio ran 0.990-1.034 (HC0) and 0.985-1.059 (HAC), and on
+       3,000 rows under a 5- to 20-row embargo 2-9% above. The lags default to twice
+       ``horizon_rows``, or on a spec with no clock column to twice
+       ``embargo`` once rounded up to whole rows (6 at 2.5), and to ``0``
+       otherwise. Read from ``embargo`` they
+       are at most 64, with a notice past it: each lag costs a slot
+       ``(k + 1)**2`` numbers. On a target summing the next ``h`` rows'
+       shocks against a persistent feature, the coefficient's true spread
+       was 2.1-2.3 times ``se_coef`` at ``h = 5`` and 3.1-4.2 times at
+       ``h = 20`` (``sqrt(h)`` is 2.2 and 4.5), and ``se_coef_hac`` read
+       83-97% of it at ``L = h`` and 90-104% at ``2h``. ``ewridge`` and
+       ``rls`` only, the least-squares fits; the ridge is left out, as
+       ``se_coef`` leaves it out.
+   * - ``emit_clocks``
+     - ``scored_clock``, ``learned_clock``
+     - The row's own clock, and the clock of the newest row the models had
+       learned from, at a positive weight, when the row was scored. Without
+       a delay that is the previous learned row; under ``embargo``, the
+       newest row whose delay had passed. Both in the clock column's own
+       type, a ``Datetime`` exact to the nanosecond; with no clock column,
+       the row's index in its group, every row counted. Null on a skipped
+       row; ``learned_clock`` null before the first learned row and after a
+       reset. One pair per spec, last in the struct. ``scored_clock`` less
+       ``learned_clock`` is at least the delay on every row.
+   * - ``emit_selected``
+     - ``selected_<t>``, ``pred_<t>__selected``
+     - The grid slot with the lowest EW out-of-sample squared error so
+       far, an ``Enum`` of the slots' labels in grid order (``@h50``,
+       ``r0.5``, ``a_r0.5``), and its prediction. Needs more than one slot
+       per target, as ``emit_averaged`` does. Each
+       slot's error decays at its own instance's half-life: like for like
+       within a ridge or feature-set grid. Across a half-life grid a short
+       half-life is ranked on fewer, more recent rows than a long one.
+       ``lasso``'s ``select_half_life`` ranks its path on one half-life.
+   * - ``emit_averaged``
+     - ``pred_<t>__averaged``
+     - Every slot's prediction averaged with weights
+       ``exp(-eta * (sigma2 / sigma2_best - 1))``: each slot's EW squared
+       error as a ratio to the best slot's, each at its own half-life, as
+       ``emit_selected``'s are. So ``average_eta`` (default 1) means the
+       same thing whatever the target's units. ``inf`` is
+       ``emit_selected``'s argmin, a tie shared. Hedges where selection
+       commits. The weights come from each slot's EW *mean* error, so
+       they stay bounded and do not sharpen as rows accumulate, as a
+       weighting by summed losses (river's ``EWARegressor``) does. A slot
+       with no prediction or no ``sigma`` on the row is left out of that
+       row's average; the field is null only when every slot is. Needs
+       more than one slot per target: one slot leaves nothing to average.
+   * - ``emit_metrics``
+     - ``ic_<slot>``, ``r2_<slot>``, ``hit_rate_<slot>``
+     - Exponentially weighted correlation of prediction with target,
+       out-of-sample R² against the running mean, and the share of rows
+       whose sign the prediction got right, a row whose target or
+       prediction is exactly 0 left out, as ``po.eval.metrics`` leaves it
+       out. On a logistic ``sgd`` or
+       ``ftrl`` fit: the point-biserial correlation, the Brier skill score
+       and accuracy at a 0.5 threshold, under the same names. On a Poisson
+       ``sgd`` fit ``hit_rate`` is null: a positive rate against a count
+       has no sign to hit.
+   * - ``conformal``
+     - ``lo_<slot>``, ``hi_<slot>``, ``coverage_<slot>``
+     - An interval ``pred ± m * sigma`` at the asked coverage, and the
+       coverage it has delivered. ``m`` is a tracked quantile of
+       ``|resid| / sigma``, ``sigma`` the spread the row reads: it grows by
+       ``conformal_rate * coverage`` on a miss and shrinks by
+       ``conformal_rate * (1 - coverage)`` on a hit, so between steps the
+       interval moves with ``sigma``. It starts at the Gaussian one,
+       ``Φ⁻¹(1 - (1 - coverage) / 2)`` (1.645 at 90%), on the first row
+       with a residual. Each step is times the row's weight over the EW
+       mean weight of every row with a residual the layer has seen, scored
+       or not, ``w / w̄``, so the long-run coverage weighted by ``w / w̄`` is
+       the number asked for whatever the residuals do, and the weights'
+       scale does not reach it. With unequal weights the share of rows
+       covered can sit on either side of it. Null until the first
+       ``sigma`` exists. The step is taken once per scored row, so ``m``
+       moves faster in clock time where rows are denser; the delivered
+       coverage decays on the clock. Under ``embargo`` or ``label_clock``
+       each row is scored against the interval it was shown, when its
+       label arrives; with hundreds of rows waiting, misses arrive in
+       bursts and the default step overshoots. ``conformal_rate="auto"``
+       divides the step by the rows waiting: ``0.05 / (1 + 0.1 * g * n)``,
+       ``n`` the rows still waiting at each label's arrival averaged over
+       the half-life, and ``g`` the density of ``|Z|``, ``Z`` standard
+       normal, at the asked quantile (0.21 at 90%); and it waits for its
+       first interval until the labels it has read outnumber the rows
+       waiting, since the first to arrive were predicted by a model that
+       had learned almost nothing. It is 0.05 when nothing waits, and held
+       90% at a quarter of the default's width on New York's 2013 flights
+       with 338 rows waiting.
+   * - ``resid_quantiles``
+     - ``abs_resid_q<p>_<slot>``
+     - The exponentially weighted quantile of ``|resid|`` at level ``p``,
+       at the model's half-life, each residual at its row's weight as in
+       ``sigma``: an interval that assumes no distribution. One decaying
+       DDSketch per slot answers every level, within ``tanh(1/128)``
+       (0.78%) of the exact weighted quantile, in buckets that span the
+       residuals of the last few dozen half-lives. Null until the first
+       residual.
+   * - ``emit_autocorr``
+     - ``autocorr_<slot>``
+     - The EW correlation of each residual with the one
+       ``resid_autocorr_lag`` scored residuals back (default 1, at most
+       2^20), within a run of adjacent rows, each residual -- and the pair
+       it closes -- at its row's weight, as in ``sigma``. A gap capped by
+       ``gap_cap`` or a session change starts a new run, as it clears the
+       models' lags; the weights decay on every row's clock. A residual
+       stream should look like noise; a value away from zero says the
+       model is missing something.
+   * - ``emit_drift``
+     - ``drift_<slot>``
+     - True on the row a Page-Hinkley detector on ``|resid|`` finds a
+       break. Each residual over ``sigma`` is compared with its EW mean at
+       the model's half-life, less ``drift_delta`` (default 0.5, in units
+       of ``sigma``). The excess times each row's clock step is summed: a
+       break when the sum climbs ``drift_threshold`` above its lowest
+       point. So the threshold is in ``sigma`` times clock units, a clock
+       parameter: a number of the clock column's units, or a duration on a
+       temporal clock (``"20m"`` is one ``sigma`` of excess held for twenty
+       minutes). It is required with a clock column, as ``gap_cap`` is;
+       without one a row is one unit, and the default 20 is the classic
+       test. How often it flags a stationary stream depends on the
+       residuals' tails: at the defaults on a row clock, Gaussian residuals
+       flagged no row in 600,000, and Student's t residuals with three
+       degrees of freedom flagged 3 to 10 in every 200,000. The detector
+       counts the same burst the same whatever the rows' density. Each
+       residual is scored against the ``sigma`` before its row, which
+       trails a moving scale further where rows are sparser.
+       ``drift_action = "reset"`` also starts the model over there: from
+       the next row the stream is the one a fresh bank fed those rows
+       makes, every field. That row reads a clock step of 0, as a fresh
+       stream's first row does, so nothing the rebuilt model holds -- a
+       prior, a covariance, the settled clock -- decays by the step before
+       it; after skipped rows it reads the step from the first of them, as
+       a fresh stream that began there would. Under an ``embargo`` the
+       detection fires as a held row is released. The rows held behind it
+       are kept and taught to the rebuilt model as they are released, the
+       first at that same fresh step, so the model's own fields -- ``pred``,
+       ``coef``, ``weight_sum`` -- are a fresh bank's fed the rows after
+       the one that fired. Their residuals are read against the
+       predictions those rows were shown, made before the reset, so the
+       residual diagnostics are not that fresh bank's. The detector reads the
+       residuals of the predictions a readiness gate withholds too, as
+       ``sigma`` does, and can flag a row whose prediction is withheld: a
+       gate withholds output only, so no ``min_weight``,
+       ``min_settled_frac`` or ``max_error_inflation`` hides a break, or
+       moves the restart a reset makes there.
+   * - ``emit_calibration``
+     - ``calibration_slope_<slot>``, ``calibration_intercept_<slot>``,
+       ``calibration_wald_<slot>``
+     - Mincer and Zarnowitz's regression of the outcome on the
+       out-of-sample prediction, ``y = a + b * pred``, exponentially
+       weighted at ``calibration_half_life``, and Wald's statistic for
+       ``a = 0, b = 1``:
+       ``(n_kish - 2) * ((mean(y) - mean(pred))**2 + (b - 1)**2 * var(pred)) / s2``,
+       ``s2`` the regression's residual mean square and ``n_kish`` Kish's
+       size of its weights. The slope is the multiplier to put on a
+       prediction. Run once (``inf``) with unit weights, ``wald / 2`` is
+       the least-squares F statistic, ``F(2, n - 2)`` under Gaussian errors,
+       and ``wald`` is ``chi2(2)`` as rows accrue: on calibrated fits it
+       passed 5.99, its 5% value, in 5.0-7.0% of 400 streams. Beside a fit
+       that forgets it is conservative, since the fit absorbs a
+       miscalibration at its own pace, which is why its memory defaults to
+       four times the model's half-life. On a fit whose slope was 0.7 it
+       passed 5.99 on 5% of rows at the model's memory, on 42% at four
+       times it and on 89% run once; on calibrated fits, on 0.3-0.6% of
+       rows at the model's memory and 0-0.3% at four times. A run-once
+       calibration keeps
+       the first predictions for good, so give ``min_weight`` a few rows
+       per coefficient: from ``k + 1`` rows they dominated it. Under a
+       horizon it is Wald's test of ``a = 0, b = 1`` with Newey and West's
+       variance at twice it in lags, from the residual under the null,
+       ``y - pred``. On a quantile fit (``quantile``, and ``sgd`` under
+       ``loss="quantile"``) the fields are ``calibration_coverage_<slot>``,
+       the EW share of rows whose outcome fell below the prediction, and
+       ``calibration_wald_<slot>``, its binomial test against the level
+       ``q`` at Kish's size, ``chi2(1)``; and ``cusum`` sums ``(1{y < pred}
+       - q) / sqrt(q (1 - q))``. Read as a mean's, a stable fit at ``q =
+       0.9`` flagged both on every row; as a quantile's, on 0-1.7% and
+       0.4-6.7% of rows at their 5% values.
+   * - ``emit_breaks``
+     - ``studentized_<slot>``, ``cusum_<slot>``, ``cusum_sq_<slot>``,
+       ``break_wald_<slot>``
+     - Where the relationship broke. ``studentized`` is the row's
+       recursive residual, ``resid / error_inflation``, over the spread of
+       those before it at ``breaks_half_life``, read once that spread has 10
+       rows of Kish's size; 1 stands in for the inflation on a model without
+       one (all but ``ewridge``, ``rls`` and ``kalman``). ``cusum`` and
+       ``cusum_sq`` are the EW sums of the studentized residuals before the
+       row and of their squares less 1, each standardized, so each is about
+       ``N(0, 1)`` with no break. ``cusum_sq`` is over the measured variance
+       of a squared residual, ``E[z**4] - 1`` at four times the memory, not
+       a Gaussian's 2: on Student's t with 3 to 5 degrees of freedom it
+       passed 1.96 on 4.7-5.5% of rows, where over 2 it passed on 11-33%. Run
+       once (``inf``) ``cusum`` is Brown, Durbin and Evans' CUSUM, ``cusum *
+       sqrt(r)`` the path over ``r`` rows, read against ``±0.948 * (sqrt(T)
+       + 2 r / sqrt(T))`` over a run of ``T`` (5%); ``cusum_sq`` is not
+       their CUSUM of squares but the standardized sum above. With a memory
+       they are moving sums, each over its windowed null: a least-squares
+       fit (``ewridge``, ``rls``, ``lasso``, ``kalman``) with an intercept
+       absorbs a level at its own memory ``h_fit``, so ``cusum``'s variance
+       is ``h_fit / (h_fit + h)`` of a plain sum's at the memory ``h``, and
+       ``cusum_sq``'s scale shares its memory, a half. Each is divided by
+       that share as far as its sums have filled: a sum of a few rows holds
+       little of what the fit's mean spread a level over, so its share runs
+       from 1 at the first row to the filled one, read off the sums' own
+       weights (their ``sum(w)`` at the memory against the fourth moment's
+       at four times it). Over the filled share from the first row they
+       passed 1.96 on 6.5-34% (``cusum``) and 11-16% (``cusum_sq``) of the
+       150 rows after the diagnostics' readiness beside ``ewridge`` at
+       memories of 50 to 800; as filled, on 6.1-6.7%, and 5% once filled.
+       Their spreads read 1.03-1.06 and 0.98-1.26 on clean streams, where
+       undivided they read 0.48-0.94. Under ``window_size`` the fit absorbs a
+       level as a mean over the window, weighted by the decay inside it, and
+       a sum of its residuals cancels less. With no decay, and ``u =
+       window_size * ln 2 / h``, ``cusum``'s share is ``1 + 2 exp(-u) / u -
+       2 (1 - exp(-u)) / u**2``, 0.703 at the default memory. Beside a decay
+       it runs from that form to ``h_fit / (h_fit + h)`` as the window grows
+       past the half-life. Over it, beside windows of 100 and 400 rows with
+       no decay and at half-lives of 50 and 200, the spread read 1.00-1.02;
+       read as an exponential of the window's Kish size, 1.08-1.20.
+       ``quantile`` with an intercept absorbs its coverage the
+       same way, and its indicators' ``cusum`` is divided by the same share:
+       over it, at ``q = 0.5``, 1.03-1.05 at memories of 50 and 200 and 1.09
+       at 800, and up to 1.25 at 800 at ``q = 0.9``.
+       The other fits keep the plain sum, whose spread reads below 1 beside
+       them, so ``|cusum| > 3`` is conservative there and finds less: on
+       clean streams at a half-life of 200 and memories of 50, 200 and
+       800, ``huber`` 0.95, 0.81, 0.62 (it found every intercept break of
+       half a noise sd), ``holt`` 0.92, 0.74, 0.52 (80%, 58%, 5% of them),
+       ``sgd`` 0.78, 0.55, 0.37 (88%, 50%, none), ``ftrl`` 0.77, 0.53, 0.39
+       (93%, 92%, 48%) and ``pa`` 0.51, 0.48, 0.47 (none). A gradient fit
+       absorbs a level at its learning rate, and its CUSUM sees little of
+       the move. ``break_wald``, whose twin fits read the target and the
+       features alone, found 93-100% of the same breaks beside every model
+       with features (``holt``'s level alone: 20-100%), and
+       ``calibration_wald`` found none beside ``sgd`` and ``ftrl``.
+       ``break_wald``
+       is the Wald distance between two least-squares fits of the target on
+       the slot's features, one at the memory and one at four times it,
+       over the exact variance of their difference, about ``chi2(k)`` with
+       no break and null run once. That variance is singular over fewer
+       than ``2k`` rows, whatever their weights, so it waits for them.
+       It is formed from the difference of the fits' inverse Grams,
+       ``D = A_f - A_s``, as ``D H_ff D' + A_s E_2 A_s + C + C'`` with
+       ``C = D (H_ff - H_fs) A_s`` and ``E_2 = H_ff + H_ss - H_fs - H_fs'``,
+       where each ``H`` is the sum of ``z z'`` weighted by the squares of
+       the fast weights (``H_ff``), of the slow ones (``H_ss``) and by their
+       products (``H_fs``): the matrix
+       ``A_f H_ff A_f + A_s H_ss A_s - A_f H_fs A_s - A_s H_fs' A_f`` with
+       each term the size of the whole, where those four are 500 times it or
+       more over the first rows past the wait and cancel to it, so that the
+       digits they would cancel are not the distance's.
+       Over the slow fit's Gram for both, a feature whose spread fell
+       tenfold with nothing broken passed 21.1 on 85% of streams; over the
+       exact variance, on none. On 200 streams of
+       3,000 rows with a break at 1,500, run once, the CUSUM crossed on 3.5%
+       with no break and on every
+       stream whose intercept moved half a noise sd, 244 rows after it
+       (statsmodels' own: 5.0% and 277). It does not see a slope that moves
+       on a centred feature, whose residuals keep a zero mean: it crossed on
+       2.5%. Beside a fit at a half-life of 200, ``break_wald``
+       passed ``chi2(3)``'s 0.01% value, 21.1, on no stream with no break
+       and on every slope break, 55 rows after it; ``|cusum| > 3`` found
+       every intercept break in 66 rows on the median and ``|cusum_sq| > 3``
+       every variance break in 20, each passing 3 on 0.3% of the rows of
+       streams with no break. ``drift`` found 1.5% of the variance breaks
+       there and none of the others. Under a horizon each of the CUSUMs is
+       over its long-run variance, Bartlett's weights on its terms'
+       products over twice the horizon in lags, and ``break_wald``'s noise
+       variance is times the studentized residuals' long-run over short-run
+       variance: on a five-row look-ahead target the CUSUMs passed their 5%
+       values on 6-9% of rows and ``break_wald`` on 2.5-4.7%, where the
+       plain forms passed on 13-63%.
+   * - ``emit_specification``
+     - ``ljung_box_<slot>``, ``breusch_pagan_<slot>``, ``ramsey_reset_<slot>``
+     - What the fit is missing, each at ``specification_half_life`` and
+       Kish's size ``n``. ``ljung_box``: Box and Pierce's ``Q = n *
+       sum(rho_l**2)`` over ``ljung_box_lags`` lags of the residuals
+       (default 10), and run once Ljung and Box's, ``chi2(L)`` with nothing
+       missing: a missing lag or a half-life too long. Ljung and Box's
+       ``(n + 2) / (n - l)`` at Kish's ``n`` passed its 5% value on 15.8%
+       of iid streams at a half-life of 10 rows, Box and Pierce's on 4.8%.
+       For a target that looks ahead ``h`` rows (``horizon_rows``, or
+       ``embargo`` on a spec with no clock column) it tests lags ``h`` to
+       ``h + L - 1``, against
+       Bartlett's covariance for autocorrelations past the residuals'
+       built-in ``MA(h - 1)``; the plain ``Q`` passed its 5% value on 61% of
+       the rows of five-row look-ahead streams with nothing missing, this one
+       on 6.0-6.7%. ``breusch_pagan``: ``n R2`` of ``resid**2`` on the
+       slot's features (Koenker's form), ``chi2(k)``: a spread that moves
+       with them. ``ramsey_reset``: Ramsey's test, the Lagrange multiplier for
+       ``pred**2`` and ``pred**3`` beside ``pred`` in a regression of the
+       residual, ``chi2(2)``: a curvature the fit is missing. Run once they
+       are statsmodels' ``acorr_ljungbox``, ``het_breuschpagan`` and
+       ``compare_lm_test`` on the out-of-sample residuals. On 200 streams of
+       3,000 rows, each passed its 5% value on 2.0-7.0% of the rows of
+       streams missing nothing, run once or windowed, and on 98-100% of
+       those missing what it looks for: an AR(1) at 0.3, a spread linear in
+       a feature, a square of one. Under a horizon ``breusch_pagan`` and
+       ``ramsey_reset`` are Wald's tests of the same coefficients with Newey and
+       West's variance at twice it in lags: beside a five-row look-ahead
+       target and AR(1) features at 0.5-0.95 their ``n R2`` forms passed
+       their 5% values on 10-39% of rows, the Wald forms on 3.1-5.2%.
+   * - ``emit_tails``
+     - ``skew_<slot>``, ``kurtosis_<slot>``, ``jarque_bera_<slot>``
+     - The EW skewness and excess kurtosis of the recursive residuals,
+       ``resid / error_inflation`` (``resid`` on a model without one), at
+       ``tails_half_life``, and Jarque and Bera's statistic, ``n / 6 *
+       (skew**2 + kurtosis**2 / 4)`` at Kish's size, ``chi2(2)`` for
+       Gaussian residuals. Run once they are ``scipy.stats``' ``skew`` and
+       ``kurtosis`` and statsmodels' ``jarque_bera``. On 200 streams it
+       passed 5.99 on 4.7-5.0% of the rows of Gaussian residuals, run once
+       or windowed, and on every row of Student's t with 5 degrees of
+       freedom. The kurtosis is what ``drift_threshold`` is set against:
+       on 40 streams of 25,000 rows at a half-life of 200, the default 20
+       flagged no row where the kurtosis read under 4 (Gaussian, t with 10,
+       6 and 5 degrees of freedom), 0.4 rows in 100,000 where it read 8.6
+       (t with 4) and none at 30, and 6.3 where it read 36 (t with 3), 2.1
+       at 30, 0.4 at 50 and none at 80.
+   * - ``emit_influence``
+     - ``influence_<slot>``
+     - How far the row moves the fit, in the fit's own metric: an online
+       DFFITS, ``(v / s) * sqrt(h)``, ``h = error_inflation**2 - 1`` the
+       row's leverage against the fit before it, ``v`` its recursive
+       residual and ``s`` the spread of those before it at
+       ``influence_half_life``. Its square is the move ``dbeta' A dbeta``
+       over ``s**2``, times ``1 + h``. Run once with no ridge it is
+       statsmodels' ``OLSInfluence.dffits`` at the last row of the rows so
+       far (to 7e-11); it is not the in-sample DFFITS of an earlier row,
+       which reads the rows after it too. ``ewridge``, ``rls`` and
+       ``kalman`` only, which read a row's leverage. On clean rows its
+       scale is ``sqrt((k + 1) / weight_sum)``, ``k`` the features: the
+       99.9th percentile of ``|influence|`` read 2.5 to 3.2 times it, at
+       half-lives of 20 to 1,000 rows and 2 to 10 features, so a cutoff of
+       0.5 suits only some fits. ``|influence| > 4 * sqrt((k + 1) /
+       weight_sum)`` held 0.001-0.014% of the clean rows there, and every
+       row planted at six spreads out and six off the line, one in 200. At
+       a half-life of 200 with 2 features that cutoff is 0.41, and the
+       clean rows' 99.9th percentile was 0.29.
+   * - ``emit_feature_health``
+     - ``spread_ratio_<feature>``, ``mean_shift_<feature>``, once per
+       instance and feature
+     - Each feature's EW standard deviation at ``feature_health_half_life``
+       over its standard deviation at four times it, and the two means'
+       difference in units of the slower one's deviation, read before the
+       row: about 1 and 0 for a steady feature. A feed that stopped, its
+       last value carried forward, shows as a ratio falling toward 0; a
+       feature that moved, as a shift. Refused where its memory is ``inf``
+       (run once, with no window), where both memories would be the whole
+       stream. On docs/DATA-QUALITY.md's frozen feed (a half-life of
+       20) the held feature's ratio fell below 0.5 2.9 half-lives in, and
+       ``rls``'s slope passed 1, winding up, 52.6 half-lives in. At a
+       half-life of 200, clean features read a ratio outside 0.5 to 2 on no
+       row (independent or AR(1) at 0.95); a move of one spread read
+       ``|mean_shift| > 0.3`` on every stream within 190 rows, where an
+       AR(1) feature at 0.95 read it on 6% of rows and above 0.5 on 0.03%.
+
+.. rubric:: Errors
+
+A builder raises ``TypeError`` for a name that is not a str, a keyword it has
+not got, or a value of the wrong shape, naming the parameter and what it
+takes::
+
+    spec "m": max_rows_between_coefs must be an int, got float 1.5
+
+It raises ``ValueError``, naming the spec, the parameter and the value, for a
+value the model refuses:
+
+- a count below 0, or below 1 for a count there must be one of (``lags``,
+  ``cross_lags``, ``resid_autocorr_lag``, ``ljung_box_lags``, ``k``,
+  ``shards``, ``gram_threads``, ``max_iter``, ``max_clusters``, the
+  ``*_every_rows`` counts and the ``max_rows_between_*`` caps), or past what
+  the Rust side holds it in (``2^32 - 1`` for the ``max_rows_between_*`` caps,
+  ``max_iter``, ``update_every_rows`` and ``split_merge_every_rows``;
+  ``2^64 - 1`` for the other counts), or ``NaN`` anywhere;
+- a count that sizes memory before the first row past its ceiling: a lag or
+  ``n_perm`` past 2^20, ``horizon_rows`` past 2^19, ``kmeans``' ``k`` past
+  2^16, ``hmm``'s ``k`` past 2^10, a ``kmeans`` or ``bocpd`` warm-up buffer
+  past 256 MiB, ``rcov``'s lagged products past 256 MiB;
+- ``inf`` where it means nothing (it is allowed where it does -- ``half_life``,
+  ``average_eta``, ``max_error_inflation``, ``window_budget``,
+  each diagnostic's ``*_half_life`` and the model parameters that say so);
+- neither ``half_life`` nor ``lam`` on a model that decays (all but
+  ``seqtest``, ``audit``, ``rcov``, ``corrchange`` and ``bocpd``), or both; a
+  ``lam`` outside ``(0, 1]``, and an empty ``half_life`` grid or one that
+  repeats a value;
+- ``clock`` without ``gap_cap``, or a ``gap_cap`` of ``0`` or ``inf``;
+- a ``session_gap`` below 0 or infinite, and ``session`` without
+  ``session_gap`` unless ``group_close = "session"``;
+- ``group_close`` without ``group``, beside ``embargo`` or beside a window
+  target, and ``group_close = "session"`` without ``session`` or beside
+  ``session_gap``;
+- ``emit_drift`` with a ``clock`` and no ``drift_threshold``;
+- a window target beside ``group`` without ``clock``;
+- a column listed twice, or as both target and feature;
+- a ``min_weight`` list whose length is not the number of targets, and a
+  ``min_weight`` of ``inf``, which would withhold every row for good;
+- ``emit_selected`` or ``emit_averaged`` with one slot per target;
+- ``emit_feature_health`` on a model with no features (``holt``);
+- a level outside ``(0, 1)``, or an option not in the list the message
+  gives;
+- and each model's own rules, which its builder lists.
+
+A parameter whose switch is off is refused rather than ignored:
+
+- ``drift_delta``, ``drift_threshold`` or ``drift_action = "reset"`` without
+  ``emit_drift``;
+- ``average_eta`` without ``emit_averaged``;
+- ``resid_autocorr_lag`` without ``emit_autocorr``;
+- a diagnostic's ``*_half_life``, or its lags (``robust_se_lags``,
+  ``ljung_box_lags``), without its switch;
+- ``long_half_life`` without ``session_shrink``;
+- ``session_gap`` without ``session``;
+- ``gap_cap`` or ``restart_after_step_back`` without ``clock``;
+- ``conformal_rate`` without ``conformal``, and ``horizon_rows`` without a
+  diagnostic that reads it;
+- ``snapshot_every``, ``max_rows_between_snapshots``, ``window_budget`` or
+  ``closed = "both"`` without ``window_size``;
+- ``sgd``'s ``huber_delta``, ``huber_scale``, ``huber_scale_half_life``,
+  ``huber_refit_rows``, ``refit_budget``, ``quantile`` or ``eps`` beside a loss
+  that does not use it, its ``strict_binary`` beside a loss other than
+  ``"logistic"``, and its ``power`` beside a schedule other than
+  ``"inv_scaling"``;
+- ``ftrl``'s ``strict_binary`` beside ``loss = "squared"``;
+- ``holt``'s ``trend_half_life`` beside ``trend = False``;
+- ``kmeans``' ``dead_frac`` above 0 beside ``split_merge = 0``, and its and
+  ``micro``'s ``scale_floor`` beside ``standardize = False``;
+- ``bocpd``'s ``robust_beta`` beside ``covariance_type = "full"``;
+- ``hmm``'s ``transition`` or ``transition_prior`` beside ``tvtp_coef``, and
+  its ``warm_rows``, ``init`` or ``seed`` beside given ``means`` and
+  ``covs``;
+- ``rcov``'s ``bandwidth``, ``max_bandwidth`` or ``jitter`` under a kind other
+  than ``"kernel"``, and its ``theta`` or ``preavg_rows`` under one other than
+  ``"preavg"``;
+- ``kalman``'s ``coef_half_life`` beside ``q``, which it would derive;
+- and ``coef_every`` or ``max_rows_between_coefs`` on a model that reports
+  no coefficients.
+
+Names and lists are checked too: a feature set named twice, a column twice in
+one set, an empty set, an empty ``feature_sets`` or ``blocks``, an empty target
+name, an empty ``mahal_quantiles`` or ``resid_quantiles``, and a ``ridge``
+value listed twice. So is a spec named ``""``, ``"spec"`` or ``"group"``, names
+the bank's tables use for their own columns.
+
+A spec that came back from a builder is valid. One edited afterwards is
+checked again wherever it is used, and a key no spec has is refused there
+rather than ignored. Every way in checks a spec the same way, so a spec one of
+them refuses is refused by all of them. :class:`rheon.ModelBank`,
+:func:`output_fields`, :func:`output_index`, :func:`coef_fields` and a run
+config each fill its defaults and build its models.
+"""
+
+from rheon._spec import (
+    audit,
+    bocpd,
+    coef_fields,
+    coef_index,
+    corrchange,
+    deco,
+    ew_class,
+    ew_cov,
+    ewridge,
+    ftrl,
+    hmm,
+    holt,
+    huber,
+    kalman,
+    kmeans,
+    lasso,
+    marginal,
+    micro,
+    output_fields,
+    output_index,
+    pa,
+    quantile,
+    rcov,
+    rls,
+    seqtest,
+    sgd,
+)
+
+__all__ = [
+    "audit",
+    "ew_class",
+    "ew_cov",
+    "ewridge",
+    "ftrl",
+    "hmm",
+    "holt",
+    "huber",
+    "kalman",
+    "kmeans",
+    "lasso",
+    "bocpd",
+    "corrchange",
+    "deco",
+    "marginal",
+    "rcov",
+    "micro",
+    "output_fields",
+    "coef_fields",
+    "coef_index",
+    "output_index",
+    "pa",
+    "quantile",
+    "rls",
+    "seqtest",
+    "sgd",
+]

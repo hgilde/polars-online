@@ -61,10 +61,10 @@ are.
   text or the exception), which ``report`` counts as unread; what a bare
   ``{}`` prints, such as a float's full repr; whether a Rust string is a
   whole message or a body its caller wraps (each is read as a whole, so a
-  wrapped body of ``online-polars`` reports a missing *where*: accept it
-  when its file finishes); whether an ``online-core`` error reaches a
+  wrapped body of ``rheon-polars`` reports a missing *where*: accept it
+  when its file finishes); whether an ``rheon-core`` error reaches a
   reader (every ``Err`` string is read as one that does, since the bank
-  passes them on behind ``spec "<name>": ``, which is why ``online-core``'s
+  passes them on behind ``spec "<name>": ``, which is why ``rheon-core``'s
   are not held to the *where* rule); a remedy is told by its first word,
   and a kept-out word by its spelling, not its sense (*task*);
 - docstrings: whether a function can raise (only a model must have
@@ -710,7 +710,7 @@ def is_wrapper(m: Message) -> bool:
 
 def message_findings(m: Message, *, core: bool = False) -> list[Finding]:
     """The shape findings of one message (WRITING §11). ``core``: a string of
-    ``online-core``, whose caller names where it happened, so it is not held
+    ``rheon-core``, whose caller names where it happened, so it is not held
     to the *where* rule."""
     if is_wrapper(m):
         return []  # its text is its parts', each read where it is written
@@ -1017,14 +1017,14 @@ def rust_messages(src: str, path: str) -> list[Message]:
 
 #: The Rust sources whose messages reach a reader, and the crate whose
 #: strings are bodies its callers name.
-RUST_CRATES = ("online-core", "online-polars", "online-cli", "online-py")
+RUST_CRATES = ("rheon-core", "rheon-polars", "rheon-cli", "rheon-py")
 
 
 @cache
 def all_messages(repo: Path = REPO) -> tuple[list[Message], list[Unread]]:
     msgs: list[Message] = []
     unread: list[Unread] = []
-    for path in sorted((repo / "python" / "polars_online").rglob("*.py")):
+    for path in sorted((repo / "python" / "rheon").rglob("*.py")):
         rel = path.relative_to(repo).as_posix()
         got, lost = python_messages(path.read_text(encoding="utf-8"), rel)
         msgs += got
@@ -1047,7 +1047,7 @@ def check_messages(repo: Path = REPO, read: bool = True) -> list[Finding]:
     msgs, _ = all_messages(repo)
     found: list[Finding] = []
     for m in msgs:
-        found += message_findings(m, core=m.path.startswith("crates/online-core/"))
+        found += message_findings(m, core=m.path.startswith("crates/rheon-core/"))
     return found
 
 
@@ -1147,13 +1147,13 @@ def docstring_findings(d: Documented) -> list[Finding]:
 
 #: Where the extension's objects are written: their docstrings are the
 #: bindings' doc comments.
-NATIVE_SOURCE = "crates/online-py/src/lib.rs"
+NATIVE_SOURCE = "crates/rheon-py/src/lib.rs"
 
 
 def _source(obj: object) -> tuple[str, int]:
     """The file and line an object's docstring is written at: its Python
     source, or the bindings' for an object of the extension."""
-    if (getattr(obj, "__module__", "") or "").endswith("._polars_online"):
+    if (getattr(obj, "__module__", "") or "").endswith("._rheon"):
         return NATIVE_SOURCE, 0
     try:
         target = inspect.unwrap(obj)  # type: ignore[arg-type]
@@ -1189,7 +1189,7 @@ def documented() -> list[Documented]:
     methods and properties, and the frame namespaces' methods."""
     import polars as pl
 
-    import polars_online as po
+    import rheon as po
 
     seen: set[int] = set()
     out: list[Documented] = []
@@ -1201,7 +1201,7 @@ def documented() -> list[Documented]:
             return
         if inspect.ismodule(obj):
             return
-        from polars_online._renamed import is_renamed
+        from rheon._renamed import is_renamed
 
         # A name kept only under its old spelling (a refusal stub or a
         # forwarding): the API reference and the API snapshot leave it out.
@@ -1213,7 +1213,7 @@ def documented() -> list[Documented]:
             return
         if inspect.isclass(obj):
             out.append(Documented(where, "class", inspect.getdoc(obj), *_source(obj)))
-            if (obj.__module__ or "").startswith("polars_online"):
+            if (obj.__module__ or "").startswith("rheon"):
                 for name, member in vars(obj).items():
                     if not name.startswith("_"):
                         target = (
@@ -1231,12 +1231,12 @@ def documented() -> list[Documented]:
         out.append(Documented(where, kind, inspect.getdoc(obj), *_source(obj), params, returns))
 
     for name in po.__all__:
-        add(f"polars_online.{name}", getattr(po, name))
+        add(f"rheon.{name}", getattr(po, name))
     modules = sorted(
         m.name for m in pkgutil.iter_modules(po.__path__) if not m.name.startswith("_")
     )
     for mod in modules:
-        module = importlib.import_module(f"polars_online.{mod}")
+        module = importlib.import_module(f"rheon.{mod}")
         for name in getattr(module, "__all__", ()):
             obj = getattr(module, name)
             kind = None
@@ -1246,7 +1246,7 @@ def documented() -> list[Documented]:
                 except (TypeError, ValueError):
                     first = ""
                 kind = "model" if first == "name" else None
-            add(f"polars_online.{mod}.{name}", obj, kind)
+            add(f"rheon.{mod}.{name}", obj, kind)
     for frame in (pl.LazyFrame(), pl.DataFrame()):
         ns = type(frame.online)  # type: ignore[attr-defined]
         for name, member in vars(ns).items():

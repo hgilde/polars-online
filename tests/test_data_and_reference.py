@@ -78,7 +78,7 @@ def test_ridge_decay_matches_rls_exactly():
 
 
 def test_compute_dclock_semantics():
-    """Mirrors `caps_and_negative_deltas` in crates/online-core/src/clock.rs."""
+    """Mirrors `caps_and_negative_deltas` in crates/rheon-core/src/clock.rs."""
     t = np.array([0.0, 10.0, 5.0, 6.0, 200.0])
     with pytest.raises(ValueError, match="row 2: the clock goes backwards by 5"):
         compute_dclock(t, None, 5, gap_cap=50.0)

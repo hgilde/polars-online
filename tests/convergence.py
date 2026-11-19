@@ -59,7 +59,7 @@ import polars as pl
 import statsmodels.api as sm
 from sklearn.linear_model import Lasso, Ridge
 
-import polars_online as po
+import rheon as po
 
 INF = float("inf")
 FEATURES = ["x0", "x1"]

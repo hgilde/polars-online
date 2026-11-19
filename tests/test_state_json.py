@@ -8,7 +8,7 @@ The whole risk is silent loss. JSON has no literal for ``NaN`` or ``±inf``
 and ``serde_json`` writes all three as ``null`` without a word -- and a state
 reaches that on the most ordinary setting there is, ``half_life=inf`` (no
 decay), which puts an infinity in every stream's ``decay``. So the crate
-tags them as ``"inf"`` / ``"-inf"`` / ``"nan"`` (``online_core::humanfloat``,
+tags them as ``"inf"`` / ``"-inf"`` / ``"nan"`` (``rheon_core::humanfloat``,
 the spelling specs already use) and the exporter re-reads its own output and
 refuses if it does not match the state.
 """
@@ -21,7 +21,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 

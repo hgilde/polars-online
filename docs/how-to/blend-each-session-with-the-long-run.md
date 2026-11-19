@@ -23,7 +23,7 @@ spec:
   to follow a session, and a clock.
 
 `session_shrink` and `long_half_life` are defined in [`po.spec.ewridge`'s
-docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge),
+docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.ewridge),
 whose Notes, under *The session blend*, give the blend's equations.
 
 ## Start each session from a blend
@@ -62,7 +62,7 @@ from the eleventh session on:
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # 40 sessions of 300 rows. Each session's slope is drawn around a long-run slope of 2.
 rng = np.random.default_rng(5)

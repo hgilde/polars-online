@@ -11,7 +11,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from test_model_registry import MINIMAL, fullest
 
 TIER = "essential"
@@ -479,7 +479,7 @@ class TestUnpackWithSpec:
     def test_spec_resolves_prefix_targets_the_heuristic_cannot(self):
         """Targets `y` and `y2` where `y2`'s fields could confuse a prefix
         matcher: with the spec, resolution is exact."""
-        from polars_online import eval as ev
+        from rheon import eval as ev
 
         rng = np.random.default_rng(2)
         n = 400

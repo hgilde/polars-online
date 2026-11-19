@@ -22,7 +22,7 @@ import polars as pl
 import pytest
 from river import linear_model, optim, stats
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 

@@ -376,7 +376,7 @@ fn interface(ptr: usize, typestr: &str, shape: &[usize], mask: Option<usize>) ->
 
 // ------------------------------------------------------------------ sketch
 
-/// The merging t-digest of `crates/online-core/src/audit.rs` (Dunning &
+/// The merging t-digest of `crates/rheon-core/src/audit.rs` (Dunning &
 /// Ertl 2019, uniform rank resolution), copied with its compression made a
 /// parameter: that module keeps it private, at 200.
 struct Digest {

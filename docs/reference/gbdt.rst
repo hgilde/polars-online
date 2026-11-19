@@ -1,7 +1,7 @@
-``polars_online.gbdt``
+``rheon.gbdt``
 ======================
 
-.. automodule:: polars_online.gbdt
+.. automodule:: rheon.gbdt
    :no-members:
 
 Training inputs

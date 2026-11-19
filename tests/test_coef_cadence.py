@@ -31,7 +31,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from test_model_registry import MINIMAL
 
 TIER = "mixed"
@@ -41,7 +41,7 @@ TIER = "mixed"
 EVERY_KIND = pytest.mark.extended(reason="the sweep over every kind with a coef")
 
 #: Fitting a ridge from a handful of rows says so; beside the point here.
-pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+pytestmark = pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
 
 T0 = datetime(2024, 1, 2, 9, 30)
 #: Seconds: the cap on a step, and the clock cadence most tests use.

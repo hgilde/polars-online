@@ -9,7 +9,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from data import synthetic
 from reference import EwMedian
 

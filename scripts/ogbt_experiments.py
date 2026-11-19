@@ -109,7 +109,7 @@ def run_ew_mean(y, d_clock, half_life):
 def run_ewridge(X, y, d_clock, half_life):
     import polars as pl
 
-    import polars_online as po
+    import rheon as po
 
     t = np.cumsum(d_clock)
     df = pl.DataFrame({"t": t, "y": y, **{f"x{j}": X[:, j] for j in range(X.shape[1])}})

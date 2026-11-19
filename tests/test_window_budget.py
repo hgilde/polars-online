@@ -15,7 +15,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from reference_paths import WindowRing
 
 TIER = "essential"

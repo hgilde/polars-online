@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from conftest import run_online
 
 TIER = "essential"
@@ -43,13 +43,13 @@ def ridge_spec(name="m", **kw):
 
 
 class TestARunWithNoOutput:
-    def test_it_saves_the_state_and_writes_nothing(self, tmp_path, online_cli):
+    def test_it_saves_the_state_and_writes_nothing(self, tmp_path, rheon_cli):
         df = frame()
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
         state = tmp_path / "b.state"
         run_online(
-            online_cli, tmp_path, [cov_spec()], input=src, save_state=state, chunk_size=100,
+            rheon_cli, tmp_path, [cov_spec()], input=src, save_state=state, chunk_size=100,
             args=["--no-output"],
         )  # fmt: skip
         # Nothing else was created -- not even the temporary the writer
@@ -57,17 +57,17 @@ class TestARunWithNoOutput:
         # this test wrote, not the run's doing.)
         assert {p.name for p in tmp_path.iterdir()} == {"in.parquet", "b.state", "bank.toml"}
 
-    def test_the_state_is_the_state_a_written_run_would_have_left(self, tmp_path, online_cli):
+    def test_the_state_is_the_state_a_written_run_would_have_left(self, tmp_path, rheon_cli):
         df = frame(seed=1)
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
         quiet, loud = tmp_path / "q.state", tmp_path / "l.state"
         run_online(
-            online_cli, tmp_path, [cov_spec()], input=src, save_state=quiet, chunk_size=64,
+            rheon_cli, tmp_path, [cov_spec()], input=src, save_state=quiet, chunk_size=64,
             args=["--no-output"],
         )  # fmt: skip
         run_online(
-            online_cli,
+            rheon_cli,
             tmp_path,
             [cov_spec()],
             input=src,
@@ -77,7 +77,7 @@ class TestARunWithNoOutput:
         )
         assert quiet.read_bytes() == loud.read_bytes(), "the same run, minus the file"
 
-    def test_the_state_is_the_bytes_a_bank_fed_the_same_chunks_saves(self, tmp_path, online_cli):
+    def test_the_state_is_the_bytes_a_bank_fed_the_same_chunks_saves(self, tmp_path, rheon_cli):
         """docs/STATE-WORKFLOW.md: a query, the command line and a
         `ModelBank` fed the same chunks write identical bytes (task 269,
         review 8 F-11, where the page still named the removed `po.run`; the
@@ -88,7 +88,7 @@ class TestARunWithNoOutput:
         specs = [cov_spec(), ridge_spec()]
         cli = tmp_path / "cli.state"
         run_online(
-            online_cli, tmp_path, specs, input=src, save_state=cli, chunk_size=64,
+            rheon_cli, tmp_path, specs, input=src, save_state=cli, chunk_size=64,
             args=["--no-output"],
         )  # fmt: skip
         bank = po.ModelBank(specs)
@@ -98,12 +98,12 @@ class TestARunWithNoOutput:
         bank.save(own)
         assert cli.read_bytes() == own.read_bytes()
 
-    def test_no_output_clears_a_config_that_names_one(self, tmp_path, online_cli):
+    def test_no_output_clears_a_config_that_names_one(self, tmp_path, rheon_cli):
         df = frame()
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
         run_online(
-            online_cli,
+            rheon_cli,
             tmp_path,
             [cov_spec()],
             input=src,
@@ -115,17 +115,17 @@ class TestARunWithNoOutput:
         assert not (tmp_path / "out.parquet").exists()
         assert (tmp_path / "b.state").exists()
 
-    def test_a_run_that_writes_nothing_and_saves_nothing_is_refused(self, tmp_path, online_cli):
+    def test_a_run_that_writes_nothing_and_saves_nothing_is_refused(self, tmp_path, rheon_cli):
         df = frame(n=50)
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
         res = run_online(
-            online_cli, tmp_path, [cov_spec()], input=src, args=["--no-output"], check=False
+            rheon_cli, tmp_path, [cov_spec()], input=src, args=["--no-output"], check=False
         )
         assert res.returncode != 0
         assert "a run must write something" in res.stderr, res.stderr
 
-    def test_an_empty_input_is_not_an_error(self, tmp_path, online_cli):
+    def test_an_empty_input_is_not_an_error(self, tmp_path, rheon_cli):
         """With an output, an empty input still writes an empty frame of the
         right schema. Without one there is nothing to write, and the run is a
         no-op that still saves its (empty) state."""
@@ -133,11 +133,11 @@ class TestARunWithNoOutput:
         frame(n=0).write_parquet(src)
         state = tmp_path / "b.state"
         run_online(
-            online_cli, tmp_path, [cov_spec()], input=src, save_state=state, args=["--no-output"]
+            rheon_cli, tmp_path, [cov_spec()], input=src, save_state=state, args=["--no-output"]
         )
         assert state.exists()
 
-    def test_it_works_for_a_learning_spec_too(self, tmp_path, online_cli):
+    def test_it_works_for_a_learning_spec_too(self, tmp_path, rheon_cli):
         """Nothing about this is `ew_cov`-only: a ridge fit whose product is
         the coefficients need not write its predictions either."""
         df = frame(seed=2)
@@ -145,7 +145,7 @@ class TestARunWithNoOutput:
         df.write_parquet(src)
         state = tmp_path / "b.state"
         run_online(
-            online_cli, tmp_path, [ridge_spec()], input=src, save_state=state, chunk_size=100,
+            rheon_cli, tmp_path, [ridge_spec()], input=src, save_state=state, chunk_size=100,
             args=["--no-output"],
         )  # fmt: skip
         bank = po.ModelBank.load(state)
@@ -153,7 +153,7 @@ class TestARunWithNoOutput:
         want.fit_predict(df)
         assert bank.coef("m")["coef"].to_list() == want.coef("m")["coef"].to_list()
 
-    def test_the_cli_flag(self, tmp_path, online_cli):
+    def test_the_cli_flag(self, tmp_path, rheon_cli):
         df = frame(seed=3)
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
@@ -178,14 +178,14 @@ stats = []
             encoding="utf-8",
         )
         subprocess.run(
-            [str(online_cli), "--config", str(cfg), "--no-output"],
+            [str(rheon_cli), "--config", str(cfg), "--no-output"],
             check=True,
             capture_output=True,
         )
         assert not (tmp_path / "out.parquet").exists()
         assert state.exists()
 
-    def test_the_cli_dry_run_says_there_is_no_output(self, tmp_path, online_cli):
+    def test_the_cli_dry_run_says_there_is_no_output(self, tmp_path, rheon_cli):
         src = tmp_path / "in.parquet"
         frame(n=10).write_parquet(src)
         cfg = tmp_path / "c.toml"
@@ -204,7 +204,7 @@ type = "ew_cov"
             encoding="utf-8",
         )
         r = subprocess.run(
-            [str(online_cli), "--config", str(cfg), "--dry-run"],
+            [str(rheon_cli), "--config", str(cfg), "--dry-run"],
             check=True,
             capture_output=True,
             text=True,
@@ -213,14 +213,14 @@ type = "ew_cov"
         assert "output: none (--no-output)" in r.stdout
         assert "b.state" in r.stdout
 
-    def test_the_cli_dry_run_names_the_closed_groups_as_the_product(self, tmp_path, online_cli):
+    def test_the_cli_dry_run_names_the_closed_groups_as_the_product(self, tmp_path, rheon_cli):
         """Task 154: a run with no output and no state, whose product is the
         closed groups alone, printed that its product was nothing."""
         pl.DataFrame(
             {"g": ["a", "a", "b", "b"], "x0": [0.1, 0.2, 0.3, 0.4], "x1": [1.0, 0.0, 1.0, 2.0]}
         ).write_parquet(tmp_path / "in.parquet")
         res = run_online(
-            online_cli,
+            rheon_cli,
             tmp_path,
             [cov_spec(group="g", group_close="monotone")],
             input=tmp_path / "in.parquet",
@@ -231,14 +231,14 @@ type = "ew_cov"
         assert "nothing" not in product, res.stdout
         assert "closed.parquet" in product, res.stdout
 
-    def test_output_and_no_output_together_are_refused(self, tmp_path, online_cli):
+    def test_output_and_no_output_together_are_refused(self, tmp_path, rheon_cli):
         cfg = tmp_path / "c.toml"
         cfg.write_text(
             'input = "x.parquet"\n[[specs]]\nname = "c"\nfeatures = ["x0"]\n', encoding="utf-8"
         )
         r = subprocess.run(
             [
-                str(online_cli),
+                str(rheon_cli),
                 "--config",
                 str(cfg),
                 "--no-output",
@@ -255,7 +255,7 @@ type = "ew_cov"
 
 class TestTargetsAreOptionalWhereThereAreNone:
     @pytest.mark.parametrize("model", ["ew_cov", "kmeans", "micro"])
-    def test_a_toml_spec_need_not_invent_a_target(self, tmp_path, model, online_cli):
+    def test_a_toml_spec_need_not_invent_a_target(self, tmp_path, model, rheon_cli):
         src = tmp_path / "in.parquet"
         frame(n=300, seed=4).write_parquet(src)
         state = tmp_path / "b.state"
@@ -276,11 +276,11 @@ type = "{model}"
 """,
             encoding="utf-8",
         )
-        subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
+        subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         bank = po.ModelBank.load(state)
         assert bank.specs[0]["targets"] == ["x0"], "filled from features[0]"
 
-    def test_the_filled_spec_is_the_one_python_writes(self, tmp_path, online_cli):
+    def test_the_filled_spec_is_the_one_python_writes(self, tmp_path, rheon_cli):
         """E53's point: the two surfaces must produce the same spec, so a
         state saved from one resumes under the other."""
         df = frame(n=300, seed=5)
@@ -304,7 +304,7 @@ stats = []
 """,
             encoding="utf-8",
         )
-        subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
+        subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         from_python = tmp_path / "py.state"
         bank = po.ModelBank([cov_spec(name="c")])
         for out in bank.fit_predict_batches(df.slice(i, 100) for i in range(0, df.height, 100)):
@@ -339,13 +339,13 @@ stats = []
             po.ModelBank([spec])
 
 
-def test_predict_drops_the_closed_groups_sidecar(online_cli, tmp_path):
+def test_predict_drops_the_closed_groups_sidecar(rheon_cli, tmp_path):
     """R2-P7: ``--predict`` dropped the config's ``save_state`` so one TOML
     serves both runs, but kept its ``closed_groups``, which the scoring run
     then refused."""
     import polars as pl
 
-    import polars_online as po
+    import rheon as po
     from conftest import run_online
 
     df = pl.DataFrame(
@@ -368,7 +368,7 @@ def test_predict_drops_the_closed_groups_sidecar(online_cli, tmp_path):
         half_life=10.0,
     )
     run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [spec],
         input=tmp_path / "in.parquet",
@@ -377,7 +377,7 @@ def test_predict_drops_the_closed_groups_sidecar(online_cli, tmp_path):
         closed_groups=tmp_path / "closed.parquet",
     )
     run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [spec],
         input=tmp_path / "in.parquet",

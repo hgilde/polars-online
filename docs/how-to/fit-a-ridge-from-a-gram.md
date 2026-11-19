@@ -51,7 +51,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
 # two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is
@@ -154,6 +154,6 @@ what to do:
 | the intercept's standard error and t are `nan` | the Gram was pooled within blocks, and each block had its own intercept | read the slopes ([Pool within blocks to leave their levels out](pool-grams.md#pool-within-blocks-to-leave-their-levels-out)) |
 | `po.gram.solve` differs from `bank.coef()` | the spec has `ridge_scale="sum"` or a `coef_prior`, or a `solve_every` that leaves `bank.coef()` as of an earlier row | to reproduce `bank.coef()`, pass `po.gram.solve` the spec's `ridge` and `standardize`. `solve` does not reproduce `ridge_scale="sum"` (a ridge on a decaying scale) or a `coef_prior` (a prior other than zero), so read those fits from `bank.coef()`. For the fit as of the last row, solve the Gram |
 
-The [reference for `po.gram.solve`](https://hgilde.github.io/polars-online/gram.html#polars_online.gram.solve)
-and for [`po.gram.coef_stats`](https://hgilde.github.io/polars-online/gram.html#polars_online.gram.coef_stats)
+The [reference for `po.gram.solve`](https://hgilde.github.io/polars-online/gram.html#rheon.gram.solve)
+and for [`po.gram.coef_stats`](https://hgilde.github.io/polars-online/gram.html#rheon.gram.coef_stats)
 give every parameter.

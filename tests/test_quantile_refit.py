@@ -27,7 +27,7 @@ import polars as pl
 import pytest
 import statsmodels.api as sm
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 INF = float("inf")

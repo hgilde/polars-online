@@ -121,7 +121,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # 1. Make up flights, one every ten minutes, whose delay is known only when each one lands.
 rng = np.random.default_rng(3)
@@ -182,7 +182,7 @@ measurement.
 ## Write the delay out as rows
 
 **Use
-[`po.stream.embargo`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.embargo)
+[`po.stream.embargo`](https://hgilde.github.io/polars-online/stream.html#rheon.stream.embargo)
 when the delay has to be visible in the frame, or when another engine fits
 the model.** It returns every row twice: a copy to predict at `t` with
 weight 0, and a copy to learn from at `t + delay`.

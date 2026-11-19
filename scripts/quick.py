@@ -27,13 +27,13 @@ How a path maps, first rule that applies:
 | `tests/conftest.py`, `tests/tiers.py`, `tests/_site/*` | every test file |
 | another `tests/*.py` helper | the test files that import it |
 | `crates/<crate>/src/<module>...` | the crate's `cargo test`, a rebuild, the files named after it |
-| `crates/online-core/src/...` | also `online-polars`' state tests (`STATE_TESTS`) |
+| `crates/rheon-core/src/...` | also `rheon-polars`' state tests (`STATE_TESTS`) |
 | `crates/<crate>/tests/...` | the crate's `cargo test` |
-| `crates/online-cli/...` | also the test files that run the CLI |
-| `python/polars_online/<module>.py` | the test files named after the module |
+| `crates/rheon-cli/...` | also the test files that run the CLI |
+| `python/rheon/<module>.py` | the test files named after the module |
 | any path | also the test files that name it, by path or by a distinctive file name |
 
-A model's source (a Rust crate the extension links, `python/polars_online`)
+A model's source (a Rust crate the extension links, `python/rheon`)
 and a test file that registers oracle groups also run the oracle ledger's
 hash guard (docs/TESTING.md, "The oracle ledger") for the groups they can
 move: those whose id names the module, or one of its `ALIASES`, as a word
@@ -64,12 +64,12 @@ TESTS = REPO / "tests"
 #: Helpers every test runs under: a change to one can move any test.
 EVERYWHERE = {"tests/conftest.py", "tests/tiers.py"}
 
-#: The crates with Rust tests; `online-py` has none (its test binaries
+#: The crates with Rust tests; `rheon-py` has none (its test binaries
 #: would link libpython), so a change there rebuilds the extension only.
-RUST_TESTED = {"online-core", "online-polars", "online-cli", "online-bench"}
+RUST_TESTED = {"rheon-core", "rheon-polars", "rheon-cli", "rheon-bench"}
 
 #: The crates the extension links, so a source change there rebuilds it.
-IN_THE_EXTENSION = {"online-core", "online-polars", "online-py"}
+IN_THE_EXTENSION = {"rheon-core", "rheon-polars", "rheon-py"}
 
 #: A Rust or Python module whose test files carry another word.
 ALIASES = {
@@ -86,16 +86,16 @@ ALIASES = {
     "frame": ["frame", "unnest"],
     "formula": ["formula_targets", "window"],
     "renamed": ["renames", "deprecation"],
-    "polars_online": ["api_surface", "kwargs_typing"],
+    "rheon": ["api_surface", "kwargs_typing"],
     "init": ["api_surface"],
     "bank": ["bank"],
     "cluster": ["kmeans", "micro"],
     "stats": ["eval"],
 }
 
-#: The `online-polars` test targets that hold every model's state: a bank
-#: fixture, frozen bytes, embeds each `online-core` model's state, so a
-#: change to a model's source can move them while every `online-core` test
+#: The `rheon-polars` test targets that hold every model's state: a bank
+#: fixture, frozen bytes, embeds each `rheon-core` model's state, so a
+#: change to a model's source can move them while every `rheon-core` test
 #: passes.
 STATE_TESTS = ("state_fixtures", "state_portability")
 
@@ -222,8 +222,8 @@ def _one(path: str) -> Plan:
         crate = parts[1]
         if crate in RUST_TESTED:
             out.crates.add(crate)
-        if crate == "online-core" and "src" in parts:
-            out.targets.update(("online-polars", t) for t in STATE_TESTS)
+        if crate == "rheon-core" and "src" in parts:
+            out.targets.update(("rheon-polars", t) for t in STATE_TESTS)
         in_source = "src" in parts or parts[-1] in {"Cargo.toml", "build.rs"}
         if in_source and crate in IN_THE_EXTENSION:
             out.rebuild = True
@@ -231,11 +231,11 @@ def _one(path: str) -> Plan:
             out.tests.update(named_after(module))
         if in_source and crate in IN_THE_EXTENSION:
             out.guards.update(guards_for(_module(parts) or crate))
-        if crate == "online-cli":
-            out.tests.update(t for t in _test_files() if "online_cli" in _text(t))
-    elif parts[:2] == ("python", "polars_online"):
+        if crate == "rheon-cli":
+            out.tests.update(t for t in _test_files() if "rheon_cli" in _text(t))
+    elif parts[:2] == ("python", "rheon"):
         stem = Path(path).stem
-        module = "polars_online" if stem in {"__init__", "_polars_online"} else stem
+        module = "rheon" if stem in {"__init__", "_rheon"} else stem
         out.tests.update(named_after(module))
         out.guards.update(guards_for(module))
     if path in {"Cargo.toml", "Cargo.lock"}:
@@ -334,7 +334,7 @@ def main() -> int:
         steps.append(["cargo", "test", "-p", crate, *targets, *tier])
     if p.rebuild and (p.tests or p.guards):
         steps.append(
-            ["uv", "run", "maturin", "develop", *PROFILE, "-m", "crates/online-py/Cargo.toml"]
+            ["uv", "run", "maturin", "develop", *PROFILE, "-m", "crates/rheon-py/Cargo.toml"]
         )
     if p.tests or p.guards:
         marks = (

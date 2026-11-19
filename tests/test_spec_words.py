@@ -26,8 +26,8 @@ import typing
 
 import pytest
 
-import polars_online as po
-from polars_online import _spec
+import rheon as po
+from rheon import _spec
 from test_api_surface import BOGUS, ENUM_PROBES, _registry_spec, _shaped, _spec_refusal, taken_words
 
 TIER = "essential"

@@ -33,7 +33,7 @@
 toolchain = "1.99.1"
 runner = "ubuntu-24.04"
 gungraun = "0.20.0"
-# The rows each instruction case counts (`ROWS` in crates/online-bench).
+# The rows each instruction case counts (`ROWS` in crates/rheon-bench).
 rows = 1000
 drift_signoff = 0.10
 
@@ -60,7 +60,7 @@ rss = 0.30
 
 # --- instruction counts --------------------------------------------------------
 # One block of `meta.rows` rows of each hot path, after 2,000 rows of warm-up,
-# under Callgrind on CI's Linux runner (crates/online-bench). The two wide bank
+# under Callgrind on CI's Linux runner (crates/rheon-bench). The two wide bank
 # cases count a block of 8,192 rows (`WIDE_ROWS`), several runs long.
 
 [instructions.ewridge_k5]
@@ -262,13 +262,13 @@ budget = 2221103
 
 # --- scaling ---------------------------------------------------------------------
 # How a cost grows, not what it is (docs/PERFORMANCE.md, "How cost grows";
-# crates/online-bench/src/scaling.rs). Each cell is counted at two sizes of one
+# crates/rheon-bench/src/scaling.rs). Each cell is counted at two sizes of one
 # dimension, `small` and `large` (the `scale_*` cases), and the ratio of the two
 # counts, within one run, is held to the growth the algorithm declares:
 # count(large) / count(small) <= g(large) / g(small) * (1 + tolerance). No
 # number from an earlier run is read, so a cost that grew the wrong way from
 # the first day fails on the first run. `growth` is "1", "log n", "n" or
-# "n^e". The cells mirror online-bench's own declarations
+# "n^e". The cells mirror rheon-bench's own declarations
 # (`tests/scaling.rs` holds the two to each other).
 [scaling]
 # A count is the code's alone, the same each run to well inside this, and a

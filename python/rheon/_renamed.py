@@ -1,0 +1,128 @@
+"""Names the helper modules renamed before 1.0, each refused by its old name.
+
+Task 144's rule (docs/PLAN.md): an old name is not an alias. It is refused,
+and the message names the new one, so a caller learns the new spelling from
+the error rather than from a changelog. A spec's keyword goes through
+``_spec._RENAMED``; a helper function's keyword goes through
+:func:`renamed_keywords` on that function, and a renamed function leaves a
+stub from :func:`renamed_function` under its old name (task 197). A keyword
+for something removed, such as ``po.target``'s ``relative_to`` (task 201),
+is refused by :func:`removed_keywords`, saying what replaces it.
+
+These are the refusals every module uses: the stream functions'
+``_spec._renamed_keywords`` (``chunk_size``, task 196) is
+:func:`renamed_keywords`. A rename is never forwarded: every old name is
+refused here, naming the new one.
+"""
+
+from __future__ import annotations
+
+import functools
+from collections.abc import Callable, Iterable, Mapping
+from typing import NoReturn
+
+from rheon._warnings import RENAMED_MARK
+
+#: The qualified names a decorated function reports, as the reader calls it.
+_READER_NAMES = {
+    "LazyFrameOnlineNamespace.fit_predict()": "lf.online.fit_predict",
+    "LazyFrameOnlineNamespace.predict()": "lf.online.predict",
+    "DataFrameOnlineNamespace.fit_predict()": "df.online.fit_predict",
+    "DataFrameOnlineNamespace.predict()": "df.online.predict",
+    "fit_predict()": "po.fit_predict",
+    "predict()": "po.predict",
+    "refresh_time()": "po.stream.refresh_time",
+    "with_windows()": "po.stream.with_windows",
+    "embargo()": "po.stream.embargo",
+    "ModelBank.fit_predict_batches()": "ModelBank.fit_predict_batches",
+    "ModelBank.fit()": "ModelBank.fit",
+}
+
+
+def renamed_keywords[**P, R](
+    who: str, table: Mapping[str, str]
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """A decorator refusing each keyword of ``table`` by name, naming the
+    keyword that replaced it, before ``fn`` sees the call. The signature
+    ``inspect`` and the reference show is ``fn``'s own (``functools.wraps``)."""
+
+    def decorate(fn: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            for old, new in table.items():
+                if old in kwargs:
+                    where = _READER_NAMES.get(who, who)
+                    raise TypeError(f"{where}: {old} was renamed {new}. Use {new} instead.")
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
+def removed_keywords[**P, R](
+    who: str, keywords: Iterable[str], why: str
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """A decorator refusing each of ``keywords``, which named something the
+    library no longer has, with ``why``: what replaces it. As
+    :func:`renamed_keywords`, the signature shown is ``fn``'s own, so the
+    removed keywords are in neither the reference nor the API snapshot."""
+    gone = tuple(keywords)
+
+    def decorate(fn: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(fn)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            if any(k in kwargs for k in gone):
+                raise TypeError(f"{who}: {why}")
+            return fn(*args, **kwargs)
+
+        return wrapper
+
+    return decorate
+
+
+def renamed_function(old: str, new: str, more: str = "") -> Callable[..., NoReturn]:
+    """A stub for a function renamed ``new``, raising ``TypeError`` naming it
+    (and ``more``, what else the rename changed) whatever it is called with.
+    It is kept out of its module's ``__all__``, so the reference and the API
+    snapshot show the new name only."""
+
+    def stub(*args: object, **kwargs: object) -> NoReturn:
+        who = old
+        raise TypeError(f"{who}: this function was renamed {new}{more}. Call {new} instead.")
+
+    stub.__name__ = stub.__qualname__ = old.rsplit(".", 1)[-1]
+    stub.__doc__ = f"Renamed {new}: calling it raises TypeError, naming the new name."
+    setattr(stub, RENAMED_MARK, new)
+    return stub
+
+
+def is_renamed(obj: object) -> bool:
+    """Whether ``obj`` is kept only under an old name: a refusal stub from
+    :func:`renamed_function` or :func:`renamed_method`. The API snapshot and the
+    reference leave such a name out, so both show the new name only."""
+    target = obj.fget if isinstance(obj, property) else obj
+    return getattr(target, RENAMED_MARK, None) is not None
+
+
+def renamed_method(
+    cls: str, old: str, new: str, *, read_as: str | None = None
+) -> Callable[..., NoReturn]:
+    """A method stub for a method renamed ``new``, raising ``AttributeError``
+    naming it, as a missing attribute does. Marked, as
+    :func:`renamed_function`'s stubs are, so the reference and the API
+    snapshot show the new name only."""
+
+    def stub(self: object, *args: object, **kwargs: object) -> NoReturn:
+        who = f"{cls}.{old}"
+        if read_as is not None:
+            raise AttributeError(
+                f"{who}: it was renamed {new}, a property. Read {read_as}, without the call."
+            )
+        raise AttributeError(f"{who}: this method was renamed {new}. Use {new} instead.")
+
+    stub.__name__ = old
+    stub.__qualname__ = f"{cls}.{old}"
+    stub.__doc__ = f"Renamed :meth:`{new}`: calling it raises AttributeError, naming the new name."
+    setattr(stub, RENAMED_MARK, new)
+    return stub

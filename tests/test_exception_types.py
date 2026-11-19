@@ -14,7 +14,7 @@ Three parts, each of which fails with the place to add what is missing:
 2. **The inventory** (``PY_CLASSES``, ``IO_KINDS``, ``CLI_EXITS``): each
    class, kind and exit code, with the cases that raise it, the tests
    elsewhere that raise it too, or the reason no public call can.
-3. **The completeness checks**: every ``raise`` in ``python/polars_online``
+3. **The completeness checks**: every ``raise`` in ``python/rheon``
    (read with ``ast``), every class the package builds that is raised
    elsewhere, every exception class and every ``io::ErrorKind`` in the Rust
    source (read by pattern, see ``_rust_exceptions``) and every exit code of
@@ -25,7 +25,7 @@ Three parts, each of which fails with the place to add what is missing:
 An encode-time failure (a state that cannot be written, as against a file
 that cannot) is a ``ValueError`` here; the Rust side's counterpart, which
 holds that the filesystem's kind survives an error raised while a save
-encodes, is the task 388 branch's test in ``online-polars``.
+encodes, is the task 388 branch's test in ``rheon-polars``.
 """
 
 from __future__ import annotations
@@ -49,9 +49,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online import _polars_online as native
-from polars_online._formula import FormulaError
+import rheon as po
+from rheon import _rheon as native
+from rheon._formula import FormulaError
 
 TIER = "essential"
 
@@ -769,7 +769,7 @@ def test_the_library_s_own_classes_keep_their_parents_in_the_rule_s_order() -> N
         po.ColumnNotFoundError,
         po.OutputColumnNotFoundError,
     ):
-        assert cls.__module__ == "polars_online._errors"
+        assert cls.__module__ == "rheon._errors"
         assert cls.__mro__[1] is cls.__bases__[0]
         assert getattr(po, cls.__name__) is cls
         assert cls.__name__ in po._errors.__all__
@@ -784,9 +784,9 @@ CLI_EXITS = {
 }
 
 
-def _run_cli(online_cli: Path, *args: object) -> subprocess.CompletedProcess[str]:
+def _run_cli(rheon_cli: Path, *args: object) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [str(online_cli), *map(str, args)],
+        [str(rheon_cli), *map(str, args)],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -816,8 +816,8 @@ def _job(tmp: Path, **override: str) -> Path:
     return path
 
 
-def test_the_command_line_exits_0_for_a_run(online_cli: Path, tmp_path: Path) -> None:
-    done = _run_cli(online_cli, "--config", _job(tmp_path), "-q")
+def test_the_command_line_exits_0_for_a_run(rheon_cli: Path, tmp_path: Path) -> None:
+    done = _run_cli(rheon_cli, "--config", _job(tmp_path), "-q")
     assert done.returncode == 0, done.stderr
     assert (tmp_path / "out.parquet").exists()
 
@@ -856,13 +856,13 @@ def test_the_command_line_exits_0_for_a_run(online_cli: Path, tmp_path: Path) ->
     ],
 )
 def test_the_command_line_exits_1_with_its_prefix_for_an_io_or_config_error(
-    online_cli: Path,
+    rheon_cli: Path,
     tmp_path: Path,
     label: str,
     arrange: Callable[[Path], list[Any]],
     fragment: str,
 ) -> None:
-    done = _run_cli(online_cli, *arrange(tmp_path))
+    done = _run_cli(rheon_cli, *arrange(tmp_path))
     assert done.returncode == 1, f"{label}: {done.stderr}"
     assert done.stderr.startswith("polars-online: "), f"{label}: {done.stderr}"
     assert fragment in done.stderr, f"{label}: {done.stderr}"
@@ -874,12 +874,12 @@ def test_the_command_line_exits_1_with_its_prefix_for_an_io_or_config_error(
     "unreadable file to make without another account; Windows' folder case is above",
 )
 def test_the_command_line_names_permission_denied_for_a_config_it_cannot_read(
-    online_cli: Path, tmp_path: Path
+    rheon_cli: Path, tmp_path: Path
 ) -> None:
     config = _job(tmp_path)
     config.chmod(0o000)
     try:
-        done = _run_cli(online_cli, "--config", config)
+        done = _run_cli(rheon_cli, "--config", config)
     finally:
         config.chmod(0o600)
     assert done.returncode == 1, done.stderr
@@ -893,10 +893,10 @@ def test_the_command_line_names_permission_denied_for_a_config_it_cannot_read(
     ids=["no-config", "unknown-flag", "format-clap-cannot-parse", "renamed-flag"],
 )
 def test_the_command_line_exits_2_in_clap_s_voice_for_a_command_line_it_refuses(
-    online_cli: Path, tmp_path: Path, args: list[str]
+    rheon_cli: Path, tmp_path: Path, args: list[str]
 ) -> None:
     head = [] if not args else ["--config", str(_job(tmp_path))]
-    done = _run_cli(online_cli, *head, *args)
+    done = _run_cli(rheon_cli, *head, *args)
     assert done.returncode == 2, done.stderr
     assert done.stderr.startswith("error: "), done.stderr
 
@@ -916,8 +916,8 @@ class Raised:
     surfaces: str = "python"  # python, rust, or both
 
 
-#: Every class a ``raise`` in ``python/polars_online`` or a ``PyErr`` in
-#: ``crates/online-py`` names, by the name the source writes.
+#: Every class a ``raise`` in ``python/rheon`` or a ``PyErr`` in
+#: ``crates/rheon-py`` names, by the name the source writes.
 PY_CLASSES: dict[str, Raised] = {
     "ValueError": Raised(
         cases=(
@@ -1089,7 +1089,7 @@ IO_KINDS: dict[str, Kind] = {
 
 
 def _python_sources() -> list[Path]:
-    return sorted((REPO / "python" / "polars_online").glob("*.py"))
+    return sorted((REPO / "python" / "rheon").glob("*.py"))
 
 
 def _enclosing(tree: ast.AST) -> dict[ast.AST, ast.AST]:
@@ -1166,7 +1166,7 @@ _RUST_PY = re.compile(r"\bPy([A-Z][A-Za-z]*(?:Error|Exception|Interrupt|Iteratio
 
 
 def _rust_exceptions() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
-    """The Python classes ``crates/online-py`` raises, and the
+    """The Python classes ``crates/rheon-py`` raises, and the
     ``io::ErrorKind``s the Rust source maps, each with where.
 
     By pattern, since a Rust mapping is no tree to walk: pyo3 names its
@@ -1174,14 +1174,14 @@ def _rust_exceptions() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
     ``pyo3::exceptions::{...}``), which the first pattern reads; a class
     defined in Python and fetched by name by ``errors_class("<Class>")`` is the
     second; ``create_exception!`` the third. The kinds are every
-    ``ErrorKind::<Kind>`` in the code of ``online-py`` and ``online-polars``
+    ``ErrorKind::<Kind>`` in the code of ``rheon-py`` and ``rheon-polars``
     before its test modules, and ``Error::other``, which is the kind ``Other``.
     A mapping through ``PyErr::from(io::Error)`` or ``os_err`` is the kinds', and
     ``PyPolarsErr`` would be a new surface, so its mention fails here.
     """
     classes: dict[str, set[str]] = {}
     kinds: dict[str, set[str]] = {}
-    for crate, is_py in (("online-py", True), ("online-polars", False)):
+    for crate, is_py in (("rheon-py", True), ("rheon-polars", False)):
         for path in sorted((REPO / "crates" / crate / "src").rglob("*.rs")):
             if path.name == "tests.rs":
                 continue
@@ -1227,7 +1227,7 @@ def test_every_rust_exception_class_and_io_kind_is_in_the_inventory() -> None:
     known = set(PY_CLASSES)
     unlisted = {c: sorted(w) for c, w in classes.items() if c not in known}
     assert not unlisted, (
-        f"crates/online-py raises {unlisted}, which PY_CLASSES in "
+        f"crates/rheon-py raises {unlisted}, which PY_CLASSES in "
         "tests/test_exception_types.py does not list. Add the class there, with a Case "
         "that raises it through a public call and asserts its exact class."
     )
@@ -1239,7 +1239,7 @@ def test_every_rust_exception_class_and_io_kind_is_in_the_inventory() -> None:
     )
     assert "ValueError" in classes and "RuntimeError" in classes, (
         "the Rust scan reads no `PyValueError` or `PyRuntimeError`: its pattern no longer "
-        "matches what online-py writes"
+        "matches what rheon-py writes"
     )
     assert {"NotFound", "IsADirectory", "InvalidData"} <= set(kinds), (
         "the Rust scan reads no ErrorKind it knows is named: its pattern no longer matches"
@@ -1248,7 +1248,7 @@ def test_every_rust_exception_class_and_io_kind_is_in_the_inventory() -> None:
 
 def test_the_command_line_s_exit_codes_are_in_the_inventory() -> None:
     code = _strip_rust(
-        (REPO / "crates" / "online-cli" / "src" / "main.rs").read_text(encoding="utf-8")
+        (REPO / "crates" / "rheon-cli" / "src" / "main.rs").read_text(encoding="utf-8")
     )
     seen = set(re.findall(r"ExitCode::(\w+)", code))
     if re.search(r"\.exit\(\)", code):

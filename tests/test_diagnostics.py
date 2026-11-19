@@ -13,7 +13,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -871,7 +871,7 @@ class TestResidualDistribution:
 class TestStreamingMetrics:
     """E22: `emit_metrics` — IC, R² and hit rate kept beside the model.
 
-    `polars_online.eval` computes the same things in Polars over collected
+    `rheon.eval` computes the same things in Polars over collected
     output, which needs the whole frame. This is the O(state) version, for a
     long-running stream or the CLI.
     """

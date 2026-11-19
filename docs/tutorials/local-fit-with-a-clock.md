@@ -34,7 +34,7 @@ from datetime import datetime, time
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # Two trading days, 9:30 to 16:00, a row a second.
 rng = np.random.default_rng(1)

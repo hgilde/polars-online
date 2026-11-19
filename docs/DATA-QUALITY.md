@@ -98,7 +98,7 @@ the sweep. The clean shapes:
 | six columns that hold still on a coarse grid, over 10,000 rows: the hour of the day on minute data, a regime that stays with probability 0.99, a price in ticks, a spread in whole ticks, an AR(0.9) rounded to integers, and a temperature in whole degrees | an audit |
 
 The docstring of
-[`ModelBank.check`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.check)
+[`ModelBank.check`](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank.check)
 lists every check with its threshold.
 
 **Read a number past a million in a recipe's output as a model that has
@@ -146,7 +146,7 @@ forward, and with `x1` dropped.
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # y = 1.0 x0 + 0.5 x1 + noise, with x0 and x1 correlated at 0.6. Two copies of x1 with gaps on
 # half the rows or more: one whose gaps fall at random, one whose gaps come when y is high.
@@ -259,7 +259,7 @@ explains why one value on 5% of the rows erases a slope.
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # A feed that writes -999 where x1 was not measured, on 5% of the rows.
 rng = np.random.default_rng(11)
@@ -397,7 +397,7 @@ of 20 rows, that is 150 half-lives held.
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # x1's feed stops at row 300 and comes back at row 3,300; the join that built the table carried
 # its last value forward, and kept the time it was observed in x1_seen.
@@ -565,7 +565,7 @@ three models: `rls` with no decay, `sgd` with `standardize=False`, and
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # A price near 5,000 that moves by about 1 a row, and a return written as a fraction (spread 0.001).
 rng = np.random.default_rng(5)
@@ -701,7 +701,7 @@ The recipe records one quantity twice, in dollars as `x0` and in cents as
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # x0 in dollars and x2 the same quantity in cents, recorded with a little noise of its own.
 rng = np.random.default_rng(9)
@@ -789,7 +789,7 @@ exact up to the audit's `distinct_cap`, 256 by default.
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # A venue code 0-4 stored as a number; each venue adds its own amount to y, in no order.
 rng = np.random.default_rng(12)
@@ -880,7 +880,7 @@ explains why the false relation looks more certain the longer the stream.
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # Two random walks that have nothing to do with each other.
 rng = np.random.default_rng(2)
@@ -969,7 +969,7 @@ that flag fewer rows on heavy tails.
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # y = 0.5 x + noise from Student's t with 2 degrees of freedom: a stable relation, rare huge rows.
 rng = np.random.default_rng(4)
@@ -1070,7 +1070,7 @@ embargo is the caller's to set
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # Returns with no structure: nothing in the past predicts the next ten rows.
 rng = np.random.default_rng(8)
@@ -1195,7 +1195,7 @@ feed sent 1% of them twice, and delivered 0.5% a few rows late.
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # Trades at random times, in whole milliseconds, so some share a stamp. The feed sent 1% of them
 # twice, and delivered 0.5% of them a few rows after their place.
@@ -1314,7 +1314,7 @@ gates](MODELS.md#warm-up-gates) section of MODELS.md lists the gates.
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # Forty stocks with the same relation y = 0.5 x0 + 0.3 x1 + noise: four trade often, the rest twice.
 rng = np.random.default_rng(10)

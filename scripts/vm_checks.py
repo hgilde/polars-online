@@ -7,7 +7,7 @@ does as well. The workflow is dispatched for one branch and one base:
     python scripts/vm_checks.py plan --repo branch --base BASE --variants default,aligned
     python scripts/vm_checks.py wheels --repo branch --variants default,aligned --out dist
     python scripts/vm_checks.py digests --out digests
-    python scripts/vm_checks.py tests --repo branch --package online-core --filter solve:: \
+    python scripts/vm_checks.py tests --repo branch --package rheon-core --filter solve:: \
         --qemu-cpu Nehalem
 
 This script, `compare_outputs.py` and the build-prep action come from the
@@ -190,7 +190,7 @@ def build_command(repo: Path, out: Path, interpreter: str) -> list[str]:
         "uvx", "--from", maturin_requirement(repo), "maturin", "build",
         "--release", "--locked", "--compatibility", "linux",
         "--interpreter", interpreter,
-        "--out", str(out), "-m", "crates/online-py/Cargo.toml",
+        "--out", str(out), "-m", "crates/rheon-py/Cargo.toml",
     ]  # fmt: skip
 
 
@@ -526,7 +526,7 @@ def main(argv: list[str] | None = None) -> int:
     d.set_defaults(fn=_cmd_digests)
     t = sub.add_parser("tests", help="a package's tests by filter, natively and under qemu")
     t.add_argument("--repo", type=Path, default=REPO, help="the branch's checkout")
-    t.add_argument("--package", default="online-core")
+    t.add_argument("--package", default="rheon-core")
     t.add_argument("--filter", required=True, help="cargo test's filter (words: several filters)")
     t.add_argument("--qemu-cpu", default="", help="also run under qemu-x86_64 -cpu this CPU")
     t.set_defaults(fn=_cmd_tests)

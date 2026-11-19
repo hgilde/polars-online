@@ -28,8 +28,8 @@ import pytest
 import xgboost as xgb
 
 import child
-from polars_online import _polars_online as native
-from polars_online import gbdt
+from rheon import _rheon as native
+from rheon import gbdt
 
 TIER = "mixed"
 
@@ -1182,7 +1182,7 @@ _PEAK = """
 import threading, time
 import psutil
 import polars as pl
-import polars_online as po
+import rheon as po
 import {lib}
 src = {source}
 proc = psutil.Process()

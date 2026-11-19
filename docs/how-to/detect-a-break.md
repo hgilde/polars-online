@@ -56,7 +56,7 @@ stable rows before it:
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # Three streams that break at row 3,000 of 6,000, each in one way.
 rng = np.random.default_rng(3)
@@ -161,7 +161,7 @@ This code runs the CUSUM once over a stream whose intercept rises at row
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # y = 0.2 + 1.0 x0 + 0.5 x1 + noise until row 2,000 of 4,000, where the intercept rises to 0.7.
 rng = np.random.default_rng(2)
@@ -279,7 +279,7 @@ rows into the first cycle's monitored rows, and prints the rows each
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # Two columns, uncorrelated until row 560, then correlated at 0.7.
 rng = np.random.default_rng(10)
@@ -337,7 +337,7 @@ evidence.** Under a number `hazard`, `p_change` is `P(r ≤ 1)` given the
 row, and under a duration the chance that the row began a run. A break
 that takes several rows to show barely lifts it: 0.02 at most in the 50 rows after the spread quadruples in the example in
 [`bocpd` in MODELS.md](../MODELS.md#bocpd--how-long-has-this-regime-lasted).
-[`po.spec.bocpd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.bocpd)'s
+[`po.spec.bocpd`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.bocpd)'s
 Notes, under *Reading p_change and run_mode*, measure three kinds of
 break.
 
@@ -360,7 +360,7 @@ stream's:
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # Two stocks whose rows take turns; each one's spread quadruples at a row of its own.
 rng = np.random.default_rng(11)

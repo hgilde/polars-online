@@ -8,7 +8,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 

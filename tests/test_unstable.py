@@ -5,7 +5,7 @@ Polars raises its own under ``POLARS_WARN_UNSTABLE``.
 
 The surfaces: the ``with_windows`` state file's format, the formula tree's
 written form (a formula target in a TOML file -- the command line's, in
-``crates/online-cli/tests/run.rs`` -- and in a saved state),
+``crates/rheon-cli/tests/run.rs`` -- and in a saved state),
 ``fit_predict_arrow``, ``predict_arrow`` and ``ArrowStruct``, and the modules
 ``po.sim``, ``po.corr`` and ``po.gbdt``. Each emits under the variable and is
 silent without it.
@@ -21,12 +21,12 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online._warnings import UNSTABLE_VAR
+import rheon as po
+from rheon._warnings import UNSTABLE_VAR
 
 TIER = "essential"
 
-pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+pytestmark = pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
 
 
 def frame(n: int = 60) -> pl.DataFrame:
@@ -182,7 +182,7 @@ def test_a_corr_call_that_runs_others_warns_once(monkeypatch):
         po.corr.shrink(corr, alpha=0.3)
     got = [w for w in caught if issubclass(w.category, po.UnstableWarning)]
     assert len(got) == 1, [str(w.message) for w in got]
-    assert "polars_online.corr.shrink" in str(got[0].message)
+    assert "rheon.corr.shrink" in str(got[0].message)
 
 
 def test_every_corr_function_is_labelled():

@@ -151,7 +151,7 @@ pytest_or_none() {
 
 step "cargo fmt"   cargo fmt --all -- --check
 step "cargo clippy" cargo clippy --workspace --all-targets --locked -- -D warnings
-# online-py is left out: it has no Rust tests, and with it in the build every
+# rheon-py is left out: it has no Rust tests, and with it in the build every
 # test binary links libpython (.github/workflows/ci.yml says why that fails).
 # `--locked` on every cargo step, as CI's: without it cargo re-resolves a
 # Cargo.lock that no longer matches the manifests, silently, and the
@@ -160,11 +160,11 @@ step "cargo clippy" cargo clippy --workspace --all-targets --locked -- -D warnin
 # expansions keep an empty tier's arguments empty under macOS's bash 3.2,
 # where `set -u` calls an empty array unbound.
 if [ -n "$nextest" ]; then
-    step "cargo nextest"  cargo nextest run --workspace --exclude online-py --locked --no-fail-fast \
+    step "cargo nextest"  cargo nextest run --workspace --exclude rheon-py --locked --no-fail-fast \
         --test-threads "$workers" ${nextest_tier[@]+"${nextest_tier[@]}"}
-    step "cargo doctests" cargo test --workspace --exclude online-py --doc --locked
+    step "cargo doctests" cargo test --workspace --exclude rheon-py --doc --locked
 else
-    step "cargo test"   cargo test --workspace --exclude online-py --locked ${cargo_tier[@]+"${cargo_tier[@]}"}
+    step "cargo test"   cargo test --workspace --exclude rheon-py --locked ${cargo_tier[@]+"${cargo_tier[@]}"}
 fi
 # Before the first `uv run`, which re-locks by default and would rewrite a
 # stale uv.lock before the check could see it.
@@ -177,7 +177,7 @@ step "mypy"         uv run mypy
 # Python suite can silently test a stale binary -- which once made a working
 # feature look like a no-op, because both branches of the comparison ran the
 # same old code.
-step "maturin develop" uv run maturin develop --release -m crates/online-py/Cargo.toml
+step "maturin develop" uv run maturin develop --release -m crates/rheon-py/Cargo.toml
 if [ -n "$serial" ]; then
     step "pytest"       uv run pytest -q ${pytest_tier[@]+"${pytest_tier[@]}"}
 else

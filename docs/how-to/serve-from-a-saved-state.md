@@ -114,7 +114,7 @@ Here `run.state` holds what `job.toml`'s spec learned from
 `ticks.parquet`, and the run serves `today.parquet`:
 
 ```sh
-polars-online --config job.toml --load-state run.state --predict --input today.parquet --output today-served.parquet
+rheon --config job.toml --load-state run.state --predict --input today.parquet --output today-served.parquet
 ```
 
 ```text

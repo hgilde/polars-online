@@ -21,11 +21,11 @@ holding:**
 
 | guarantee | held by |
 |---|---|
-| out-of-sample predictions | changing a row's own target never changes that row's prediction, for every regression model (`tests/test_properties.py`); each model's prediction while learning equals the one it makes from the row's features alone, without its target (`crates/online-core/tests/model_contract.rs`) |
+| out-of-sample predictions | changing a row's own target never changes that row's prediction, for every regression model (`tests/test_properties.py`); each model's prediction while learning equals the one it makes from the row's features alone, without its target (`crates/rheon-core/tests/model_contract.rs`) |
 | bounded memory | a 10-million-row run whose memory and state stay bounded (`tests/test_soak.py`, opt-in with `pytest -m soak`, weekly) |
 | any chunking | a stream fed in chunks of 1 to 13 rows gives one chunk's output, on generated streams for every regression model (`tests/test_properties.py`) and on a fixed stream for every model, which is also saved and loaded halfway (`tests/test_semantics_all_models.py`) |
 | any thread count | a bank run on 1 thread against 8 threads, its output compared bit for bit (`tests/test_portability.py`) |
-| zero weights and one `weight_sum` | every model held to the same `weight_sum` recursion (`crates/online-core/tests/model_contract.rs`) |
+| zero weights and one `weight_sum` | every model held to the same `weight_sum` recursion (`crates/rheon-core/tests/model_contract.rs`) |
 | each model's numbers | a reference written from its update equations, and another library wherever one computes the same quantity, such as statsmodels, scipy and [river](https://riverml.xyz) |
 
 ## Invariants every model keeps

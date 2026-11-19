@@ -6,7 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import common as C
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 df = C.load_flights()
 print(C.load_line())

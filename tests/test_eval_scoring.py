@@ -36,7 +36,7 @@ import pytest
 from scipy.stats import pearsonr
 from sklearn.metrics import r2_score
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 

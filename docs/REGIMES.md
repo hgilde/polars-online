@@ -607,7 +607,7 @@ their table in every cell.** The largest gap at each `boundary_gamma` is at
 
 **The critical values differ a little too.** The paper simulates them on a
 grid, which reads the supremum low. This library solves the law behind them
-(`crates/online-core/src/boundary.rs`), so its values are higher in 11 of
+(`crates/rheon-core/src/boundary.rs`), so its values are higher in 11 of
 the 12 cells of their Table 1, and within 0.03 of it in all.
 
 **Neither is the nominal 5 %, and the paper says so.** At 0 and 0.25 the

@@ -15,7 +15,7 @@ These steps need the library:
 - A target that holds counts: 0 or more on every row where it is not
   [null](../GLOSSARY.md#the-model-bank-and-what-it-reads).
 - The parameters of
-  [`po.spec.sgd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.sgd),
+  [`po.spec.sgd`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.sgd),
   which its docstring defines. Its entry in
   [MODELS.md](../MODELS.md#sgd--stochastic-gradient-descent) gives the
   Poisson loss's link and gradient.
@@ -53,7 +53,7 @@ coefficients. This code builds its own data:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # Counts with log-rate 1 + 0.4·busy, and one row's count of 2,000.
 rng = np.random.default_rng(21)

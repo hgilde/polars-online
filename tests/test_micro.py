@@ -38,8 +38,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
 import reference_cluster as ref
+import rheon as po
 from test_kmeans import TestDefinitions as KMeansDefinitions
 from test_kmeans import ari, blobs, frame, stranded
 
@@ -285,7 +285,7 @@ class TestOracle:
 class TestDefinitions:
     """Independent of `reference_cluster.py`, which transcribes the Rust
     (review 2026-10-05, TB1): written from the module docs of
-    `crates/online-core/src/cluster/micro.rs` and `summary.rs`, read
+    `crates/rheon-core/src/cluster/micro.rs` and `summary.rs`, read
     against the bank's exported state, to 1e-9. Without standardization a
     distance is the Euclidean one, and at unit weights the mean weight
     ``w̄`` is 1, so a row is admitted at the weight it is absorbed with and
@@ -1124,7 +1124,7 @@ class TestRefusals:
         with pytest.raises(TypeError, match="a kmeans or micro model cluster assignments"):
             po.eval.unpack(out, "m")
 
-    def test_the_cli_runs_it(self, tmp_path, online_cli):
+    def test_the_cli_runs_it(self, tmp_path, rheon_cli):
         import subprocess
 
         X, _ = blobs(n=300, seed=39)
@@ -1151,7 +1151,7 @@ class TestRefusals:
             ),
             encoding="utf-8",
         )
-        subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
+        subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         got = unnested(pl.read_parquet(dst))
         want = unnested(po.ModelBank([spec(prune_every=50)]).fit_predict(frame(X)))
         assert got.equals(want, null_equal=True)

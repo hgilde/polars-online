@@ -43,7 +43,7 @@ DISTRIBUTIONS = ("polars-online", "polars-online-compat")
 def check_build(distribution: str, features: str) -> None:
     """Raise unless the installed distribution is ``distribution`` alone, the
     features the build recorded are ``features``, and this CPU has them."""
-    from polars_online import _cpu_check
+    from rheon import _cpu_check
 
     if distribution not in DISTRIBUTIONS:
         raise SystemExit(f"unknown distribution {distribution!r}: one of {DISTRIBUTIONS}")
@@ -80,11 +80,11 @@ def check(
     and a distribution is named (a checkout has no distribution of its own)."""
     import polars as pl
 
-    import polars_online as po
+    import rheon as po
 
     where = Path(po.__file__).resolve()
     if installed and where.is_relative_to(REPO / "python"):
-        raise SystemExit(f"polars_online came from the checkout ({where}), not the wheel")
+        raise SystemExit(f"rheon came from the checkout ({where}), not the wheel")
     if version is not None and po.__version__ != version:
         raise SystemExit(f"the wheel is polars-online {po.__version__}, not {version}")
 

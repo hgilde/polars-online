@@ -12,7 +12,7 @@ it out writes nothing new into a state, and a count of zero, or a word other
 than ``"auto"``, is refused.
 
 Two widths, each past the point where its path leaves the calling thread
-(`crates/online-core/src/ewcov/par.rs`): 300 columns for a block's merge,
+(`crates/rheon-core/src/ewcov/par.rs`): 300 columns for a block's merge,
 which is then more than one piece, and 730 for the per-row update, which
 splits from 725. The Rust tests there hold the pieces themselves, and that
 the work does reach other threads.
@@ -26,7 +26,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -194,7 +194,7 @@ def test_a_save_resumes_under_another_count_to_the_bit(tmp_path, kind):
     lazy frame's ``load_state``, to the bit of the unbroken run, and runs
     the caller's count (review 6, D-1: the load compared it, as review
     2026-09-26 F3 found for marginal's ``shards``, and refused the specs).
-    The command line's door is ``crates/online-cli/tests/run.rs``."""
+    The command line's door is ``crates/rheon-cli/tests/run.rs``."""
     make = (lambda t: ridge(t, 64)) if kind == "ewridge" else (lambda t: cov(t, k=K))
     df = stream(K, 600)
     head, tail = df.slice(0, 301), df.slice(301)
@@ -284,7 +284,7 @@ def test_auto_shares_the_pool_and_moves_no_bit(kind, groups):
     that gives, the output and every Gram are the bits of one thread, on
     pools of two and eight threads and the default, over 1, 7 and 600
     chunks. Which share is taken is held in Rust, from the rule
-    (``crates/online-polars/src/bank/threads_tests.rs``)."""
+    (``crates/rheon-polars/src/bank/threads_tests.rs``)."""
     make, k, n = GROUPED[kind]
     df = stream(k, n).with_columns(g=pl.int_range(pl.len()) % groups)
     one, bank_one = run(make(1), df)

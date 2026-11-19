@@ -13,7 +13,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -96,7 +96,7 @@ def _rewm_without_window() -> None:
 def _look_ahead_without_window() -> None:
     """The operator's own check, behind the public ones: no public call
     reaches it without a window today, so it is called directly."""
-    from polars_online._formula import operator
+    from rheon._formula import operator
 
     operator("rewm_mean", "x0", half_life=10.0)
 

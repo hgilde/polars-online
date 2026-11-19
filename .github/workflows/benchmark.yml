@@ -63,7 +63,7 @@ jobs:
           enable-cache: true
 
       - run: uv sync --locked
-      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+      - run: uv run maturin develop --release -m crates/rheon-py/Cargo.toml
 
       # Both tables go to the job summary and to `benchmark.md`, which the
       # artifact keeps: the summary is only readable in the browser, and a
@@ -91,8 +91,8 @@ jobs:
             # x86 kernel moves (PLAN tasks 258, 260 and 264); a dispatch with
             # `ref` set to an older commit gives the same table before a change.
             echo '```'
-            POOL=4 cargo run --release --locked -p online-core --example gram_threads_bench -- 1000
-            cargo run --release --locked -p online-core --example solve_threads_bench -- 1000
+            POOL=4 cargo run --release --locked -p rheon-core --example gram_threads_bench -- 1000
+            cargo run --release --locked -p rheon-core --example solve_threads_bench -- 1000
             echo '```'
             echo
             echo "## Ridge fits' solve and statistics (k=500 to 5,000, 1, 10 and 50 targets)"
@@ -105,8 +105,8 @@ jobs:
             # minutes on an M4 Pro and is left to a local run. A commit
             # before the example (a `ref` dispatch) has nothing to run.
             echo '```'
-            if [ -f crates/online-core/examples/ridge_solve_bench.rs ]; then
-              cargo run --release --locked -p online-core --example ridge_solve_bench -- 500 1500 3000 5000
+            if [ -f crates/rheon-core/examples/ridge_solve_bench.rs ]; then
+              cargo run --release --locked -p rheon-core --example ridge_solve_bench -- 500 1500 3000 5000
             else
               echo "(no ridge_solve_bench in this commit)"
             fi

@@ -36,7 +36,7 @@ import pytest
 from scipy.stats import multivariate_normal
 from sklearn.linear_model import Ridge
 
-import polars_online as po
+import rheon as po
 from reference_paths import WindowRing, window_starts
 
 TIER = "mixed"
@@ -48,7 +48,7 @@ GRID = pytest.mark.extended(reason="the closed x shape x cadence matrix")
 #: The ridge here is large enough to be seen in the fit, as the oracle maps
 #: it, so a short window early on reads mostly ridge, which the readiness
 #: notice says; that is beside the point of these tests.
-pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+pytestmark = pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
 
 FEATURES = ["x0", "x1"]
 #: Seconds: the window, the half-life, the cap on a step, the clock spacing.

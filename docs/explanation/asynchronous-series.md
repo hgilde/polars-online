@@ -66,7 +66,7 @@ So it reads the correlation at a scale of `L` rows from every one-row
 return. `L` makes the same trade-off as the sampling interval: too small,
 and a shared move recorded more than `L − 1` rows apart is left out; too
 large, and the sum takes in the noise of many lags. Its formula is in the
-[docstring](https://hgilde.github.io/polars-online/corr.html#polars_online.corr.epps_invert).
+[docstring](https://hgilde.github.io/polars-online/corr.html#rheon.corr.epps_invert).
 
 ## The effect and both ways out on one stream
 
@@ -77,7 +77,7 @@ refresh grid, and by the lag inversion at `L = 64`:
 
 ```python
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # Two series whose returns correlate at 0.8, each observed on about a quarter of the rows.
 sim = po.sim.regimes(2, states=[0.8], transition=[[1.0]], n_blocks=1, rows_per_block=40_000,

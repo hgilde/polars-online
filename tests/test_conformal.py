@@ -53,7 +53,7 @@ import polars as pl
 import pytest
 
 import ledger
-import polars_online as po
+import rheon as po
 
 TIER = "mixed"
 
@@ -91,7 +91,7 @@ _D = (
 
 
 def ln_basic(x: float) -> float:
-    """`ln x` as `online_core::ln_basic` computes it, in basic arithmetic:
+    """`ln x` as `rheon_core::ln_basic` computes it, in basic arithmetic:
     `x = 2^k f`, `f` in `[√½, √2)` read from the bits, `ln f = 2 atanh(s)`
     by its odd series, `k ln 2` added in two parts. Held to `math.log`
     separately (`test_ln_basic_is_the_logarithm`)."""
@@ -122,7 +122,7 @@ def ln_basic(x: float) -> float:
 
 def norm_ppf(p: float) -> float:
     """Acklam's inverse normal, the operations in the order
-    `online_core::norm_ppf` performs them, its tails' logarithm `ln_basic`,
+    `rheon_core::norm_ppf` performs them, its tails' logarithm `ln_basic`,
     so the start is bit-exact."""
     a, b, c, d = _A, _B, _C, _D
 
@@ -635,7 +635,7 @@ class TestFields:
         assert set(long["slot"]) == {"pred_y0"}
 
     def test_the_kwargs_class_mirrors_the_builder(self):
-        from polars_online._kwargs import CommonKwargs
+        from rheon._kwargs import CommonKwargs
 
         assert {"conformal", "conformal_rate"} <= set(CommonKwargs.__annotations__)
 

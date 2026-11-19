@@ -4,7 +4,7 @@ MODELS.md's *Warm-up gates*, under *What every spec takes*, states each
 readiness gate's default, and in a table the default `min_weight` of
 every model as a rule. The bank chooses
 them in Rust (`Spec::default_min_periods`, the `*_or_default` methods), and
-every builder passes `None` for them, so until `_polars_online.resolved_defaults`
+every builder passes `None` for them, so until `_rheon.resolved_defaults`
 no Python surface showed them and a change to any row would have shipped
 silently (review 2026-10-06, TB1). This reads both tables from the README
 and checks them against what the bank resolves, for every kind, so the
@@ -16,9 +16,9 @@ import json
 import re
 from pathlib import Path
 
-import polars_online as po
-from polars_online import _polars_online as native
-from polars_online import _spec
+import rheon as po
+from rheon import _rheon as native
+from rheon import _spec
 from test_model_registry import MINIMAL
 
 TIER = "essential"
@@ -166,7 +166,7 @@ def test_the_defaults_task_195_decided_are_what_the_bank_resolves():
 def _spec_module_doc() -> str:
     import inspect
 
-    from polars_online import spec as spec_module
+    from rheon import spec as spec_module
 
     # `cleandoc` first: CPython 3.13+ dedents a docstring at compile time.
     return inspect.cleandoc(spec_module.__doc__ or "")
@@ -196,7 +196,7 @@ def _list_table_after(doc: str, marker: str) -> list[list[str]]:
 
 
 def test_the_spec_module_min_weight_table_is_what_the_bank_resolves():
-    """Task 239: the `min_weight` default table in :mod:`polars_online.spec`'s
+    """Task 239: the `min_weight` default table in :mod:`rheon.spec`'s
     own docstring, held to the bank as the README's is above. It left out
     `audit`, which resolves 0 and refuses a `min_weight`."""
     rows = _list_table_after(_spec_module_doc(), "The default depends on")

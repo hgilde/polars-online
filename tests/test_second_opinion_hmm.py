@@ -73,7 +73,7 @@ from scipy.special import logsumexp
 from scipy.stats import multivariate_normal
 
 import ledger
-import polars_online as po
+import rheon as po
 
 TIER = "mixed"
 

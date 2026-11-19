@@ -35,7 +35,7 @@ def test_the_page_has_its_recipes():
     assert len(RECIPES) >= 1, len(RECIPES)
 
 
-@pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+@pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
 @pytest.mark.parametrize(
     ("line", "code", "shown"), [pytest.param(*r, id=f"CALIBRATION.md:L{r[0]}") for r in RECIPES]
 )

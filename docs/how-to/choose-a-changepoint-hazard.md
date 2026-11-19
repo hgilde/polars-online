@@ -27,7 +27,7 @@ before learning from it.** Summed over the stream, it is the stream's log
 marginal likelihood, the criterion that compares a Bayesian model's
 settings. `bocpd` predicts no target, so it has no squared error to score.
 The Notes of [`po.eval.grid_search`'s
-docstring](https://hgilde.github.io/polars-online/eval.html#polars_online.eval.grid_search),
+docstring](https://hgilde.github.io/polars-online/eval.html#rheon.eval.grid_search),
 under *What is scored*, say so.
 
 1. **Decide whether breaks follow rows or time.** A number `hazard` says
@@ -52,7 +52,7 @@ import functools
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # A mean that jumps at random, every 200 rows on average, to a level of spread 2, in noise of 1.
 rng = np.random.default_rng(14)
@@ -104,7 +104,7 @@ prior left out and with four priors given:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # A column of spread 1e-3 whose mean shifts by 4e-3 at row 150.
 rng = np.random.default_rng(16)
@@ -202,7 +202,7 @@ the shift, under three powers:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # Level 0 and spread 1, one 20-sigma row at row 200, and a shift of 4 at row 400.
 rng = np.random.default_rng(15)

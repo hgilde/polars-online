@@ -1,10 +1,10 @@
-``polars_online.gram``
+``rheon.gram``
 ======================
 
-.. automodule:: polars_online.gram
+.. automodule:: rheon.gram
    :no-members:
 
-.. autodata:: polars_online.gram.INTERCEPT
+.. autodata:: rheon.gram.INTERCEPT
 
 Pooling Grams
 -------------

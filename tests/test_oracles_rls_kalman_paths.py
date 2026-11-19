@@ -24,7 +24,7 @@ The streams are ``tests/test_oracles_lasso_paths.py``'s for ``rls`` and
 import numpy as np
 import pytest
 
-import polars_online as po
+import rheon as po
 from data import synthetic
 from reference import kalman_ref
 from reference_paths import rls_paths_ref

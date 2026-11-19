@@ -23,7 +23,7 @@ from statsmodels.robust import norms
 from statsmodels.robust.scale import mad
 
 import ledger
-import polars_online as po
+import rheon as po
 
 TIER = "mixed"
 

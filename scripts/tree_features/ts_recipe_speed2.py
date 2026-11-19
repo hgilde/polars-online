@@ -7,7 +7,7 @@ import common as C
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 print(C.load_line())
 rng = np.random.default_rng(0)

@@ -24,7 +24,7 @@ import pytest
 from scipy.stats import norm
 from statsmodels.robust.scale import mad
 
-import polars_online as po
+import rheon as po
 
 TIER = "mixed"
 

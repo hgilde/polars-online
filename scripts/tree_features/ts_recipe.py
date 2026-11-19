@@ -14,7 +14,7 @@ import common as C
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 df = C.load_flights()
 hl = 30 * 1440.0

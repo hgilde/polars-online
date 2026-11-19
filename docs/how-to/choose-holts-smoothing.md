@@ -17,7 +17,7 @@ These steps need the library:
   clock requires. Without one, each row is one clock unit. The recipes'
   clock `t` steps by 1 a row, the same as no clock.
 - The parameters of
-  [`po.spec.holt`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.holt),
+  [`po.spec.holt`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.holt),
   which its docstring defines. Its entry in
   [MODELS.md](../MODELS.md#holt--holts-linear-trend) gives its update
   equation.
@@ -66,7 +66,7 @@ weighted mean. This code builds its own data:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # A line of slope 0.05 in noise, one row a clock unit.
 rng = np.random.default_rng(2)
@@ -159,7 +159,7 @@ import functools
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # A local linear trend: the slope wanders, and the level follows it with steps of its own.
 rng = np.random.default_rng(12)

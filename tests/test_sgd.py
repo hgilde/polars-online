@@ -10,7 +10,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from conftest import run_online
 
 TIER = "mixed"
@@ -268,7 +268,7 @@ class TestPlumbing:
     def test_a_parameter_of_another_loss_or_schedule_is_refused_by_name(self, kw, says):
         """Review 2026-10-05 (YA8): each of these went through and was ignored,
         the output equal to the spec without it, where a parameter whose
-        switch is off is refused (:mod:`polars_online.spec`)."""
+        switch is off is refused (:mod:`rheon.spec`)."""
         with pytest.raises(ValueError, match='^spec "m": ') as e:
             _spec(**kw)
         assert says in str(e.value), str(e.value)
@@ -570,7 +570,7 @@ class TestFeatureScaling:
     ],
     ids=["huber_delta", "quantile", "eps", "power"],
 )
-def test_a_raw_spec_with_a_parameter_nothing_reads_is_refused(extra, msg, tmp_path, online_cli):
+def test_a_raw_spec_with_a_parameter_nothing_reads_is_refused(extra, msg, tmp_path, rheon_cli):
     """Task 160, YA8b: a parameter of a loss or a schedule the spec does not
     use was taken and ignored. The builder refuses it (YA8); a raw dict, the
     form a JSON or TOML spec takes, skipped the builder and built, and is
@@ -582,7 +582,7 @@ def test_a_raw_spec_with_a_parameter_nothing_reads_is_refused(extra, msg, tmp_pa
         po.ModelBank([raw])
     _linear(n=50).write_parquet(tmp_path / "in.parquet")
     res = run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [raw],
         input=tmp_path / "in.parquet",

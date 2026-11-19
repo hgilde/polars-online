@@ -59,7 +59,7 @@ import time
 
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # A file of 20 features, and eight specs that differ only in half-life.
 rng = np.random.default_rng(2)
@@ -118,8 +118,8 @@ each:**
 
 | variable | sizes | unset or `0` | read at | what took effect |
 |---|---|---|---|---|
-| `POLARS_ONLINE_MAX_THREADS` | the bank's default threads, for a bank or call given no `threads` | one thread per core | the first chunk a bank without `threads` fits or scores, or the first `po.thread_pool_size()` | [`po.thread_pool_size()`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.thread_pool_size) |
-| `POLARS_MAX_THREADS` | Polars' readers and writers, and their read-ahead ([Bound a run's memory](bound-memory.md#give-polars-fewer-threads-and-the-bank-every-core)) | one thread per core | `import polars`, which `import polars_online` runs | `pl.thread_pool_size()` |
+| `POLARS_ONLINE_MAX_THREADS` | the bank's default threads, for a bank or call given no `threads` | one thread per core | the first chunk a bank without `threads` fits or scores, or the first `po.thread_pool_size()` | [`po.thread_pool_size()`](https://hgilde.github.io/polars-online/rheon.html#rheon.thread_pool_size) |
+| `POLARS_MAX_THREADS` | Polars' readers and writers, and their read-ahead ([Bound a run's memory](bound-memory.md#give-polars-fewer-threads-and-the-bank-every-core)) | one thread per core | `import polars`, which `import rheon` runs | `pl.thread_pool_size()` |
 
 Polars has no per-call thread count, so its threads are set by its
 variable alone, before `import polars`: in the shell, as
@@ -186,7 +186,7 @@ import os
 os.environ["POLARS_MAX_THREADS"] = "8"          # Polars' readers and writers: read at import polars
 
 import polars as pl
-import polars_online as po
+import rheon as po
 from itertools import product
 
 # Three factor sets, each with and without standardizing: six specs.
@@ -250,7 +250,7 @@ data](../EXAMPLE-DATA.md):
 
 ```python
 import polars as pl
-import polars_online as po
+import rheon as po
 
 spec = po.spec.ewridge("ridge", targets=["y"], features=["x0", "x1"], clock="t",
                        half_life=600.0, gap_cap=300.0, group="stock_id")

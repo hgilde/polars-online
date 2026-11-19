@@ -15,7 +15,7 @@ import importlib
 import re
 from pathlib import Path
 
-from polars_online import _polars_online as _native
+from rheon import _rheon as _native
 
 TIER = "essential"
 
@@ -38,7 +38,7 @@ def _links():
 
 
 def _resolve(dotted: str):
-    """`polars_online.ModelBank.load` -> the object, or None if the path breaks."""
+    """`rheon.ModelBank.load` -> the object, or None if the path breaks."""
     parts = dotted.split(".")
     obj = importlib.import_module(parts[0])
     for part in parts[1:]:
@@ -75,7 +75,7 @@ def test_the_model_table_links_every_builder_to_its_page():
     table = models.split("| model | learns by | what it is |", 1)[1].split("\n\n", 1)[0]
     linked = set(
         re.findall(
-            r"\[`([a-z_]+)`\]\(https://hgilde\.github\.io/[^)]*#polars_online\.spec\.([a-z_]+)\)",
+            r"\[`([a-z_]+)`\]\(https://hgilde\.github\.io/[^)]*#rheon\.spec\.([a-z_]+)\)",
             table,
         )
     )
@@ -100,7 +100,7 @@ def test_every_model_section_links_its_builder_and_its_source():
             r"\*API:\* \[`po\.spec\.([a-z_]+)`\]\(https://hgilde\.github\.io/[^)]+\)", body
         )
         assert api, f"the section '### {head}' has no *API:* link"
-        source = r"\(\.\./(crates/online-core/src/[\w/]+\.rs)\)"
+        source = r"\(\.\./(crates/rheon-core/src/[\w/]+\.rs)\)"
         assert re.search(r"\*Rust:\* \[`[\w/.]+`\]" + source, body), (
             f"the section '### {head}' has no *Rust:* source link"
         )
@@ -137,16 +137,16 @@ def test_every_name_the_package_exports_is_in_the_reference():
     under the package or under the module that defines it."""
     import types
 
-    import polars_online as po
+    import rheon as po
 
     documented = _documented()
-    assert "polars_online.ModelBank" in documented, "the reader found nothing"
+    assert "rheon.ModelBank" in documented, "the reader found nothing"
     missing = []
     for name in po.__all__:
         obj = getattr(po, name)
         if isinstance(obj, types.ModuleType) or name.startswith("__"):
             continue
-        where = {f"polars_online.{name}", f"{getattr(obj, '__module__', '')}.{name}"}
+        where = {f"rheon.{name}", f"{getattr(obj, '__module__', '')}.{name}"}
         if not where & documented:
             missing.append(name)
     assert not missing, missing

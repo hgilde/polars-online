@@ -27,10 +27,10 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from conftest import run_online
-from polars_online._polars_online import spec_clock_fields
-from polars_online._spec import _takes_duration
+from rheon._rheon import spec_clock_fields
+from rheon._spec import _takes_duration
 from test_model_registry import MINIMAL
 
 TIER = "essential"
@@ -427,12 +427,12 @@ class TestADurationSurvives:
             .equals(straight["m"].struct.field("pred_y"), null_equal=True)
         )
 
-    def test_the_command_line_reads_durations_from_its_config(self, tmp_path, online_cli):
+    def test_the_command_line_reads_durations_from_its_config(self, tmp_path, rheon_cli):
         df = _temporal(_frame(), "ns").drop("t_s", "lab")
         df.write_parquet(tmp_path / "in.parquet")
         spec = _ridge("t", session="s", **DURATIONS["text"])
         run_online(
-            online_cli,
+            rheon_cli,
             tmp_path,
             [spec],
             input=tmp_path / "in.parquet",
@@ -468,7 +468,7 @@ class TestEveryClockParameterTakesADuration:
         rate_names = {f for _, f in rates}
         import typing
 
-        from polars_online import _spec
+        from rheon import _spec
 
         shared = {k for k, v in typing.get_type_hints(_spec._common).items() if _takes_duration(v)}
         assert shared == set(fields["*"])
@@ -592,7 +592,7 @@ class TestEveryClockParameterTakesADuration:
     }
 
     # The noise gate's notice is about the tiny frame, not about durations.
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     def test_each_takes_a_duration_and_refuses_a_number_on_a_temporal_clock(self):
         df = _temporal(_frame())
         seen = 0
@@ -711,7 +711,7 @@ class TestADurationTheDataCannotHold:
 
     # A 500 us half-life forgets every row at once, which the readiness notice
     # says; that it is allowed is the point here.
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     def test_the_step_is_the_column_unit_for_a_datetime(self):
         df = _temporal(_frame(), "ms")
         with pytest.raises(ValueError, match="less than a millisecond"):
@@ -790,7 +790,7 @@ class TestNanosecondsAreKept:
             w = w * 2.0 ** (-float(g) / halflife_ns) + 1.0
         return np.array(out)
 
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     def test_ticks_nanoseconds_apart_decay_by_their_exact_gaps(self):
         ns, _ = self._ticks()
         # weight_sum at a row is the weight before that row's own decay, which
@@ -831,7 +831,7 @@ class TestNanosecondsAreKept:
         )
         assert np.max(np.abs(drift - want)) > 1e-3 * np.max(want)
 
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     @pytest.mark.parametrize(
         "age_s", [86_400, 31_557_600, 315_576_000], ids=["a day", "a year", "a decade"]
     )
@@ -869,7 +869,7 @@ class TestNanosecondsAreKept:
         base = po.ModelBank([spec]).fit_predict(df_young)["m"].struct.field("weight_sum")
         assert got[1:].tobytes() == base.to_numpy()[1:].tobytes()
 
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     def test_fed_in_chunks_the_gaps_are_the_one_chunk_runs(self):
         """Hard rule 3 on a temporal clock: the previous row's instant
         crosses a chunk boundary in the state, so the nanosecond gaps across
@@ -1116,7 +1116,7 @@ class TestEveryUnitAgainstEveryColumn:
         assert len(writable) == 9 + 8 + 7
         assert len(coarse | fine) == len(COLUMNS) * len(writable) == 192
 
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     @pytest.mark.parametrize(("column", "unit", "form"), _cases(finer=False))
     def test_a_unit_the_column_can_express_gives_the_exact_recursion(self, column, unit, form):
         dtype, step = COLUMNS[column]
@@ -1145,7 +1145,7 @@ class TestEveryUnitAgainstEveryColumn:
         # could not have passed: no row's weight is trivially 1 or the sum.
         assert 1.5 < want[-1] < len(ns) - 1
 
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     @pytest.mark.parametrize(("column", "unit", "form"), _cases(finer=True))
     def test_a_unit_finer_than_the_columns_step_cannot_cap_it(self, column, unit, form):
         dtype, step = COLUMNS[column]

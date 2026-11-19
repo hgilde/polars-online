@@ -57,11 +57,11 @@ repository root:
 
 ```sh
 # The pure core, no Polars anywhere: EwRidge::step in a loop
-cargo run --release -p online-core --example core_bench
+cargo run --release -p rheon-core --example core_bench
 
 # Rls::step alone, and EwRidge::step with the blocked Gram update
-cargo run --release -p online-core --example rls_bench
-cargo run --release -p online-core --example gram_block_bench
+cargo run --release -p rheon-core --example rls_bench
+cargo run --release -p rheon-core --example gram_block_bench
 
 # The bank through Python, with the time of each part of a chunk on stderr
 POLARS_ONLINE_TIMING=1 uv run python scripts/benchmark.py
@@ -74,17 +74,17 @@ Other commands make the rest:
 | `uv run python scripts/scaling_bench.py` | rows a second at each thread count |
 | `uv run python scripts/memory_bench.py` | a run's peak memory |
 | `uv run python scripts/windows_bench.py` | the window operators |
-| `cargo run --release -p online-core --example marg_bench` | `marginal` |
+| `cargo run --release -p rheon-core --example marg_bench` | `marginal` |
 | `uv run python scripts/sklearn_comparison.py` | this library against scikit-learn's `SGDRegressor` |
-| `cargo run --release -p online-core --example sgd_bench`, and the same with `sgd_signature` | `sgd`'s time for each feature |
+| `cargo run --release -p rheon-core --example sgd_bench`, and the same with `sgd_signature` | `sgd`'s time for each feature |
 
 **For the time inside a run, set `POLARS_ONLINE_TIMING=1`, which prints two kinds
 of line to stderr:**
 
 | printed by | once per | fields |
 |---|---|---|
-| the bank | chunk | in wall milliseconds, `extract` (reading the columns), `group` (finding each group's rows), `process` (running the models) and `assemble` (building the output); and `total`, the whole call, of which the four are consecutive parts (`crates/online-polars/src/bank.rs`) |
-| the command line | run | `read_wait` and `write_wait`, the bank thread's waits on the reader and the writer; `bank`, its time in the bank; `writer_busy`, the writer's own time; and `total`, the whole run (`crates/online-polars/src/runner.rs`) |
+| the bank | chunk | in wall milliseconds, `extract` (reading the columns), `group` (finding each group's rows), `process` (running the models) and `assemble` (building the output); and `total`, the whole call, of which the four are consecutive parts (`crates/rheon-polars/src/bank.rs`) |
+| the command line | run | `read_wait` and `write_wait`, the bank thread's waits on the reader and the writer; `bank`, its time in the bank; `writer_busy`, the writer's own time; and `total`, the whole run (`crates/rheon-polars/src/runner.rs`) |
 
 **The lines are written for a person, so their words and fields are not
 promised: a minor release may change them.** The variable turns them on at
@@ -105,10 +105,10 @@ process that runs the workload in a loop by its pid, and list the binary's
 functions and instructions. In `out.txt`, read "Sort by top of stack":
 
 ```sh
-CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_DEBUG=1 uv run maturin develop --release -m crates/online-py/Cargo.toml
+CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_DEBUG=1 uv run maturin develop --release -m crates/rheon-py/Cargo.toml
 sample <pid> 8 -mayDie -file out.txt
-nm python/polars_online/_polars_online.abi3.so
-objdump -d python/polars_online/_polars_online.abi3.so
+nm python/rheon/_rheon.abi3.so
+objdump -d python/rheon/_rheon.abi3.so
 ```
 
 [CONTRIBUTING.md](../CONTRIBUTING.md) says how to measure a change to the
@@ -470,7 +470,7 @@ Four measurements are taken for each cell, at both sizes:
 
 | measurement | where | what it reads | allowed past the declared growth, and why |
 |---|---|---|---|
-| a row's time | `crates/online-bench/tests/scaling.rs`, every run of `cargo test` (the essentials) | the process's CPU time over a block of rows, the least of three, the small and large sizes taken in turn; the wall clock's where CPU time is not read (Windows). CPU time, because a thread waiting for a core adds none: on a machine running more threads than it has cores, a block longer than a scheduler's slice is stretched by about the load over the cores and a shorter one may not be, so the wall clock's ratio grows with the load, 25-33x for a cell of declared O(1) growth at a load of 50 on 14 cores | a factor of `step^0.5`, 2.8 at a step of 8: time moves with the load and the caches, and a wrong growth is a whole power of the step, 8x |
+| a row's time | `crates/rheon-bench/tests/scaling.rs`, every run of `cargo test` (the essentials) | the process's CPU time over a block of rows, the least of three, the small and large sizes taken in turn; the wall clock's where CPU time is not read (Windows). CPU time, because a thread waiting for a core adds none: on a machine running more threads than it has cores, a block longer than a scheduler's slice is stretched by about the load over the cores and a shorter one may not be, so the wall clock's ratio grows with the load, 25-33x for a cell of declared O(1) growth at a load of 50 on 14 cores | a factor of `step^0.5`, 2.8 at a step of 8: time moves with the load and the caches, and a wrong growth is a whole power of the step, 8x |
 | a row's allocations | the same | the allocator's count of calls over the blocks, on every thread but the test harness's (libtest's main thread, and each test's thread outside its blocks), whose calls the other tests of the binary make while one measures | 25%: what a vector's doubling or a hash table's growth adds at one size and not the other; or 4 allocations a block, whatever the ratio, for what reaches the count beside the work: a growth the check is for adds one a row, at least 200 a block |
 | the saved state | the same | the bytes of the state as a state file holds it (msgpack) | 25%, as above |
 | the state's heap | the same | the bytes freed when the workload is dropped, its rows dropped first; for a run of the command line, the most it held above the live heap during the run | 25%, as above |
@@ -482,7 +482,7 @@ cache read slower without its work growing, so the timed check allows a
 factor of 2.8 that the counted one does not need. Callgrind runs on Linux
 alone, so it counts only the cells where a count sees what a timing cannot
 and that stay cheap under Valgrind, the list `BENCH_CELLS` in
-`crates/online-bench/src/scaling.rs` holds. They are three models' rows
+`crates/rheon-bench/src/scaling.rs` holds. They are three models' rows
 already seen, the widths of `ewridge`, `sgd`, `ew_cov` and `marginal`, `ew_cov.window`, the spec counts, the
 bank's, the window operators' and `refresh_time`'s cells whose growth must
 be 1, `windows.kernels`, and `bank.label_clock`. `scripts/budgets.py
@@ -515,7 +515,7 @@ bank, 3 over the command line, 9 over the window operators, 4 over
 size it varies, its two sizes, the growth declared for a row's work and for
 the state in that size (written in `n`, the size), and the reason. The last
 column has the four native ratios from large to small, as measured on
-2026-11-05 by a debug build: `SCALING_REPORT=1 cargo test -p online-bench
+2026-11-05 by a debug build: `SCALING_REPORT=1 cargo test -p rheon-bench
 --test scaling -- --nocapture` prints them. `bank.label_clock`'s were measured on
 2026-11-08, the same way, at a load of 5. The two `.window` cells were
 measured again on 2026-11-06, once a window's snapshots were laid out
@@ -686,7 +686,7 @@ the Polars source and the chunked `ModelBank`, and 4.9x at calls of 4 and
 of work, so its speed-up is bounded by the costliest spec and by the
 call's own serial part.** Here is the wall time of 16 calls of 4,096 rows
 after a warm-up, the least of three runs of `cargo run --profile dev-wheel
--p online-bench --example spec_threads`, a build without LTO. It was
+-p rheon-bench --example spec_threads`, a build without LTO. It was
 measured on 2026-11-05 at a
 load of 9.8 to 11.3 on the 14 cores, so other work held some of the
 threads:
@@ -715,9 +715,9 @@ so a change that removes one fails its cells.** Each cell's ratios in
 
 | cell | declared | what keeps it there |
 |---|---|---|
-| `runner.specs_per_call` | O(specs) a call | the command line joins the specs' output columns to the chunk in one pass over their names (`with_columns` in `crates/online-polars/src/runner.rs`), so no spec's column rebuilds the schema of the columns before it |
-| `hmm.k`, `ew_class.k_diag` | O(k) under `covariance_type="diag"` | a diagonal state or class keeps its k variances alone (`EwCovDiag`, `crates/online-core/src/ewcov/diag.rs`), and so does a window's snapshot of it; a variance's update reads no other entry of the matrix |
-| `corrchange.window`, `corrchange.window_crit` | O(1) a row in `window_rows` | each window is merged from summaries of blocks of `⌈k/2⌉ + 3` rows: a count, an anchor row, the mean's offset from it and the centered co-moments, combined by Chan, Golub and LeVeque's pairwise rule, which needs no subtraction of a row that leaves (`crates/online-core/src/window_moments.rs`). A chunk of blocks keeps its suffix sums and a running prefix sum, so a window's full blocks are one suffix and one prefix, and only the rows at its two ends are read |
+| `runner.specs_per_call` | O(specs) a call | the command line joins the specs' output columns to the chunk in one pass over their names (`with_columns` in `crates/rheon-polars/src/runner.rs`), so no spec's column rebuilds the schema of the columns before it |
+| `hmm.k`, `ew_class.k_diag` | O(k) under `covariance_type="diag"` | a diagonal state or class keeps its k variances alone (`EwCovDiag`, `crates/rheon-core/src/ewcov/diag.rs`), and so does a window's snapshot of it; a variance's update reads no other entry of the matrix |
+| `corrchange.window`, `corrchange.window_crit` | O(1) a row in `window_rows` | each window is merged from summaries of blocks of `⌈k/2⌉ + 3` rows: a count, an anchor row, the mean's offset from it and the centered co-moments, combined by Chan, Golub and LeVeque's pairwise rule, which needs no subtraction of a row that leaves (`crates/rheon-core/src/window_moments.rs`). A chunk of blocks keeps its suffix sums and a running prefix sum, so a window's full blocks are one suffix and one prefix, and only the rows at its two ends are read |
 | `bank.groups_seen_per_call` | O(1) a call in the groups seen | a spec keeps its groups' states in an index map, and a call borrows its chunk's states by their places in it and takes the readiness notices of those groups alone |
 
 A `corrchange` window of fewer than four blocks is read whole from its

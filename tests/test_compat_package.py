@@ -63,15 +63,15 @@ def test_the_rename_changes_the_distribution_and_nothing_that_names_the_code(tmp
     assert compat_package.main(["--root", str(tmp_path)]) == 0
     before = _project(REPO / "pyproject.toml")
     after = _project(tmp_path / "pyproject.toml")
-    assert before["project"]["name"] == "polars-online"
+    assert before["project"]["name"] == "rheon"
     assert after["project"]["name"] == "polars-online-compat"
     assert after["project"]["description"] == compat_package.COMPAT_DESCRIPTION
     # Everything else is the same: version, dependencies, the module the
-    # wheel installs. The import name stays `polars_online`.
+    # wheel installs. The import name stays `rheon`.
     for tree in (before, after):
         del tree["project"]["name"], tree["project"]["description"]
     assert before == after
-    assert after["tool"]["maturin"]["module-name"] == "polars_online._polars_online"
+    assert after["tool"]["maturin"]["module-name"] == "rheon._rheon"
     assert after["tool"]["maturin"]["python-source"] == "python"
 
 
@@ -98,7 +98,7 @@ def test_a_checkout_already_renamed_is_refused(tmp_path):
 def test_a_pyproject_whose_name_line_moved_is_refused():
     text = (REPO / "pyproject.toml").read_text("utf-8")
     with pytest.raises(ValueError, match="no single"):
-        compat_package.rename_pyproject(text.replace('name = "polars-online"', 'name = "x"'))
+        compat_package.rename_pyproject(text.replace('name = "rheon"', 'name = "x"'))
 
 
 def test_the_compat_names_are_the_ones_the_workflow_uploads_and_verifies():
@@ -106,7 +106,7 @@ def test_the_compat_names_are_the_ones_the_workflow_uploads_and_verifies():
     assert wheel_smoke.DISTRIBUTIONS == ("polars-online", "polars-online-compat")
     verify = _script("verify_release")
     assert verify.DISTRIBUTIONS == wheel_smoke.DISTRIBUTIONS
-    from polars_online import _cpu_check
+    from rheon import _cpu_check
 
     assert _cpu_check.COMPAT_PACKAGE == compat_package.COMPAT_NAME
 
@@ -290,7 +290,7 @@ def installed(monkeypatch):
 
 
 def _cpu(monkeypatch, flags: str, missing: list[str]) -> None:
-    from polars_online import _cpu_check
+    from rheon import _cpu_check
 
     monkeypatch.setattr(_cpu_check, "baked_flags", lambda: flags)
     monkeypatch.setattr(_cpu_check, "missing_features", lambda *_: missing)
@@ -344,7 +344,7 @@ def test_the_smoke_test_refuses_a_runner_without_a_feature_the_wheel_needs(insta
 def test_a_checkout_is_smoke_tested_without_a_distribution():
     """The check this suite runs on the build in this environment, which has
     no distribution to hold to a name."""
-    import polars_online as po
+    import rheon as po
 
     assert wheel_smoke.check(po.__version__, installed=False).endswith(": ok")
 
@@ -355,13 +355,13 @@ def test_the_wheel_size_check_reads_the_compat_wheels_like_any_other(tmp_path):
 
     size = _script("wheel_size")
     paths = []
-    for name in ("polars_online-1-x.whl", "polars_online_compat-1-x.whl"):
+    for name in ("rheon-1-x.whl", "polars_online_compat-1-x.whl"):
         path = tmp_path / name
         with zipfile.ZipFile(path, "w") as z:
             z.writestr("a.bin", b"0" * 100)
         paths.append(path)
     table = size.notes([size.measure(p) for p in paths])
-    assert "`polars_online-1-x.whl`" in table and "`polars_online_compat-1-x.whl`" in table
+    assert "`rheon-1-x.whl`" in table and "`polars_online_compat-1-x.whl`" in table
 
 
 # --- the import path -------------------------------------------------------------------------
@@ -370,13 +370,13 @@ def test_the_wheel_size_check_reads_the_compat_wheels_like_any_other(tmp_path):
 def test_the_package_runs_the_check_before_any_other_of_its_imports():
     """The extension module is imported through the package's other modules,
     so the check comes before every one of them."""
-    tree = ast.parse((REPO / "python" / "polars_online" / "__init__.py").read_text("utf-8"))
+    tree = ast.parse((REPO / "python" / "rheon" / "__init__.py").read_text("utf-8"))
     body = [
         n for n in tree.body if not (isinstance(n, ast.Expr) and isinstance(n.value, ast.Constant))
     ]
 
     def imports_the_package(node: ast.AST) -> bool:
-        return isinstance(node, ast.ImportFrom) and (node.module or "").startswith("polars_online")
+        return isinstance(node, ast.ImportFrom) and (node.module or "").startswith("rheon")
 
     first = next(i for i, n in enumerate(body) if imports_the_package(n))
     assert [a.name for a in body[first].names] == ["_cpu_check"]  # type: ignore[attr-defined]
@@ -389,7 +389,7 @@ def test_the_package_runs_the_check_before_any_other_of_its_imports():
 def test_the_check_module_imports_nothing_of_the_package_but_the_build_record():
     """It runs before the package's other modules, so it can use none of
     them, and it reads the build's record by name, never by import."""
-    tree = ast.parse((REPO / "python" / "polars_online" / "_cpu_check.py").read_text("utf-8"))
+    tree = ast.parse((REPO / "python" / "rheon" / "_cpu_check.py").read_text("utf-8"))
     for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom | ast.Import):
             names = (
@@ -400,7 +400,7 @@ def test_the_check_module_imports_nothing_of_the_package_but_the_build_record():
 
 def test_the_build_record_is_not_committed():
     ignored = subprocess.run(
-        ["git", "check-ignore", "-q", "python/polars_online/_build_flags.py"],
+        ["git", "check-ignore", "-q", "python/rheon/_build_flags.py"],
         cwd=REPO,
         check=False,
     )

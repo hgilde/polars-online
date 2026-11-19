@@ -4,7 +4,7 @@ Usage: uv run --no-project --python 3.12 python scripts/release_version.py [--pu
 
 The version lives in six places (docs/contributing/cut-a-release.md, step
 5): pyproject.toml, the workspace Cargo.toml's version and its two
-path-dependency pins, python/polars_online/__init__.py and the generated
+path-dependency pins, python/rheon/__init__.py and the generated
 docs/VALIDATION.md. They must agree, and CHANGELOG.md must have a section for
 it. The example pin in docs/VERSIONS.md, ``polars-online~=X.Y.0`` under *This
 package's own versioning*, must name the version's minor, so a minor release
@@ -22,7 +22,7 @@ the next minor release when it is added, and publishing an older version
 would ship a release that test then believes builds it.
 
 Prints ``version=<X.Y.Z>``, ``tag=v<X.Y.Z>`` and ``schema=<N>``, the state
-schema the build writes (``SCHEMA_VERSION`` in ``crates/online-core``),
+schema the build writes (``SCHEMA_VERSION`` in ``crates/rheon-core``),
 which the release's ``verify`` job holds the installed package to: the
 lines ``release.yml`` appends to ``$GITHUB_OUTPUT``; exits 1 naming every disagreement. Standard
 library only, so it runs before any environment is built.
@@ -45,7 +45,7 @@ def versions(root: Path = REPO) -> dict[str, str | None]:
     """Each place the version is written, and what it says there."""
     cargo = tomllib.loads((root / "Cargo.toml").read_text(encoding="utf-8"))
     deps = cargo.get("workspace", {}).get("dependencies", {})
-    init = (root / "python/polars_online/__init__.py").read_text(encoding="utf-8")
+    init = (root / "python/rheon/__init__.py").read_text(encoding="utf-8")
     validation = (root / "docs/VALIDATION.md").read_text(encoding="utf-8")
 
     def match(pattern: str, text: str) -> str | None:
@@ -59,16 +59,16 @@ def versions(root: Path = REPO) -> dict[str, str | None]:
         "Cargo.toml [workspace.package]": cargo.get("workspace", {})
         .get("package", {})
         .get("version"),
-        "Cargo.toml online-core pin": deps.get("online-core", {}).get("version"),
-        "Cargo.toml online-polars pin": deps.get("online-polars", {}).get("version"),
-        "python/polars_online/__init__.py": match(r'^__version__ = "([^"]+)"', init),
+        "Cargo.toml rheon-core pin": deps.get("rheon-core", {}).get("version"),
+        "Cargo.toml rheon-polars pin": deps.get("rheon-polars", {}).get("version"),
+        "python/rheon/__init__.py": match(r'^__version__ = "([^"]+)"', init),
         "docs/VALIDATION.md": match(r"polars-online (\d+\.\d+\.\d+\S*)", validation),
     }
 
 
 def schema(root: Path = REPO) -> int:
-    """The state schema this build writes, ``SCHEMA_VERSION`` in online-core."""
-    text = (root / "crates/online-core/src/lib.rs").read_text(encoding="utf-8")
+    """The state schema this build writes, ``SCHEMA_VERSION`` in rheon-core."""
+    text = (root / "crates/rheon-core/src/lib.rs").read_text(encoding="utf-8")
     (found,) = re.findall(r"^pub const SCHEMA_VERSION: u32 = (\d+);$", text, re.M)
     return int(found)
 

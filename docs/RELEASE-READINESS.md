@@ -197,8 +197,8 @@ released-state test holds it against what PyPI shipped.** A state of every
 `ModelState` variant, a bank file, a `with_windows` state and a
 `refresh_time` state are frozen at each schema this build loads, from
 `MIN_SCHEMA_VERSION` and `MIN_BANK_SCHEMA_VERSION` to `SCHEMA_VERSION`
-(`crates/online-core/tests/state_fixtures.rs`,
-`crates/online-polars/tests/state_fixtures.rs`). For 1.0.0 all three
+(`crates/rheon-core/tests/state_fixtures.rs`,
+`crates/rheon-polars/tests/state_fixtures.rs`). For 1.0.0 all three
 constants stood at 61. [The versions a state file
 carries](#the-versions-a-state-file-carries) names where each version is
 kept.
@@ -206,17 +206,17 @@ kept.
 ### The versions a state file carries
 
 **A state file is versioned msgpack, with a schema version and a bank
-`format_version`.** `SCHEMA_VERSION` (`crates/online-core/src/lib.rs`, and
+`format_version`.** `SCHEMA_VERSION` (`crates/rheon-core/src/lib.rs`, and
 `po.schema_version()` from Python) moves with every layout change. The
 bank's `format_version` is 2, or 3 when a spec carries a clock parameter
 as a duration. The bank refuses a file older than
-`MIN_BANK_SCHEMA_VERSION` (`crates/online-polars/src/bank.rs`) by its
+`MIN_BANK_SCHEMA_VERSION` (`crates/rheon-polars/src/bank.rs`) by its
 version, and the models' own states have a floor of their own,
-`MIN_SCHEMA_VERSION` (`crates/online-core/src/lib.rs`). A window run's
+`MIN_SCHEMA_VERSION` (`crates/rheon-core/src/lib.rs`). A window run's
 state, from `with_windows`, has its own version, `WINDOWS_VERSION`
-(`crates/online-polars/src/windows_frame.rs`), and a change to it moves
+(`crates/rheon-polars/src/windows_frame.rs`), and a change to it moves
 the bank's schema too. The state of `po.stream.refresh_time` has its own
-version, `REFRESH_VERSION` (`crates/online-polars/src/refresh.rs`).
+version, `REFRESH_VERSION` (`crates/rheon-polars/src/refresh.rs`).
 
 ## What the API snapshot pins
 
@@ -230,8 +230,8 @@ carry no promise:
 | stable part | pinned by |
 |---|---|
 | `__all__`, each function with its signature | `[package]` |
-| the constructors' keyword names and the defaults they set in Python | `[common parameters]`, which lists once the keywords every spec shares (`CommonKwargs` in `python/polars_online/_kwargs.py`), and `[spec constructors]` |
-| the defaults that resolve in Rust, `min_weight`'s per-kind rule included | `[resolved defaults]`, read off the bank's own build of each kind (`_polars_online.resolved_defaults`); `tests/test_spec_defaults.py` holds MODELS.md's warm-up tables to it |
+| the constructors' keyword names and the defaults they set in Python | `[common parameters]`, which lists once the keywords every spec shares (`CommonKwargs` in `python/rheon/_kwargs.py`), and `[spec constructors]` |
+| the defaults that resolve in Rust, `min_weight`'s per-kind rule included | `[resolved defaults]`, read off the bank's own build of each kind (`_rheon.resolved_defaults`); `tests/test_spec_defaults.py` holds MODELS.md's warm-up tables to it |
 | `ModelBank`'s methods, `__init__` included | `[ModelBank]` |
 | the `.online` namespace | `[frame namespaces]` |
 | the frames the bank returns: `groups()`, `summary()`, `describe()`, `coef()`, `last_row()`, `marginal()`, `audit()`, `check()`, `solve_failures()`, `gram()`'s keys, and `po.spec`'s `output_index()`, `coef_index()`, `coef_fields()` | `[frame columns]`, each column with its dtype |
@@ -242,14 +242,14 @@ carry no promise:
 | the words each string-valued parameter takes, and `withheld_reason`'s | `[enum values]`, read from each parameter's refusal of a word it does not take |
 | the TOML config keys: the run config's, a spec's, and each model type's | `[toml keys]`, read from serde's refusal of a key a table has not got |
 | the command line's flags, and whether each takes a value | `[cli flags]`, from `polars-online --help` |
-| the command line's exit status: 0, 1 for a refusal or a run error, 2 for a usage error | [*Exit status*](RUNNER.md#exit-status) and the command line's test `the_exit_status_is_0_for_a_run_1_for_a_refusal_and_2_for_usage` (`crates/online-cli/tests/run.rs`), not the snapshot |
+| the command line's exit status: 0, 1 for a refusal or a run error, 2 for a usage error | [*Exit status*](RUNNER.md#exit-status) and the command line's test `the_exit_status_is_0_for_a_run_1_for_a_refusal_and_2_for_usage` (`crates/rheon-cli/tests/run.rs`), not the snapshot |
 | the environment variables, `POLARS_ONLINE_MAX_THREADS` and `POLARS_ONLINE_TIMING` among them | `[env vars]`, from every read in `crates/*/src` and the package |
 
 **A default that resolves in Rust is pinned where the bank builds it.**
 A builder passes `None` for it, so a constructor's signature shows `None`.
 The snapshot's `[resolved defaults]` reads each off the bank's own build
 of every kind's least spec: `Spec::check`, then the constructor of every
-group's stream, through `_polars_online.resolved_defaults`. It renders one
+group's stream, through `_rheon.resolved_defaults`. It renders one
 line per kind and field. The lines cover the model's configuration, what
 the model derives from a field left unset (`bocpd`'s priors, `rcov`'s ring
 and window, `marginal`'s bin budget), the stream's gates and diagnostics'
@@ -261,7 +261,7 @@ tests hold some of these defaults to what they are for:
 |---|---|---|
 | every default a builder leaves to Rust, `min_weight`'s per-kind rule included | Rust | the snapshot's `[resolved defaults]`; `tests/test_spec_defaults.py` holds MODELS.md's warm-up tables to it |
 | the solve cadence of `ewridge`, `lasso`, `huber` and `quantile`: by weight, `half_life/50` of clock in steady state | Rust | `[resolved defaults]` (`solve_every`, `solve_share`); `tests/test_solve_cadence.py` measures it |
-| the clock settings, the readiness gates, and `min_weight`'s count floor | Rust | `[resolved defaults]`; `crates/online-polars/tests/spec_defaults.rs` |
+| the clock settings, the readiness gates, and `min_weight`'s count floor | Rust | `[resolved defaults]`; `crates/rheon-polars/tests/spec_defaults.rs` |
 | `standardize`: true for `kalman`, `sgd`, `pa`, `kmeans` and `micro`, false for `ewridge`, `huber` and `quantile`; `lasso` has no such keyword | Python | the snapshot |
 | `average_eta = 1.0` | Rust | `[resolved defaults]`; `spec_defaults.rs` |
 | `clip_gradient = 1e3`, for `sgd` | Rust | `[resolved defaults]`; `spec_defaults.rs`; `tests/test_sgd.py` checks that the default clip keeps a Poisson fit stable |
@@ -273,7 +273,7 @@ optimum.
 **An output field's name is rendered in one place.** The names are
 generated by `format!` over ridge values, half-life suffixes, feature-set
 labels, quantile levels and target names. `num_label()` in
-`crates/online-polars/src/spec.rs` is the only place a number in a name is
+`crates/rheon-polars/src/spec.rs` is the only place a number in a name is
 rendered. A number outside `[1e-6, 1e7)` renders compactly, as `1e-300`.
 Rust's float `Display` never uses scientific notation, so a legal
 `ridge = 1e-300` would otherwise make a 311-character name. A target literally named
@@ -289,7 +289,7 @@ they are worth:**
 
 | do not | why |
 |---|---|
-| `__getattr__`-guard the submodules | `polars_online._spec` is importable, and someone will reach into it; that is what the underscore is for. Enforcing it would take more work than keeping users out of private modules is worth |
+| `__getattr__`-guard the submodules | `rheon._spec` is importable, and someone will reach into it; that is what the underscore is for. Enforcing it would take more work than keeping users out of private modules is worth |
 | freeze the API to prevent change | the snapshot test is for detecting change, not preventing it |
 | add `cargo semver-checks` | it is the right tool for a published Rust API, and pure overhead otherwise. The Rust crates carry `publish = false` in their `Cargo.toml` and are not API; add it only if they are ever published |
 
@@ -297,7 +297,7 @@ they are worth:**
 
 **A release uploads two PyPI projects built from the one source and the one
 version: `polars-online` and `polars-online-compat`.** They are imported as
-`polars_online` alike. The x86-64 wheels of `polars-online` (Linux glibc and
+`rheon` alike. The x86-64 wheels of `polars-online` (Linux glibc and
 musl, Windows, macOS Intel) are built with
 `-C target-feature=<the 14 features of Polars' default runtime>`, the
 workflow's `X86_FEATURES`, through `RUSTFLAGS`, which maturin-action hands on
@@ -317,13 +317,13 @@ package is in its description, and opens the README with a notice. The module
 and everything else stay.
 
 **The features a wheel needs are recorded from the flags the compiler was
-given.** `crates/online-py/build.rs` reads the `target-feature` flags from
-cargo and writes them to `python/polars_online/_build_flags.py`, a file git
+given.** `crates/rheon-py/build.rs` reads the `target-feature` flags from
+cargo and writes them to `python/rheon/_build_flags.py`, a file git
 ignores and the wheel takes (`pyproject.toml`'s `include`), so a wheel cannot
 name one set of features and be compiled for another. The record is empty
 for ARM, for the compat build and for a build from source. First thing in
 `__init__`, before any of the package's other modules, so before the
-extension, `polars_online/_cpu_check.py` reads the CPU's features with
+extension, `rheon/_cpu_check.py` reads the CPU's features with
 `cpuid` and warns when one of the record's is missing.
 
 **Each wheel is held to this in its own build job, before the upload.** The
@@ -337,7 +337,7 @@ feature, cannot be reached on a runner that has them all, so
 
 **The Budgets run and its instruction counts are of the baseline build, not
 the `polars-online` wheel a user installs on an x86-64 CPU.** They count the
-workspace's `cargo test -p online-bench` cases under Valgrind with no
+workspace's `cargo test -p rheon-bench` cases under Valgrind with no
 `target-feature` flag, which is what `polars-online-compat` and every build
 from source are. The x86-64 wheel's instruction counts differ (a median 4.3%
 fewer in the measurement [VERSIONS.md](VERSIONS.md#what-the-x86-64-wheels-need)

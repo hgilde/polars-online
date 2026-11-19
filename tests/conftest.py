@@ -112,7 +112,7 @@ def _build_lock(path: Path):
 
 
 @pytest.fixture(scope="session")
-def online_cli(tmp_path_factory) -> Path:
+def rheon_cli(tmp_path_factory) -> Path:
     """The CLI executable, built once per session (docs/IMPROVEMENTS.md T1).
 
     The CLI tests used to `cargo run` on every call, and each call cost 2.9 s
@@ -128,8 +128,8 @@ def online_cli(tmp_path_factory) -> Path:
     The build runs under a lock, and each process runs a copy of its own,
     so no other process's build can replace the file it runs.
     """
-    cmd = ["cargo", "build", "-q", "-p", "online-cli", "--message-format=json-render-diagnostics"]
-    with _build_lock(REPO / "target" / ".online-cli-build.lock"):
+    cmd = ["cargo", "build", "-q", "-p", "rheon-cli", "--message-format=json-render-diagnostics"]
+    with _build_lock(REPO / "target" / ".rheon-cli-build.lock"):
         try:
             res = subprocess.run(
                 cmd,
@@ -149,10 +149,10 @@ def online_cli(tmp_path_factory) -> Path:
             and (msg := json.loads(line)).get("reason") == "compiler-artifact"
             and msg.get("executable")
             and "bin" in msg["target"]["kind"]
-            and msg["target"]["name"] == "polars-online"
+            and msg["target"]["name"] == "rheon"
         ]
         assert len(exes) == 1, f"expected one CLI artifact, got {exes}:\n{res.stdout}"
-        own = tmp_path_factory.mktemp("online-cli") / Path(exes[0]).name
+        own = tmp_path_factory.mktemp("rheon-cli") / Path(exes[0]).name
         shutil.copy2(exes[0], own)
     return own
 
@@ -161,7 +161,7 @@ def _toml_value(v: object) -> str:
     """One TOML scalar, list or inline table.
 
     Infinities go as the strings the spec layer already uses for them
-    (`online_core::humanfloat`), so a config round-trips a `half_life = inf`
+    (`rheon_core::humanfloat`), so a config round-trips a `half_life = inf`
     the way `po.spec` writes it.
     """
     if isinstance(v, bool):  # before int: bool is an int in Python

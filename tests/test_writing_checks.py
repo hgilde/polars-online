@@ -105,12 +105,12 @@ def test_rust_messages_are_read_where_an_error_opens():
         "}\n"
         '#[cfg(test)]\nmod tests { fn t() { Err("a test\'s string".into()) } }\n'
     )
-    msgs = wc.rust_messages(src, "crates/online-polars/src/x.rs")
+    msgs = wc.rust_messages(src, "crates/rheon-polars/src/x.rs")
     assert [m.kind for m in msgs] == ["error", "warning", "error"]
     assert rules(wc.message_findings(msgs[0])) == {"where", "remedy", "internal-word", "digits"}
     assert wc.message_findings(msgs[1]) == []
     assert wc.is_wrapper(msgs[2]) and wc.message_findings(msgs[2]) == []
-    # online-core's strings are bodies its callers name: no where of their own.
+    # rheon-core's strings are bodies its callers name: no where of their own.
     assert "where" not in rules(wc.message_findings(msgs[0], core=True))
 
 

@@ -3,7 +3,7 @@
 Usage: python3 scripts/compat_package.py [--root DIR]
 
 ``polars-online`` and ``polars-online-compat`` are two PyPI projects built
-from one source tree and one version. They are imported as ``polars_online``
+from one source tree and one version. They are imported as ``rheon``
 alike; they differ in the CPU they need. The x86-64 wheels of
 ``polars-online`` are built for CPUs with AVX2 and FMA, and
 ``polars-online-compat`` is built for every x86-64 CPU, with the same
@@ -45,13 +45,13 @@ NOTICE = f"""> **This is `{COMPAT_NAME}`, the compatibility build of
 > [`{NAME}`](https://pypi.org/project/{NAME}/).** It is the same source and the
 > same version, built for every x86-64 CPU, including those from before about
 > 2013 without AVX2 and FMA, and some virtual machines. It is imported as
-> `polars_online`, like `{NAME}`, so install one or the other: run
+> `rheon`, like `{NAME}`, so install one or the other: run
 > `pip uninstall {NAME}` before `pip install {COMPAT_NAME}`. Where your CPU has
 > AVX2 and FMA, `{NAME}` is the better choice: several models run faster on it.
 
 """
 
-_NAME_LINE = re.compile(r'^name = "polars-online"$', re.M)
+_NAME_LINE = re.compile(r'^name = "rheon"$', re.M)
 _DESCRIPTION_LINE = re.compile(r'^description = "[^"\n]*"$', re.M)
 
 
@@ -59,7 +59,7 @@ def rename_pyproject(text: str) -> str:
     """``pyproject.toml`` with its project named ``polars-online-compat``."""
     if len(_NAME_LINE.findall(text)) != 1:
         raise ValueError(
-            f'pyproject.toml has no single `name = "{NAME}"` line: '
+            'pyproject.toml has no single `name = "rheon"` line: '
             "it is already renamed, or its project table moved"
         )
     if len(_DESCRIPTION_LINE.findall(text)) != 1:

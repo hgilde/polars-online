@@ -12,14 +12,14 @@
 # (docs/TESTING.md, "Mutation survivors").
 
 [[equivalent]]
-file = "crates/online-polars/src/span.rs"
+file = "crates/rheon-polars/src/span.rs"
 function = "format_duration"
 mutation = "replace < with <="
 line_has = "    if ns < 0 {"
 why = "ns == 0 returns \"0s\" two lines earlier, so ns < 0 and ns <= 0 agree wherever the line runs"
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::long_run_sd"
 mutation = "replace > with >="
 line_has = "if !(sx2 > 0.0 && sy2 > 0.0) {"
@@ -28,7 +28,7 @@ zero variance divides 0 by 0 in `ρ̂` and the result is NaN by the same \
 route (`a_constant_column_has_no_long_run_sd` holds either way)"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::long_run_sd"
 mutation = "replace && with ||"
 line_has = "if !(sx2 > 0.0 && sy2 > 0.0) {"
@@ -36,7 +36,7 @@ why = """as above: with one column without spread the guard no longer \
 fires, and the zero standard deviation makes `ρ̂` and every `ξ` NaN"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/summary.rs"
+file = "crates/rheon-core/src/cluster/summary.rs"
 function = "FeatureMoments::step_long"
 mutation = "replace > with >="
 line_has = "let d = if cap > 0.0 && d * d > cap {"
@@ -47,7 +47,7 @@ second: at `d² = cap` exactly both branches give `±√(d²)`, and `√(fl(d²)
 |d|` for every double that neither overflows nor underflows"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/summary.rs"
+file = "crates/rheon-core/src/cluster/summary.rs"
 function = "FeatureMoments::metric"
 mutation = "replace > with >="
 line_has = "let v = if floor > v { floor } else { v };"
@@ -55,7 +55,7 @@ why = """at `floor = v` both branches are the same double; neither is NaN \
 (`scale_floor` is refused unless finite, and both variances are finite)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ftrl.rs"
+file = "crates/rheon-core/src/ftrl.rs"
 function = "Ftrl::weight_of"
 mutation = "replace < with <="
 line_has = "let sgn = if zz < 0.0 { -1.0 } else { 1.0 };"
@@ -68,7 +68,7 @@ agree on every value it takes"""
 # there got a test.
 
 [[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
+file = "crates/rheon-core/src/ewridge.rs"
 function = "EwRidge::solve_centred"
 mutation = "replace + with *"
 line_has = "crate::variance_is_usable(var(i), cov.raw(zidx[i + 1], zidx[i + 1]))"
@@ -77,7 +77,7 @@ ignores it (it tests the variance alone since the review of 2026-09-12); \
 `zidx[i * 1]` is still in range, so nothing is computed differently"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
+file = "crates/rheon-core/src/ewridge.rs"
 function = "EwRidge::view_into"
 mutation = "replace > with >="
 line_has = "if acc.cross.w > 0.0 {"
@@ -87,7 +87,7 @@ branch's 0 before `truncated_scalar` is read: the same 0 the other branch \
 gives"""
 
 [[equivalent]]
-file = "crates/online-core/src/lasso.rs"
+file = "crates/rheon-core/src/lasso.rs"
 function = "Lasso::standardized"
 mutation = "replace == with !="
 line_has = "f64::from(i == j)"
@@ -96,7 +96,7 @@ diagonal, which the descent never reads because it skips that feature, \
 and its column, which only ever multiplies its coefficient, held at 0"""
 
 [[equivalent]]
-file = "crates/online-core/src/lasso.rs"
+file = "crates/rheon-core/src/lasso.rs"
 function = "Lasso::standardized"
 mutation = "replace > with >="
 line_has = "if s[i] > 0.0 {"
@@ -104,7 +104,7 @@ why = """at a scale of 0 the entry of `d` it lets through is read only by \
 that feature's own update, which the descent skips; the coefficient stays 0"""
 
 [[equivalent]]
-file = "crates/online-core/src/lasso.rs"
+file = "crates/rheon-core/src/lasso.rs"
 function = "soft_over"
 mutation = "replace > with >="
 line_has = "if rho > l1 {"
@@ -112,7 +112,7 @@ why = """they differ only at `rho == l1`, where the mutant's `(rho - l1) / \
 denom` is +0 divided by a positive denominator: the 0 the original gives"""
 
 [[equivalent]]
-file = "crates/online-core/src/lasso.rs"
+file = "crates/rheon-core/src/lasso.rs"
 function = "soft_over"
 mutation = "replace < with <="
 line_has = "} else if rho < -l1 {"
@@ -120,7 +120,7 @@ why = """they differ only at `rho == -l1`, where the mutant's `(rho + l1) / \
 denom` is +0 divided by a positive denominator: the 0 the original gives"""
 
 [[equivalent]]
-file = "crates/online-core/src/gaps.rs"
+file = "crates/rheon-core/src/gaps.rs"
 function = "Cross::learn"
 mutation = "replace + with -"
 line_has = "*ci = aj * *ci + ab_dy * u; // `ab_dy` is a zero here: `bj` is 0"
@@ -129,7 +129,7 @@ the line adds or subtracts it: `aj * c` either way, whose sign of zero only \
 an underflow to -0 could reach"""
 
 [[equivalent]]
-file = "crates/online-core/src/lasso.rs"
+file = "crates/rheon-core/src/lasso.rs"
 function = "Lasso::standardized"
 mutation = "replace > with >="
 line_has = "c[i * k + j] = if s[i] > 0.0 && s[j] > 0.0 {"
@@ -139,7 +139,7 @@ feature (the second operand's mutant puts it in a column that is read, \
 and is caught)"""
 
 [[equivalent]]
-file = "crates/online-core/src/lasso.rs"
+file = "crates/rheon-core/src/lasso.rs"
 function = "Lasso::standardized"
 mutation = "replace + with *"
 line_has = "if crate::variance_is_usable(v, acc.raw(i + off, i + off)) {"
@@ -147,7 +147,7 @@ why = """both mutants are inside the second argument, which \
 `variance_is_usable` ignores; `acc.raw(i * off, ..)` is still in range"""
 
 [[equivalent]]
-file = "crates/online-core/src/lasso.rs"
+file = "crates/rheon-core/src/lasso.rs"
 function = "Lasso::solve_in"
 mutation = "replace > with >="
 line_has = "if s[i] > 0.0 && p.is_finite() {"
@@ -155,7 +155,7 @@ why = """it adds the features with no scale, whose warm start is then \
 `p * 0`, the 0 they start at anyway"""
 
 [[equivalent]]
-file = "crates/online-core/src/lasso.rs"
+file = "crates/rheon-core/src/lasso.rs"
 function = "<impl OnlineModel for Lasso>::step_into"
 mutation = "replace != with =="
 line_has = "if self.zbuf.len() != self.cfg.k_total() {"
@@ -168,98 +168,98 @@ overwrites every entry before anything reads it"""
 # can catch, each with the reason (docs/PLAN.md task 158).
 
 [[equivalent]]
-file = "crates/online-core/src/rcov.rs"
+file = "crates/rheon-core/src/rcov.rs"
 function = "phi2"
 mutation = "replace + with *"
 line_has = "(j + 1..k).map(|i| g(i) * g(i - j)).sum()"
 why = """the range starts at `i = j`, adding the term `g(j/k)·g(0)`, and `g(0) = min(0, 1) = 0`, so every sum is the same number; the one trace is the sign of a zero (at `j = k − 1` the original's empty sum is Rust's −0.0, the mutant's single zero term +0.0), which `==` cannot see and `phi_12` and `phi_22` multiply away"""
 
 [[equivalent]]
-file = "crates/online-core/src/rcov.rs"
+file = "crates/rheon-core/src/rcov.rs"
 function = "StridedRv::push"
 mutation = "replace += with -="
 line_has = "self.partial[o * k + i] += xi;"
 why = """the partial sum reaches the accumulators only as `v·v` and `v·v·v·v`; the mutant builds `−Σx` exactly (negation is exact and round-to-nearest symmetric), whose even powers are the same doubles"""
 
 [[equivalent]]
-file = "crates/online-core/src/rcov.rs"
+file = "crates/rheon-core/src/rcov.rs"
 function = "StridedRv::mean"
 mutation = "replace * with /"
 line_has = "*v += from[o * k + i] * scale;"
 why = """the `* scale` one: `mean`'s only caller, `mean_rv`, passes `scale = 1.0`, and `x / 1.0` is `x * 1.0` for every double (the index's `o * k` mutant on the same line is caught)"""
 
 [[equivalent]]
-file = "crates/online-core/src/rcov.rs"
+file = "crates/rheon-core/src/rcov.rs"
 function = "Rcov::push"
 mutation = "replace += with -="
 line_has = "*o += w * v;"
 why = """this builds the pre-averaged return `Ȳ`, which enters the state only through the outer product `ȲȲ'`; the mutant builds `−Ȳ` exactly, whose outer product is the same doubles"""
 
 [[equivalent]]
-file = "crates/online-core/src/rcov.rs"
+file = "crates/rheon-core/src/rcov.rs"
 function = "Rcov::bandwidth"
 mutation = "replace > with >="
 line_has = "if *v > 0.0 && w.is_finite() && *w >= 0.0 {"
 why = """`v` is a mean of sums of squares, so `>=` adds only `v = 0`, where `w / v` is ±inf or NaN; that feature's `H` is then not finite, and the `is_finite` filter after the map drops it as it drops the guard's NaN"""
 
 [[equivalent]]
-file = "crates/online-core/src/rcov.rs"
+file = "crates/rheon-core/src/rcov.rs"
 function = "Rcov::bandwidth"
 mutation = "replace && with ||"
 line_has = "if *v > 0.0 && w.is_finite() && *w >= 0.0 {"
 why = """either `&&` turned `||` lets through only a feature with `v = 0`, `v` NaN or `w` infinite (`w` is a mean of squares, never negative); each makes `w / v` ±inf or NaN, so its `H` is not finite and the `is_finite` filter after the map drops it, as it drops the guard's NaN"""
 
 [[equivalent]]
-file = "crates/online-core/src/margbins.rs"
+file = "crates/rheon-core/src/margbins.rs"
 function = "MarginalBins::best_split"
 mutation = "replace - with /"
 line_has = "for c in 0..self.n_bins(j) - 1 {"
 why = """`n_bins / 1` adds one pass, the cut after the last bin; there `left_w` has added every weight in the order `total_w` did (its −0.0 start is no different from +0.0 once a weight is added), so `right_w` is exactly 0 and the pass is skipped before it reads an edge"""
 
 [[equivalent]]
-file = "crates/online-core/src/margbins.rs"
+file = "crates/rheon-core/src/margbins.rs"
 function = "MarginalBins::best_split"
 mutation = "replace += with -="
 line_has = "left_d += w[c] * (mean[c] - mean_all);"
 why = """`left_d` enters the gain only as `(left_d / left_w)·(left_d / right_w)`, so the mutant's `−left_d`, exact by the symmetry of rounding, gives the same product"""
 
 [[equivalent]]
-file = "crates/online-core/src/margbins.rs"
+file = "crates/rheon-core/src/margbins.rs"
 function = "edges_from"
 mutation = "replace || with &&"
 line_has = "if !share.is_finite() || share <= 0.0 {"
 why = """the mutant never breaks here and the search below breaks instead: `share` is never NaN (the weights are finite and positive); it is +inf only when they overflow, at the first edge, where every cumulative weight is `<= inf` and the search runs off the end; and it is `<= 0` only when every weight left was absorbed into `base`, where every `c − base` is 0 and the search again runs off the end; `i >= n` then breaks with the same edges"""
 
 [[equivalent]]
-file = "crates/online-core/src/pa.rs"
+file = "crates/rheon-core/src/pa.rs"
 function = "<impl OnlineModel for Pa>::step_into"
 mutation = "replace * with /"
 line_has = "let step = tau * err.signum();"
 why = """`err.signum()` is ±1 here (an `err` of 0 has no loss, `eps >= 0` being validated, and NaN cannot reach the line, `y` and `p` being finite), and dividing by ±1 is multiplying by it, exactly"""
 
 [[equivalent]]
-file = "crates/online-core/src/seqtest.rs"
+file = "crates/rheon-core/src/seqtest.rs"
 function = "<impl OnlineModel for SeqTest>::step_into"
 mutation = "replace * with /"
 line_has = "self.log_e_pos[j] += ln_1p_of(lam_pos * s);"
 why = """`s` is the target's sign, ±1 (a zero continues above), and `x / ±1` is `x * ±1` exactly"""
 
 [[equivalent]]
-file = "crates/online-core/src/seqtest.rs"
+file = "crates/rheon-core/src/seqtest.rs"
 function = "<impl OnlineModel for SeqTest>::step_into"
 mutation = "replace * with /"
 line_has = "self.log_e_neg[j] += ln_1p_of(-lam_neg * s);"
 why = """as the line above: `s` is ±1, and `x / ±1` is `x * ±1` exactly"""
 
 [[equivalent]]
-file = "crates/online-core/src/seqtest.rs"
+file = "crates/rheon-core/src/seqtest.rs"
 function = "<impl OnlineModel for SeqTest>::step_into"
 mutation = "replace > with >="
 line_has = "if s > 0.0 {"
 why = """`s` is ±1, never 0 (a zero target continues above), so `>` and `>=` agree"""
 
 [[equivalent]]
-file = "crates/online-core/src/drift.rs"
+file = "crates/rheon-core/src/drift.rs"
 function = "PageHinkley::update"
 mutation = "replace < with <="
 line_has = "if self.cum < self.min_cum {"
@@ -270,7 +270,7 @@ why = """at `cum == min_cum` the mutant stores the same value; the two could dif
 # can catch, each with the reason (docs/PLAN.md task 158).
 
 [[equivalent]]
-file = "crates/online-core/src/ewlagcov.rs"
+file = "crates/rheon-core/src/ewlagcov.rs"
 function = "EwLagCov::update"
 mutation = "replace < with <="
 line_has = "if w < 0.0 {"
@@ -282,7 +282,7 @@ could reach; the ring takes no zero-weight row either way. With none, the \
 changes nothing (`a_zero_weight_row_ages_the_matrices_and_stays_out_of_the_ring`)"""
 
 [[equivalent]]
-file = "crates/online-core/src/marginal.rs"
+file = "crates/rheon-core/src/marginal.rs"
 function = "Marginal::cut"
 mutation = "replace - with +"
 line_has = "let b = mb - ratio * db;"
@@ -291,28 +291,28 @@ at all three call sites (each reads its mean from `a`), so this line's value \
 is never read; `db` reaches `s` on the next line directly"""
 
 [[equivalent]]
-file = "crates/online-core/src/marginal.rs"
+file = "crates/rheon-core/src/marginal.rs"
 function = "Marginal::cut"
 mutation = "replace - with /"
 line_has = "let b = mb - ratio * db;"
 why = """as `replace - with +` on this line: `b` is discarded at every call site"""
 
 [[equivalent]]
-file = "crates/online-core/src/marginal.rs"
+file = "crates/rheon-core/src/marginal.rs"
 function = "Marginal::cut"
 mutation = "replace * with +"
 line_has = "let b = mb - ratio * db;"
 why = """as `replace - with +` on this line: `b` is discarded at every call site"""
 
 [[equivalent]]
-file = "crates/online-core/src/marginal.rs"
+file = "crates/rheon-core/src/marginal.rs"
 function = "Marginal::cut"
 mutation = "replace * with /"
 line_has = "let b = mb - ratio * db;"
 why = """as `replace - with +` on this line: `b` is discarded at every call site"""
 
 [[equivalent]]
-file = "crates/online-core/src/marginal.rs"
+file = "crates/rheon-core/src/marginal.rs"
 function = "Marginal::pair"
 mutation = "replace > with >="
 line_has = "if wn > crate::window::EMPTY_FRACTION * self.wt[t] && wn.is_finite() {"
@@ -323,7 +323,7 @@ the same `wn = W_t − f·W_u`; at `wn = EMPTY_FRACTION·W_t` `cut` returned \
 is caught: under `/` light rows read empty)"""
 
 [[equivalent]]
-file = "crates/online-core/src/marginal.rs"
+file = "crates/rheon-core/src/marginal.rs"
 function = "Marginal::pair"
 mutation = "replace && with ||"
 line_has = "if wn > crate::window::EMPTY_FRACTION * self.wt[t] && wn.is_finite() {"
@@ -332,7 +332,7 @@ below the fraction, or not finite, where `cut` returned `None` and every lag \
 correlation is NaN either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/marginal.rs"
+file = "crates/rheon-core/src/marginal.rs"
 function = "Marginal::pair"
 mutation = "replace > with >="
 line_has = "if factor.is_finite() && factor > 0.0 {"
@@ -341,7 +341,7 @@ a factor at or below zero into NaN, and the geometric one is `1 + 2p/(1 − p) \
 ≥ 1` for `p` in `[0, 1)` (the `&&` on this line is caught)"""
 
 [[equivalent]]
-file = "crates/online-core/src/marginal.rs"
+file = "crates/rheon-core/src/marginal.rs"
 function = "serial_factor"
 mutation = "replace || with &&"
 line_has = "if !px.is_finite() || !py.is_finite() {"
@@ -351,7 +351,7 @@ why = """`fit` returns NaN or a finite number (`exp` of at most 3/5 of \
 `(NaN, px, py)`"""
 
 [[equivalent]]
-file = "crates/online-core/src/marginal.rs"
+file = "crates/rheon-core/src/marginal.rs"
 function = "Marginal::flush_rows"
 mutation = "replace > with >="
 line_has = "if p > 0 {"
@@ -359,7 +359,7 @@ why = """`p` is `n_features`, which `MarginalCfg::validate` holds at one or \
 more, so the branch is taken either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/marginal.rs"
+file = "crates/rheon-core/src/marginal.rs"
 function = "MarginalShard<'a>::run"
 mutation = "replace > with >="
 line_has = "            if n_lags > 0 {"
@@ -369,7 +369,7 @@ for every held row under shared moments), and what follows the `if` runs \
 either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/marginal.rs"
+file = "crates/rheon-core/src/marginal.rs"
 function = "MarginalShard<'a>::cells"
 mutation = "replace |= with &="
 line_has = "self.wrote |= if job.huber {"
@@ -378,7 +378,7 @@ of a correct flush; under `&=` it stays false and the assertion holds \
 vacuously, and no number reads it"""
 
 [[equivalent]]
-file = "crates/online-core/src/marginal.rs"
+file = "crates/rheon-core/src/marginal.rs"
 function = "<impl OnlineModel for Marginal>::step_into"
 mutation = "replace > with >="
 line_has = "if self.defer.n > 0 {"
@@ -386,7 +386,7 @@ why = """a flush with nothing held changes no state: `flush_rows` only frees \
 `defer`'s buffers, which serde skips and every reader ignores"""
 
 [[equivalent]]
-file = "crates/online-core/src/gaps.rs"
+file = "crates/rheon-core/src/gaps.rs"
 function = "Grams::update"
 mutation = "delete match arm 0"
 line_has = "0 => {}"
@@ -400,7 +400,7 @@ arm is never reached"""
 # can catch, each with the reason (docs/PLAN.md task 158).
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd.rs"
+file = "crates/rheon-core/src/bocpd.rs"
 function = "BocpdCfg::psi0"
 mutation = "replace match guard v.len() == 1 with true"
 line_has = "Some(v) if v.len() == 1 => {"
@@ -409,7 +409,7 @@ arm above takes `d·d` first (at `d = 1` the two are one length), so the \
 guard is true wherever it is reached"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd.rs"
+file = "crates/rheon-core/src/bocpd.rs"
 function = "BocpdCfg::validate"
 mutation = "replace + with *"
 line_has = ".flat_map(|i| ((i + 1)..d).map(move |j| (i, j)))"
@@ -418,7 +418,7 @@ the entries are finite (refused just above otherwise), so `|a − a| = 0` \
 passes the tolerance"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd.rs"
+file = "crates/rheon-core/src/bocpd.rs"
 function = "Run::add"
 mutation = "replace > with >="
 line_has = "if !(w > 0.0 && n_new > 0.0) {"
@@ -427,7 +427,7 @@ so `>= 0` admits nothing more; the first `>` is caught \
 (`a_row_of_no_weight_moves_nothing_in_a_run`)"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd.rs"
+file = "crates/rheon-core/src/bocpd.rs"
 function = "Bocpd::log_predictive"
 mutation = "replace || with &&"
 line_has = "if var.is_nan() || var <= 0.0 || nun <= 0.0 {"
@@ -438,7 +438,7 @@ normaliser NaN, so `read` returns the same nulls and no update as the \
 early `None`"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd.rs"
+file = "crates/rheon-core/src/bocpd.rs"
 function = "Bocpd::read"
 mutation = "replace > with >="
 line_has = "if pre[i] > 0.0 {"
@@ -447,7 +447,7 @@ other branch gives: a log density is never `+∞`, and a NaN one makes the \
 row's normaliser NaN and the row null either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd.rs"
+file = "crates/rheon-core/src/bocpd.rs"
 function = "Bocpd::read"
 mutation = "replace > with >="
 line_has = "let short = if new.len() > 1 {"
@@ -456,7 +456,7 @@ why = """`new` holds a slot more than the runs, and there is always a run \
 its length is at least 2 and both tests hold"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd.rs"
+file = "crates/rheon-core/src/bocpd.rs"
 function = "Bocpd::prune"
 mutation = "replace > with >="
 line_has = "if self.cfg.prune_below > 0.0 {"
@@ -465,7 +465,7 @@ joint is finite or `−∞`, and `z` is finite here), so the retain keeps \
 them all"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd.rs"
+file = "crates/rheon-core/src/bocpd.rs"
 function = "<impl crate::OnlineModel for Bocpd>::step_into"
 mutation = "replace > with >="
 line_has = "let (rel, w_mean, w_rows) = if weight > 0.0 {"
@@ -474,7 +474,7 @@ which the zero-weight return discards, and the mean and count it forms \
 are stored only past that return; the row's outputs do not read it"""
 
 [[equivalent]]
-file = "crates/online-core/src/hmm.rs"
+file = "crates/rheon-core/src/hmm.rs"
 function = "HmmCfg::validate"
 mutation = "replace > with >="
 line_has = "|| (row.iter().sum::<f64>() - 1.0).abs() > 1e-9"
@@ -483,7 +483,7 @@ near 1 differs from it by an exact multiple of `2⁻⁵³` (Sterbenz), and \
 `fl(1e-9)` is not one, so no row reaches the boundary"""
 
 [[equivalent]]
-file = "crates/online-core/src/hmm.rs"
+file = "crates/rheon-core/src/hmm.rs"
 function = "HmmCfg::validate"
 mutation = "replace + with *"
 line_has = ".flat_map(|i| ((i + 1)..d).map(move |j| (i, j)))"
@@ -491,7 +491,7 @@ why = """as `BocpdCfg::validate`'s: `(i * 1)..d` adds the diagonal, each \
 finite entry compared with itself"""
 
 [[equivalent]]
-file = "crates/online-core/src/hmm.rs"
+file = "crates/rheon-core/src/hmm.rs"
 function = "Hmm::read"
 mutation = "replace > with >="
 line_has = "if pred[l] > 0.0 {"
@@ -499,7 +499,7 @@ why = """at `p̃ₗ = 0` the mutant's `ln 0 + ln fₗ` is `−∞`, the other \
 branch's value: `log_densities` returns every `ln fₗ` finite or none"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewclass.rs"
+file = "crates/rheon-core/src/ewclass.rs"
 function = "EwClass::n_eff"
 mutation = "replace match guard old.n_eff > 0.0 with true"
 line_has = "Some((f, old)) if old.n_eff > 0.0 => {"
@@ -510,7 +510,7 @@ plumbing refuses, and 0 times it is 0 -- which the floor passes or, at 0, \
 returns as the 0 it is"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewclass.rs"
+file = "crates/rheon-core/src/ewclass.rs"
 function = "EwClass::n_eff"
 mutation = "replace > with >="
 line_has = "Some((f, old)) if old.n_eff > 0.0 => {"
@@ -518,7 +518,7 @@ why = """as the guard's other mutant: at a snapshot weight of 0 the \
 subtraction gives back `n_eff`, which is what the other arm returns"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewclass.rs"
+file = "crates/rheon-core/src/ewclass.rs"
 function = "EwClass::label"
 mutation = "replace < with <="
 line_has = "v.fract() == 0.0 && v < self.cfg.n_classes as f64 {"
@@ -527,7 +527,7 @@ so every class decays and nothing else reads it: the row is unlabelled \
 either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewclass.rs"
+file = "crates/rheon-core/src/ewclass.rs"
 function = "EwClass::score"
 mutation = "replace || with &&"
 line_has = "if total <= 0.0 || total.is_nan() {"
@@ -537,7 +537,7 @@ under jitter and reads no column), `ell` stays `−∞`, and the non-finite \
 maximum returns the same nulls"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewclass.rs"
+file = "crates/rheon-core/src/ewclass.rs"
 function = "EwClass::score"
 mutation = "replace > with >="
 line_has = "seen.extend((0..nc).filter(|&c| weights[c] > 0.0));"
@@ -546,7 +546,7 @@ the matrix (its co-moments and ridge are finite), and its own score is \
 `ln 0 − … = −∞`, as the class left out has"""
 
 [[equivalent]]
-file = "crates/online-core/src/conformal.rs"
+file = "crates/rheon-core/src/conformal.rs"
 function = "Conformal::update_against"
 mutation = "replace > with >="
 line_has = "let rel = if self.w_mean > 0.0 {"
@@ -556,7 +556,7 @@ positive wherever the line runs; a weight of NaN or `∞` takes the same \
 branch under both"""
 
 [[equivalent]]
-file = "crates/online-core/src/conformal.rs"
+file = "crates/rheon-core/src/conformal.rs"
 function = "norm_ppf"
 mutation = "replace > with >="
 line_has = "if !(p > 0.0 && p < 1.0) {"
@@ -565,7 +565,7 @@ formula too -- `ln` of zero or less is `−∞` or NaN, and the tail at `∞` is
 `−∞/∞` -- so `p = ±0` let through returns the NaN it returned"""
 
 [[equivalent]]
-file = "crates/online-core/src/conformal.rs"
+file = "crates/rheon-core/src/conformal.rs"
 function = "norm_ppf"
 mutation = "replace && with ||"
 line_has = "if !(p > 0.0 && p < 1.0) {"
@@ -573,7 +573,7 @@ why = """as the `>` mutant: every `p` outside `(0, 1)` gives NaN through the \
 formula as it does through the guard"""
 
 [[equivalent]]
-file = "crates/online-core/src/conformal.rs"
+file = "crates/rheon-core/src/conformal.rs"
 function = "norm_ppf"
 mutation = "replace < with <="
 line_has = "if !(p > 0.0 && p < 1.0) {"
@@ -581,7 +581,7 @@ why = """at `p = 1` the upper tail reads `ln(1 − p) = −∞` and returns \
 `−(−∞/∞)`, NaN, as the guard does"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/summary.rs"
+file = "crates/rheon-core/src/cluster/summary.rs"
 function = "FeatureMoments::metric"
 mutation = "replace > with >="
 line_has = "*o = if standardize && v > 0.0 && inv.is_finite() {"
@@ -589,7 +589,7 @@ why = """at `v = ±0` the reciprocal is infinite, which `inv.is_finite()` \
 refuses next, so the weight is 1 either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/summary.rs"
+file = "crates/rheon-core/src/cluster/summary.rs"
 function = "SplitMix64::choice"
 mutation = "replace - with +"
 line_has = "return ((u * n as f64) as usize).min(n - 1);"
@@ -598,7 +598,7 @@ why = """`u < 1`, and the product of a double below 1 and `n` rounds below \
 `n − 1`"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/summary.rs"
+file = "crates/rheon-core/src/cluster/summary.rs"
 function = "SplitMix64::choice"
 mutation = "replace - with /"
 line_has = "return ((u * n as f64) as usize).min(n - 1);"
@@ -610,7 +610,7 @@ nor `min(n − 1)` binds"""
 # can catch, each with the reason (docs/PLAN.md task 158).
 
 [[equivalent]]
-file = "crates/online-core/src/humanfloat.rs"
+file = "crates/rheon-core/src/humanfloat.rs"
 function = "tag"
 mutation = "replace > with >="
 line_has = "} else if v > 0.0 {"
@@ -619,21 +619,21 @@ is tested first), so `v` is NaN or ±∞, never the 0 where `> 0` and `>= 0` \
 part"""
 
 [[equivalent]]
-file = "crates/online-core/src/humanfloat.rs"
+file = "crates/rheon-core/src/humanfloat.rs"
 function = "vec_opt_vec_f64_or_tag::deserialize::<impl serde::de::DeserializeSeed<'de> for One>::deserialize::<impl serde::de::Visitor<'de> for Opt>::visit_none"
 mutation = "replace vec_opt_vec_f64_or_tag::deserialize::<impl serde::de::DeserializeSeed<'de> for One>::deserialize::<impl serde::de::Visitor<'de> for Opt>::visit_none -> Result<Self::Value, E> with Ok(Default::default())"
 line_has = "Ok(None)"
 why = "`Option::default()` is `None`, which is what the visitor returns"
 
 [[equivalent]]
-file = "crates/online-core/src/humanfloat.rs"
+file = "crates/rheon-core/src/humanfloat.rs"
 function = "vec_opt_vec_f64_or_tag::deserialize::<impl serde::de::DeserializeSeed<'de> for One>::deserialize::<impl serde::de::Visitor<'de> for Opt>::visit_unit"
 mutation = "replace vec_opt_vec_f64_or_tag::deserialize::<impl serde::de::DeserializeSeed<'de> for One>::deserialize::<impl serde::de::Visitor<'de> for Opt>::visit_unit -> Result<Self::Value, E> with Ok(Default::default())"
 line_has = "Ok(None)"
 why = "`Option::default()` is `None`, which is what the visitor returns"
 
 [[equivalent]]
-file = "crates/online-core/src/window/flat.rs"
+file = "crates/rheon-core/src/window/flat.rs"
 function = "Ring<S>::keep_alternate"
 mutation = "replace - with +"
 line_has = "let keep = |i: usize| (n - 1 - i).is_multiple_of(2);"
@@ -642,7 +642,7 @@ why = """either `-` made `+` (`n + 1 - i`, or `n - 1 + i`) moves the number by \
 same; with `i < n` neither overflows"""
 
 [[equivalent]]
-file = "crates/online-core/src/deco.rs"
+file = "crates/rheon-core/src/deco.rs"
 function = "Deco::advance"
 mutation = "replace > with >="
 line_has = "let b = if w_new > 0.0 { w / w_new } else { 0.0 };"
@@ -652,7 +652,7 @@ NaN; `b` is read only by `if b > 0.0`, false for NaN as for 0, so the level \
 takes no step either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/micro.rs"
+file = "crates/rheon-core/src/cluster/micro.rs"
 function = "Micro::prune_horizon"
 mutation = "replace < with <="
 line_has = "(f_tp < 1.0).then_some((tp, f_tp))"
@@ -663,7 +663,7 @@ and `n < ξ·w̄` is false for both: no outlier summary is pruned, as under \
 `None`"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/micro.rs"
+file = "crates/rheon-core/src/cluster/micro.rs"
 function = "Micro::link_potential"
 mutation = "replace + with *"
 line_has = "for b in (a + 1)..m {"
@@ -673,7 +673,7 @@ fold skips `b == a`, and the linkage loop never reaches it), and the \
 linkage loop unions a summary with itself, which moves no root"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/kmeans.rs"
+file = "crates/rheon-core/src/cluster/kmeans.rs"
 function = "KMeans::learn_row"
 mutation = "replace > with >="
 line_has = "let far = self.cfg.split_merge > 0.0 && self.is_far(d2);"
@@ -682,7 +682,7 @@ it starts at (`refresh_far_cut` runs only while the rule is on) and no `d²` \
 is past ∞: `is_far` is false either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/kmeans.rs"
+file = "crates/rheon-core/src/cluster/kmeans.rs"
 function = "KMeans::checkpoint"
 mutation = "replace > with >="
 line_has = "if self.cfg.split_merge > 0.0 {"
@@ -694,7 +694,7 @@ source. It moves only `far_cut`, `r2_typical` and `since_sm` in the state, \
 which nothing reads while the rule is off"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/kmeans.rs"
+file = "crates/rheon-core/src/cluster/kmeans.rs"
 function = "KMeans::split_merge_check"
 mutation = "replace > with >="
 line_has = "} else if den > 0.0 {"
@@ -703,7 +703,7 @@ are apart (`d = 0` is the branch above), and the mutant's `d / 0` is the \
 +∞ the original assigns"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/kmeans.rs"
+file = "crates/rheon-core/src/cluster/kmeans.rs"
 function = "KMeans::split_merge_check"
 mutation = "replace > with >="
 line_has = "if k >= 2 && self.cfg.dead_frac > 0.0 {"
@@ -712,7 +712,7 @@ overflowed), and no weight is below either, so nothing is freed (the `&&` \
 made `||` on this line is caught)"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/kmeans.rs"
+file = "crates/rheon-core/src/cluster/kmeans.rs"
 function = "KMeans::buffer_cut"
 mutation = "replace > with >="
 line_has = "let mean = if wsum > 0.0 { sum / wsum } else { 0.0 };"
@@ -720,7 +720,7 @@ why = """`buffer_cut` runs only from `try_seed`, right after a row of positive \
 weight joined the buffer undecayed, so `wsum > 0` whenever it runs"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/kmeans.rs"
+file = "crates/rheon-core/src/cluster/kmeans.rs"
 function = "KMeans::try_seed"
 mutation = "replace && with ||"
 line_has = "if kept.len() >= k && kept.len() < self.buf.len() {"
@@ -732,7 +732,7 @@ than `k`, where `seed_centres` returns `None` and the fallback runs as \
 before"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/kmeans.rs"
+file = "crates/rheon-core/src/cluster/kmeans.rs"
 function = "KMeans::try_seed"
 mutation = "replace < with <="
 line_has = "if kept.len() >= k && kept.len() < self.buf.len() {"
@@ -741,7 +741,7 @@ they are the whole buffer, and seeding from those gives the seeds the \
 fallback does (the `&&` entry above)"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/kmeans.rs"
+file = "crates/rheon-core/src/cluster/kmeans.rs"
 function = "KMeans::try_seed"
 mutation = "replace > with >="
 line_has = "if self.cfg.split_merge > 0.0 {"
@@ -750,7 +750,7 @@ which nothing reads while the rule is off (`learn_row` tests the rule \
 first); only `far_cut` and `r2_typical` in the state differ"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/kmeans.rs"
+file = "crates/rheon-core/src/cluster/kmeans.rs"
 function = "inertia"
 mutation = "replace < with <="
 line_has = "if d < best {"
@@ -758,7 +758,7 @@ why = """on a tie the mutant sets `best` to the value it already holds, so it \
 ends at the same minimum"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/kmeans.rs"
+file = "crates/rheon-core/src/cluster/kmeans.rs"
 function = "shrink"
 mutation = "replace < with <="
 line_has = "if q < *d {"
@@ -769,7 +769,7 @@ why = "as `inertia`'s: on a tie the mutant writes the value already there"
 # can catch, each with the reason (docs/PLAN.md task 158).
 
 [[equivalent]]
-file = "crates/online-core/src/rls.rs"
+file = "crates/rheon-core/src/rls.rs"
 function = "solve_columns"
 mutation = "replace > with >="
 line_has = "let x = if d > 0.0 { a / d } else { 0.0 };"
@@ -778,7 +778,7 @@ why = """the factor's diagonal is never negative, and at `d = 0` the mutant's \
 the 0 the original gives"""
 
 [[equivalent]]
-file = "crates/online-core/src/rls.rs"
+file = "crates/rheon-core/src/rls.rs"
 function = "fold"
 mutation = "replace > with >="
 line_has = "                if !(rho > 0.0 && rho.is_finite()) {"
@@ -787,7 +787,7 @@ skips the rotation above), so `hypot(rii, zi) >= |zi| > 0` and `>= 0` \
 admits nothing `> 0` refuses; a NaN fails both alike"""
 
 [[equivalent]]
-file = "crates/online-core/src/robust.rs"
+file = "crates/rheon-core/src/robust.rs"
 function = "Robust::row_update"
 mutation = "replace > with >="
 line_has = "let psi = if r > 0.0 { tau } else { tau - 1.0 };"
@@ -797,7 +797,7 @@ scale·max(quantile_eps, (k/n)^(2/5))` is positive (a positive scale, \
 alike"""
 
 [[equivalent]]
-file = "crates/online-core/src/robust.rs"
+file = "crates/rheon-core/src/robust.rs"
 function = "Robust::band_scales_into"
 mutation = "replace + with *"
 line_has = "crate::variance_is_usable(var, cov.raw(i + 1, i + 1))"
@@ -810,7 +810,7 @@ first argument, `var`, is read on the line above, whose mutants three tests \
 catch (task 170)"""
 
 [[equivalent]]
-file = "crates/online-core/src/robust.rs"
+file = "crates/rheon-core/src/robust.rs"
 function = "<impl OnlineModel for Robust>::step_into"
 mutation = "replace > with >="
 line_has = "let aged_rows = if present > 0.0 {"
@@ -822,7 +822,7 @@ subnormal weights), so `row_update` takes its warm-up arm, `rows < \
 WARM_ROWS·k`, before it reads `aged_rows`"""
 
 [[equivalent]]
-file = "crates/online-core/src/robust.rs"
+file = "crates/rheon-core/src/robust.rs"
 function = "<impl OnlineModel for Robust>::step_into"
 mutation = "replace > with >="
 line_has = "let step = if raw.abs() > most {"
@@ -830,7 +830,7 @@ why = """at `|raw| = most` both arms give the same double: `most.copysign(raw)` 
 is `raw`"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "<impl crate::OnlineModel for CorrChange>::step_into"
 mutation = "replace * with +"
 line_has = "} else if self.cfg.crit.is_none() && self.ring.len() >= 2 * w {"
@@ -840,7 +840,7 @@ none and `permutation_crit` returns `None` before drawing (its own 2w \
 guard): the value stays `None` and `since_perm` 0, as without the calls"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "<impl crate::OnlineModel for CorrChange>::step_into"
 mutation = "replace * with /"
 line_has = "} else if self.cfg.crit.is_none() && self.ring.len() >= 2 * w {"
@@ -849,14 +849,14 @@ row; below 2w rows it finds no value held and returns `None` before \
 drawing, as the `replace * with +` entry above says"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "bartlett"
 mutation = "replace < with <="
 line_has = "if a < 1.0 { 1.0 - a } else { 0.0 }"
 why = "at `|x| = 1` both arms give 0"
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::corr_of"
 mutation = "replace > with >="
 line_has = "if den > 0.0 { vab / den } else { f64::NAN }"
@@ -866,7 +866,7 @@ every caller reads a correlation only through `is_finite`, on it or on a \
 ratio built from it"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::long_run_sd"
 mutation = "replace > with >="
 line_has = "if v > 0.0 { v.sqrt() } else { f64::NAN }"
@@ -875,7 +875,7 @@ callers treat one that is not positive as none: `monitor_stat_at`'s `sd <= \
 0.0`, `begin_monitoring`'s `if sd > 0.0`"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::begin_monitoring"
 mutation = "replace > with >="
 line_has = "scale.push(if sd > 0.0 { sd } else { f64::NAN });"
@@ -883,7 +883,7 @@ why = """`long_run_sd` never returns 0: it is the root of a positive `v`, \
 itself positive, or NaN"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::sequential_stat"
 mutation = "replace > with >="
 line_has = "let rho = if den > 0.0 { c / den } else { f64::NAN };"
@@ -891,7 +891,7 @@ why = """at `den = 0` the mutant's `c / 0` is NaN or ±inf, and the ratio built 
 from it is not finite and is skipped, as the original's NaN is"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::sequential_since_change"
 mutation = "replace += with -="
 line_has = "run += r[0];"
@@ -899,7 +899,7 @@ why = """the mutant negates every prefix mean and the last one alike; \
 negation is exact, so each score `j·|p − last|` is the same double"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::sequential_since_change"
 mutation = "replace += with -="
 line_has = "sab += da * (r[b] - mb);"
@@ -908,7 +908,7 @@ why = """the mutant negates every prefix correlation and the last one alike \
 double"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::sequential_since_change"
 mutation = "replace > with >="
 line_has = "if den > 0.0 { sab / den } else { f64::NAN }"
@@ -917,7 +917,7 @@ from it is not finite and is skipped, and a last prefix that is not finite \
 gives NaN either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::scalarise"
 mutation = "replace || with &&"
 line_has = "if v.is_nan() || v <= 0.0 {"
@@ -926,7 +926,7 @@ why = """without the guard a NaN or non-positive variance makes `r` NaN or \
 returns"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::scalarise"
 mutation = "replace += with -="
 line_has = "s1 += r;"
@@ -934,7 +934,7 @@ why = """`s1` enters only squared; the mutant accumulates `−s1` exactly \
 (negation commutes with rounding), whose square is the same double"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::scalarise"
 mutation = "replace > with >="
 line_has = "if s2 > 0.0 {"
@@ -942,7 +942,7 @@ why = """`s2 = 0` means every `r²` is 0, so `s1²` is 0 too and the mutant's \
 `0 / 0` is the NaN the other arm gives"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::window_stat"
 mutation = "replace < with >"
 line_has = "if rows.len() < 2 * w {"
@@ -951,7 +951,7 @@ returns before fewer, the permutation reassembles all 2w), so `< 2w` and \
 `> 2w` are both false"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::window_stat"
 mutation = "replace * with +"
 line_has = "if rows.len() < 2 * w {"
@@ -959,7 +959,7 @@ why = """every caller passes exactly 2w rows, and `2w < w + 2` is false for \
 every `w >= 3` the cfg allows"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::window_stat"
 mutation = "replace * with /"
 line_has = "if rows.len() < 2 * w {"
@@ -967,7 +967,7 @@ why = """every caller passes exactly 2w rows, and `2 / w` is 0, so the guard \
 is false either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::permutation_crit"
 mutation = "replace < with >"
 line_has = "if self.ring.len() < 2 * w {"
@@ -975,7 +975,7 @@ why = """called only from `step` under `ring.len() >= 2 * w`, with the ring \
 never past 2w, so it always sees exactly 2w rows and neither guard fires"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::permutation_crit"
 mutation = "replace * with +"
 line_has = "if self.ring.len() < 2 * w {"
@@ -983,7 +983,7 @@ why = """it always sees exactly 2w rows (see `replace < with >`), and `2w < w \
 + 2` is false for every `w >= 3`"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::permutation_crit"
 mutation = "replace * with /"
 line_has = "if self.ring.len() < 2 * w {"
@@ -991,7 +991,7 @@ why = """it always sees exactly 2w rows, and `2 / w` is 0, so the guard is \
 false either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::read"
 mutation = "replace > with >="
 line_has = "if flag && at > 0 {"
@@ -999,7 +999,7 @@ why = """a flag needs `stat > crit > 0`, so the argmax was set and `at` is at \
 least 1"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "kolmogorov_cdf"
 mutation = "replace < with <="
 line_has = "if term < 1e-18 {"
@@ -1009,7 +1009,7 @@ to the end or cut there, the series is the same double at every one of 1.06 \
 million `x` from 1e-3 to 40"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "kolmogorov_cdf"
 mutation = "replace < with =="
 line_has = "if term < 1e-18 {"
@@ -1019,7 +1019,7 @@ of the partial sum: the same double at every one of 1.06 million `x` from \
 1e-3 to 40"""
 
 [[equivalent]]
-file = "crates/online-core/src/boundary.rs"
+file = "crates/rheon-core/src/boundary.rs"
 function = "sup_abs_bm_cdf"
 mutation = "replace < with <="
 line_has = "if term < 1e-18 {"
@@ -1028,7 +1028,7 @@ under 1e-18, the series is the same double at every one of 1.06 million \
 `x` from 1e-3 to 40"""
 
 [[equivalent]]
-file = "crates/online-core/src/boundary.rs"
+file = "crates/rheon-core/src/boundary.rs"
 function = "sup_abs_bm_cdf"
 mutation = "replace < with =="
 line_has = "if term < 1e-18 {"
@@ -1038,7 +1038,7 @@ ulp of the partial sum: the same double at every one of 1.06 million `x` \
 from 1e-3 to 40"""
 
 [[equivalent]]
-file = "crates/online-core/src/boundary.rs"
+file = "crates/rheon-core/src/boundary.rs"
 function = "bernoulli"
 mutation = "replace < with <="
 line_has = "if z.abs() < 1e-8 {"
@@ -1048,7 +1048,7 @@ coincidence of the flux arithmetic that the solve can meet only below `c = \
 underflows)"""
 
 [[equivalent]]
-file = "crates/online-core/src/boundary.rs"
+file = "crates/rheon-core/src/boundary.rs"
 function = "boundary_cdf"
 mutation = "replace < with <="
 line_has = "while t < t_end {"
@@ -1058,7 +1058,7 @@ more step of a solve that has settled (doubling `t_end` moves the result \
 by under 1e-14)"""
 
 [[equivalent]]
-file = "crates/online-core/src/boundary.rs"
+file = "crates/rheon-core/src/boundary.rs"
 function = "boundary_quantile"
 mutation = "replace > with >="
 line_has = "if !(p > 0.0 && p < 1.0) || !(0.0..0.5).contains(&gamma) {"
@@ -1068,7 +1068,7 @@ why = """the guard is redundant: for a `p` outside (0, 1) \
 result, so every form of the guard gives NaN for the same inputs"""
 
 [[equivalent]]
-file = "crates/online-core/src/boundary.rs"
+file = "crates/rheon-core/src/boundary.rs"
 function = "boundary_quantile"
 mutation = "replace && with ||"
 line_has = "if !(p > 0.0 && p < 1.0) || !(0.0..0.5).contains(&gamma) {"
@@ -1076,7 +1076,7 @@ why = """the guard is redundant (see `replace > with >=`): a `p` it lets \
 through returns NaN by way of `sup_abs_bm_quantile`"""
 
 [[equivalent]]
-file = "crates/online-core/src/boundary.rs"
+file = "crates/rheon-core/src/boundary.rs"
 function = "boundary_quantile"
 mutation = "replace < with <="
 line_has = "if !(p > 0.0 && p < 1.0) || !(0.0..0.5).contains(&gamma) {"
@@ -1084,7 +1084,7 @@ why = """the guard is redundant (see `replace > with >=`): `p = 1` returns \
 NaN by way of `sup_abs_bm_quantile`"""
 
 [[equivalent]]
-file = "crates/online-core/src/boundary.rs"
+file = "crates/rheon-core/src/boundary.rs"
 function = "boundary_quantile"
 mutation = "replace || with &&"
 line_has = "if !(p > 0.0 && p < 1.0) || !(0.0..0.5).contains(&gamma) {"
@@ -1092,7 +1092,7 @@ why = """the guard is redundant (see `replace > with >=`): a bad `p` returns \
 NaN by way of `sup_abs_bm_quantile`, a bad `γ` by way of `boundary_cdf`"""
 
 [[equivalent]]
-file = "crates/online-core/src/boundary.rs"
+file = "crates/rheon-core/src/boundary.rs"
 function = "boundary_quantile"
 mutation = "replace < with <="
 line_has = "while fhi < 0.0 {"
@@ -1101,7 +1101,7 @@ floating-point coincidence, and then both return `q0 + 1`: the original as \
 the bracket's right end, the mutant as its left"""
 
 [[equivalent]]
-file = "crates/online-core/src/boundary.rs"
+file = "crates/rheon-core/src/boundary.rs"
 function = "boundary_quantile"
 mutation = "replace < with <="
 line_has = "if fm.abs() < 1e-11 || (hi - lo).abs() < 1e-9 {"
@@ -1110,7 +1110,7 @@ why = """both mutants: they differ only when a step's residual is exactly \
 input can be built to reach"""
 
 [[equivalent]]
-file = "crates/online-core/src/boundary.rs"
+file = "crates/rheon-core/src/boundary.rs"
 function = "boundary_quantile"
 mutation = "replace < with <="
 line_has = "if fm < 0.0 {"
@@ -1118,7 +1118,7 @@ why = """`fm = 0` never reaches this line: the stopping test just above breaks \
 on `|fm| < 1e-11`; a NaN fails both alike"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::read"
 mutation = "replace + with *"
 line_has = "for b in (a + 1)..self.cfg.n_features {"
@@ -1133,7 +1133,7 @@ long-run sd NaN and their statistic is skipped; where the moments overflow \
 # can catch, each with the reason (docs/PLAN.md task 158).
 
 [[equivalent]]
-file = "crates/online-core/src/solve.rs"
+file = "crates/rheon-core/src/solve.rs"
 function = "SpdFactor::inverse_is_finite"
 mutation = "replace > with >="
 line_has = "if !(d > 0.0 && d.is_finite()) {"
@@ -1143,7 +1143,7 @@ are its two refusals), so `d` is never 0 here; and a 0 would make `zi` \
 infinite, which the next test refuses anyway"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve.rs"
+file = "crates/rheon-core/src/solve.rs"
 function = "SpdFactor::inverse_is_finite"
 mutation = "replace && with ||"
 line_has = "if !(d > 0.0 && d.is_finite()) {"
@@ -1151,7 +1151,7 @@ why = """as above: every pivot of a factor faer accepts is positive and finite, 
 so the guard is false under either operator"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve.rs"
+file = "crates/rheon-core/src/solve.rs"
 function = "SpdFactor::inverse_is_finite"
 mutation = "replace || with &&"
 line_has = "if zi.is_nan() || zi > 1e150 {"
@@ -1162,7 +1162,7 @@ and a `zi` past `1e150` that the mutant lets through puts `b > 1e150` in \
 stays in `z` and makes `b` infinite"""
 
 [[equivalent]]
-file = "crates/online-core/src/stats.rs"
+file = "crates/rheon-core/src/stats.rs"
 function = "EwQuantile::next"
 mutation = "replace match guard self.buckets.is_empty() with false"
 line_has = "None if self.buckets.is_empty() => None,"
@@ -1172,7 +1172,7 @@ and `rescale` recomputes `total` from them) and `below` is 0 (it grows only \
 past a bucket), so `zero < p·zero` never holds and the arm is never reached"""
 
 [[equivalent]]
-file = "crates/online-core/src/stats.rs"
+file = "crates/rheon-core/src/stats.rs"
 function = "EwQuantile::add"
 mutation = "replace < with <="
 line_has = "} else if k < self.lo {"
@@ -1180,7 +1180,7 @@ why = """at `k == lo` the branch prepends `lo − k = 0` buckets and sets `lo` t
 the `lo` it was, which is what falling through to the next test does"""
 
 [[equivalent]]
-file = "crates/online-core/src/stats.rs"
+file = "crates/rheon-core/src/stats.rs"
 function = "SlotMetrics::update_with"
 mutation = "replace > with >="
 line_has = "if denom > 0.0 {"
@@ -1189,7 +1189,7 @@ is always taken (the body is in `update_with`, which takes task 195's hit \
 tests, since task 201 removed `update_about`'s centre)"""
 
 [[equivalent]]
-file = "crates/online-core/src/sgd.rs"
+file = "crates/rheon-core/src/sgd.rs"
 function = "standardized"
 mutation = "replace + with -"
 line_has = "let scale = if crate::variance_is_usable(v, v + mean * mean) {"
@@ -1197,28 +1197,28 @@ why = """the mutant is inside the second argument, which `variance_is_usable` \
 ignores (it tests the variance alone)"""
 
 [[equivalent]]
-file = "crates/online-core/src/sgd.rs"
+file = "crates/rheon-core/src/sgd.rs"
 function = "standardized"
 mutation = "replace + with *"
 line_has = "let scale = if crate::variance_is_usable(v, v + mean * mean) {"
 why = "as above: the second argument of `variance_is_usable` is ignored"
 
 [[equivalent]]
-file = "crates/online-core/src/sgd.rs"
+file = "crates/rheon-core/src/sgd.rs"
 function = "standardized"
 mutation = "replace * with +"
 line_has = "let scale = if crate::variance_is_usable(v, v + mean * mean) {"
 why = "as above: the second argument of `variance_is_usable` is ignored"
 
 [[equivalent]]
-file = "crates/online-core/src/sgd.rs"
+file = "crates/rheon-core/src/sgd.rs"
 function = "standardized"
 mutation = "replace * with /"
 line_has = "let scale = if crate::variance_is_usable(v, v + mean * mean) {"
 why = "as above: the second argument of `variance_is_usable` is ignored"
 
 [[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
+file = "crates/rheon-core/src/ewridge.rs"
 function = "EwRidge::inflation_into"
 mutation = "replace > with >="
 line_has = "if n > 0.0\n                    && let Some(bound) = self.ready.edf_bound_at(slot)"
@@ -1227,7 +1227,7 @@ a bound of 0), never below `limit`, so the arm it lets in falls through to \
 the exact ratio, as the original does"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
+file = "crates/rheon-core/src/ewridge.rs"
 function = "Readiness::has_pending"
 mutation = "replace Readiness::has_pending -> bool with true"
 line_has = "self.pending.iter().any(Option::is_some)"
@@ -1235,7 +1235,7 @@ why = """it only chooses between serializing or comparing the readiness as it is
 and a settled copy of it; with nothing pending, settling changes nothing"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "EwCov::flush"
 mutation = "replace > with >="
 line_has = "if ui > 0.0 {"
@@ -1245,7 +1245,7 @@ adds `0 · (x − s)` or `0 · (x − m_B)`, a zero, since inputs within \
 starts at +0 leaves it as it was"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "Pca::of"
 mutation = "replace < with <="
 line_has = "if d < 0.0 {"
@@ -1253,14 +1253,14 @@ why = """the arm's guard `d != 0.0` excludes the one value where `<` and `<=` \
 differ (a NaN `d` fails both alike)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "Pca::of"
 mutation = "replace < with <="
 line_has = "if v[lead] < 0.0 { -1.0 } else { 1.0 }"
 why = """`v` is a unit eigenvector, so its largest-magnitude entry is never 0"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "EwCovModel::read_into"
 mutation = "replace > with >="
 line_has = "if self.cfg.pca > 0 {"
@@ -1269,7 +1269,7 @@ why = """with `pca = 0` there are no components: `refresh_pca` runs only when \
 arm writes `0 · (k + 3)` NaNs or the components of an empty set"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "EwCovModel::read_into"
 mutation = "replace > with >="
 line_has = "head[1] = if p.trace > 0.0 {"
@@ -1279,7 +1279,7 @@ window zeroes an unresolved row); faer's eigenvalues of the zero matrix are \
 0, and `0/0` is the NaN the other branch gives"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "<impl crate::OnlineModel for EwCovModel>::step_into"
 mutation = "replace && with ||"
 line_has = "if score.is_finite() && weight > 0.0 {"
@@ -1287,7 +1287,7 @@ why = """`EwQuantile::add` sees nothing that is not a finite value at a positive
 finite weight, so the calls the mutant adds are the no-op skipping them is"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "<impl crate::OnlineModel for EwCovModel>::step_into"
 mutation = "replace > with >="
 line_has = "if score.is_finite() && weight > 0.0 {"
@@ -1298,7 +1298,7 @@ why = """as above: `EwQuantile::add` ignores a weight of 0"""
 # (docs/PLAN.md task 184). Every other survivor there got a test.
 
 [[equivalent]]
-file = "crates/online-core/src/clock.rs"
+file = "crates/rheon-core/src/clock.rs"
 function = "Exact::step"
 mutation = "delete match arm (_, _, None)"
 line_has = "(_, _, None) => (0, 0),"
@@ -1308,7 +1308,7 @@ row-count one -- so the arm the mutant falls to, `ns_of_seconds` of each, \
 gives the same `(0, 0)`"""
 
 [[equivalent]]
-file = "crates/online-core/src/clock.rs"
+file = "crates/rheon-core/src/clock.rs"
 function = "Exact::step"
 mutation = "replace < with <="
 line_has = "} else if r < 0 {"
@@ -1317,7 +1317,7 @@ cap, which is 0 for any cap that is not negative: the cap is `gap_cap` in \
 nanoseconds, which the spec requires `> 0` (`ClockCfg::gap_cap`), or none"""
 
 [[equivalent]]
-file = "crates/online-core/src/clock.rs"
+file = "crates/rheon-core/src/clock.rs"
 function = "Exact::step"
 mutation = "replace > with >="
 line_has = "if total > cfg.gap_cap {"
@@ -1328,7 +1328,7 @@ under no cap, which the spec refuses (`ClockCfg::gap_cap` is finite with a \
 clock column); without one, `total` counts rows, never infinitely many"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve.rs"
+file = "crates/rheon-core/src/solve.rs"
 function = "factorize"
 mutation = "delete match arm Ordering::Less"
 line_has = "Ordering::Less => 0.0,"
@@ -1341,7 +1341,7 @@ above it; `factorize` zeroes the strict upper triangle after. The factor, \
 and whether faer accepts it, are the same"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve.rs"
+file = "crates/rheon-core/src/solve.rs"
 function = "SpdFactor::congruent"
 mutation = "replace > with >="
 line_has = "if !self.can_move() || e.len() != k || !e.iter().all(|x| *x > 0.0 && x.is_finite()) {"
@@ -1350,7 +1350,7 @@ which `moved` refuses: `None` either way, and either way the factor is \
 spent and its owner factorizes afresh"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve.rs"
+file = "crates/rheon-core/src/solve.rs"
 function = "SpdFactor::congruent"
 mutation = "replace && with ||"
 line_has = "if !self.can_move() || e.len() != k || !e.iter().all(|x| *x > 0.0 && x.is_finite()) {"
@@ -1363,7 +1363,7 @@ refuses: `None` either way, as above"""
 # survivor there got a test.
 
 [[equivalent]]
-file = "crates/online-core/src/clock.rs"
+file = "crates/rheon-core/src/clock.rs"
 function = "Decay::factor"
 mutation = "replace match guard d_clock == 1.0 with false"
 line_has = "Decay::Lam(l) if d_clock == 1.0 => l,"
@@ -1378,7 +1378,7 @@ libm makes (review round 5, A4), kept for one that breaks it; no test \
 machine runs one"""
 
 [[equivalent]]
-file = "crates/online-core/src/clock.rs"
+file = "crates/rheon-core/src/clock.rs"
 function = "Decay::factor"
 mutation = "replace match guard d_clock == 0.0 with false"
 line_has = "Decay::Lam(_) if d_clock == 0.0 => 1.0,"
@@ -1388,7 +1388,7 @@ every one of the 100,063,203 values `Decay::factor`'s `d_clock == 1.0` \
 entry names, at `+0` and `-0`"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "KalmanCfg::gap_noise"
 mutation = "delete -"
 line_has = "let g = -(-(theta * d)).exp_m1() / theta;"
@@ -1397,7 +1397,7 @@ read only as `g * g`, and a negation is exact, so the square is the same \
 double either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "NoiseBasis::add"
 mutation = "replace > with >="
 line_has = "if self.e2.len() < PRIOR_ROWS && v > 0.0 && v.is_finite() && w > 0.0 && w.is_finite() {"
@@ -1408,7 +1408,7 @@ above 0; and under `share_p` the mean of `n` squares, each at least \
 partial sum is, is at least `n · 2^-1074`, itself a double"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "NoiseBasis::noise"
 mutation = "replace > with >="
 line_has = "(v > 0.0 && v.is_finite()).then_some(v)"
@@ -1416,7 +1416,7 @@ why = """`v` is a median of squares that `add` and the loader's \
 `is_valid` hold above 0, over `CHI2_1_MEDIAN` < 1: it is never 0"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "NoiseBasis::noise"
 mutation = "replace && with ||"
 line_has = "(v > 0.0 && v.is_finite()).then_some(v)"
@@ -1427,7 +1427,7 @@ for them). Its `Some(inf)` reaches `size_slots`, whose prior `p0 · inf` \
 is not a finite number and sizes nothing -- what `None` does"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "Kalman::pred_var"
 mutation = "replace > with >="
 line_has = "if own > 0.0 && mean > 0.0 {"
@@ -1438,7 +1438,7 @@ where `own > 0` holds `mean` is a mean of numbers above 0, at least \
 either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "Kalman::coupling"
 mutation = "replace || with &&"
 line_has = "if !self.cfg.standardize || !self.cfg.fit_intercept || self.cfg.revert_half_life.len() == 1"
@@ -1450,7 +1450,7 @@ one reversion half-life every `phi_i` is `phi_0`; so each `g_i = c_i \
 its `g` a scratch no one reads then"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "Kalman::add_process_noise"
 mutation = "replace * with /"
 line_has = """if i < off {
@@ -1459,7 +1459,7 @@ why = """the branch runs for `i < off`, the intercept's slot `i = 0` alone, \
 where `i * k + i` and `i / k + i` are both 0"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "Kalman::add_process_noise"
 mutation = "replace + with *"
 line_has = """if i < off {
@@ -1467,7 +1467,7 @@ line_has = """if i < off {
 why = "as `replace * with /` here: at `i = 0`, `i * k * i` is 0"
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "Kalman::add_process_noise"
 mutation = "replace + with -"
 line_has = """if i < off {
@@ -1475,7 +1475,7 @@ line_has = """if i < off {
 why = "as `replace * with /` here: at `i = 0`, `i * k - i` is 0"
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "Kalman::covariance_now"
 mutation = "replace || with &&"
 line_has = "if !self.cfg.standardize || i < off {"
@@ -1487,7 +1487,7 @@ entries that hold a number, and the diagonal takes `qd / (1 · 1)`, the \
 same double"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "Kalman::prior_quad"
 mutation = "replace && with ||"
 line_has = "if coupled && i > 0 {"
@@ -1498,7 +1498,7 @@ and it returns false before writing or with every `g_i` ±0; `±0 + \
 phi_i z_i` is `phi_i z_i`"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
+file = "crates/rheon-core/src/ewridge.rs"
 function = "<impl OnlineModel for EwRidge>::coef_variance"
 mutation = "replace * with /"
 line_has = "factor.quad_forms(&u, kk, 1)[0] * sys.scale"
@@ -1513,7 +1513,7 @@ there"""
 # there got a test.
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/micro.rs"
+file = "crates/rheon-core/src/cluster/micro.rs"
 function = "Micro::link_by_matrix"
 mutation = "replace + with *"
 line_has = "for b in (a + 1)..m {"
@@ -1523,7 +1523,7 @@ nearest-neighbour spacing skips `b = a` and `components` reads `a < b`. \
 Every pair `a < b` is written as before"""
 
 [[equivalent]]
-file = "crates/online-core/src/pa.rs"
+file = "crates/rheon-core/src/pa.rs"
 function = "<impl OnlineModel for Pa>::step_into"
 mutation = "replace match guard held with true"
 line_has = "Some(sc) if held => standardize_row("
@@ -1536,7 +1536,7 @@ rows to the build before task 206); the mean and scale it writes beside \
 `z` are read only by a fit held in the caller's units, after the switch"""
 
 [[equivalent]]
-file = "crates/online-core/src/sgd.rs"
+file = "crates/rheon-core/src/sgd.rs"
 function = "standardize_row"
 mutation = "replace + with -"
 line_has = "let s = if crate::variance_is_usable(v, v + m * m) {"
@@ -1544,28 +1544,28 @@ why = """the mutant is inside the second argument, which `variance_is_usable` \
 ignores (it tests the variance alone), as in `standardized`"""
 
 [[equivalent]]
-file = "crates/online-core/src/sgd.rs"
+file = "crates/rheon-core/src/sgd.rs"
 function = "standardize_row"
 mutation = "replace + with *"
 line_has = "let s = if crate::variance_is_usable(v, v + m * m) {"
 why = "as above: the second argument of `variance_is_usable` is ignored"
 
 [[equivalent]]
-file = "crates/online-core/src/sgd.rs"
+file = "crates/rheon-core/src/sgd.rs"
 function = "standardize_row"
 mutation = "replace * with +"
 line_has = "let s = if crate::variance_is_usable(v, v + m * m) {"
 why = "as above: the second argument of `variance_is_usable` is ignored"
 
 [[equivalent]]
-file = "crates/online-core/src/sgd.rs"
+file = "crates/rheon-core/src/sgd.rs"
 function = "standardize_row"
 mutation = "replace * with /"
 line_has = "let s = if crate::variance_is_usable(v, v + m * m) {"
 why = "as above: the second argument of `variance_is_usable` is ignored"
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "Kalman::prior_quad"
 mutation = "replace > with >="
 line_has = "if coupled && i > 0 {"
@@ -1575,7 +1575,7 @@ before it can return true, and `z_0` is the intercept's 1, so the term \
 is `+0` and the sum `phi_0 z_0`'s double"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "Kalman::prior_quad"
 mutation = "replace * with /"
 line_has = "g[i] * za[0] + phi[i] * za[i]"
@@ -1585,7 +1585,7 @@ given, and the coupling exists only with an intercept -- so `g_i / 1` is \
 `g_i · 1`"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "Kalman::coef_variance_of"
 mutation = "replace * with +"
 line_has = """if i < off {
@@ -1596,7 +1596,7 @@ before anything reads it; the index the mutant reads, `0 + k + 0`, is \
 inside `P`, which is `k × k` with `k ≥ 2`"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "Kalman::coef_variance_of"
 mutation = "replace * with /"
 line_has = """if i < off {
@@ -1604,7 +1604,7 @@ line_has = """if i < off {
 why = "as `replace * with +` here: at `i = 0` the index is 0, and `out[0]` is written again below"
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "Kalman::coef_variance_of"
 mutation = "replace + with *"
 line_has = """if i < off {
@@ -1612,7 +1612,7 @@ line_has = """if i < off {
 why = "as `replace * with +` here: at `i = 0` the index is 0, and `out[0]` is written again below"
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "Kalman::coef_variance_of"
 mutation = "replace + with -"
 line_has = """if i < off {
@@ -1620,7 +1620,7 @@ line_has = """if i < off {
 why = "as `replace * with +` here: at `i = 0` the index is 0, and `out[0]` is written again below"
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "Kalman::own_noise_ratio"
 mutation = "replace > with >="
 line_has = "if own > 0.0 && mean > 0.0 {"
@@ -1631,7 +1631,7 @@ above 0, at least `2^-1074`, and `> 0`, `>= 0` agree; where it fails \
 the line is false either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/kalman.rs"
+file = "crates/rheon-core/src/kalman.rs"
 function = "<impl OnlineModel for Kalman>::step_into"
 mutation = "replace > with >="
 line_has = "if n > 0.0 {"
@@ -1640,7 +1640,7 @@ is 0, and the mutant hands the shared basis `0 / 0`, NaN, which \
 `NoiseBasis::add` keeps out as it keeps out every square not above 0"""
 
 [[equivalent]]
-file = "crates/online-core/src/sandwich.rs"
+file = "crates/rheon-core/src/sandwich.rs"
 function = "Sandwich::update"
 mutation = "replace > with >="
 line_has = "if self.lags > 0 {"
@@ -1649,7 +1649,7 @@ why = """the guard spares the ring's push at no lags; let through at \
 ring stays empty as before"""
 
 [[equivalent]]
-file = "crates/online-core/src/specification.rs"
+file = "crates/rheon-core/src/specification.rs"
 function = "Specification::update"
 mutation = "replace > with >="
 line_has = "if self.skip + self.lags > 0 {"
@@ -1658,7 +1658,7 @@ why = """the guard spares the ring's push with no lag kept; let through at \
 once, so the ring stays empty as before"""
 
 [[equivalent]]
-file = "crates/online-core/src/specification.rs"
+file = "crates/rheon-core/src/specification.rs"
 function = "Specification::ljung_box_in"
 mutation = "replace + with -"
 line_has = "(-s..=s).map(|j| at(j) * at(j + v as isize)).sum()"
@@ -1674,14 +1674,14 @@ two agree to the bit, a zero's sign aside"""
 # Every other survivor there got a test (src/audit/tests.rs).
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "scale_for"
 mutation = "replace > with >="
 line_has = "if e > 64 { pow2(e - 64) } else { 1.0 }"
 why = "at `e = 64` the mutant's scale is `pow2(0)`, 1.0, the original's"
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "Moments::skew"
 mutation = "replace || with &&"
 line_has = "if self.n < 2 || self.m2 <= 0.0 {"
@@ -1693,7 +1693,7 @@ is 0 and both conditions hold (a state this code writes; a hand-made one \
 with `M2 = 0` and `M3 != 0` would part them)"""
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "Moments::kurtosis"
 mutation = "replace || with &&"
 line_has = "if self.n < 2 || self.m2 <= 0.0 {"
@@ -1702,7 +1702,7 @@ underflowed, and then `M4` is 0 as well, so the mutant's `n·M4 / M2²` is \
 `0 / 0`, the guard's NaN"""
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "CoMoments::unit_root_t"
 mutation = "replace || with &&"
 line_has = "if self.n < 3 || self.saa <= 0.0 {"
@@ -1714,7 +1714,7 @@ products `da·ea` of one sign, so it is never below 0 in a state this code \
 writes"""
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "Counts::top"
 mutation = "replace < with <="
 line_has = "Some((bv, bc)) if c > bc || (c == bc && v < bv) => {"
@@ -1722,7 +1722,7 @@ why = """two counters never hold equal values: their keys are distinct, and a \
 key is a value's bits with -0 counted as 0, so `v == bv` never holds"""
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "Cdf::rank"
 mutation = "replace > with >="
 line_has = "if b.0 > a.0 {"
@@ -1731,7 +1731,7 @@ why = """`i` is the last point at or below `x` and a point follows it, so \
 centroids, each a mean of its values, between the column's extremes)"""
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "Cdf::rank_below"
 mutation = "replace > with >="
 line_has = "if b.0 > a.0 {"
@@ -1739,7 +1739,7 @@ why = """`i` is the first point at or above `x`, past the first, so `a.0 < x \
 <= b.0`, the points being in order as in `Cdf::rank`"""
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "Cdf::quantile"
 mutation = "replace - with +"
 line_has = "let i = p.partition_point(|pt| pt.1 < r).clamp(1, p.len() - 1);"
@@ -1748,14 +1748,14 @@ the partition point is at most `len − 1` and the upper clamp, `len − 1` \
 or the mutant's `len + 1`, never binds"""
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "Cdf::quantile"
 mutation = "replace - with /"
 line_has = "let i = p.partition_point(|pt| pt.1 < r).clamp(1, p.len() - 1);"
 why = "as `replace - with +` here: the mutant's bound, `len`, never binds either"
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "Cdf::quantile"
 mutation = "replace > with >="
 line_has = "if b.1 > a.1 {"
@@ -1764,7 +1764,7 @@ why = """the digest holds every usable value and this path runs with one, so \
 `a.1 < r <= b.1`, so `b.1 > a.1`"""
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "Cdf::mad"
 mutation = "replace - with +"
 line_has = "let mut b = (hi - m).max(m - lo);"
@@ -1779,7 +1779,7 @@ bit on 3,000 digests (levels 0 to 5e15, spreads 1e-12 to 1e3, skewed, \
 atoms, rounded)"""
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "Cdf::mad"
 mutation = "replace || with &&"
 line_has = "if d <= a || d >= b {"
@@ -1789,7 +1789,7 @@ to itself (`a` fails, `b` passes), so the mutant spins to `BISECTIONS` and \
 returns the same `b`"""
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "weighted_median"
 mutation = "replace - with +"
 line_has = "v[v.len() - 1].0"
@@ -1798,14 +1798,14 @@ value whose running count passes `r`, and `r <= n/2 < n`, the sum of the \
 counts (`n = 0` returned NaN above)"""
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "weighted_median"
 mutation = "replace - with /"
 line_has = "v[v.len() - 1].0"
 why = "as `replace - with +` here: the line never runs"
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "Audit::clock"
 mutation = "replace > with >="
 line_has = "step_cv: if mean > 0.0 { pop / mean } else { f64::NAN },"
@@ -1815,7 +1815,7 @@ the mean of regular steps is above 0 where there is one and NaN before: \
 never 0"""
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "Audit::merge"
 mutation = "replace > with >="
 line_has = "if d.steps > 0 {"
@@ -1825,7 +1825,7 @@ mutant's `max(c.max_step, 0)`, or 0 into an audit with no step either, \
 changes nothing (a state this code writes)"""
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "Audit::merge"
 mutation = "replace > with >="
 line_has = "c.max_step = if c.steps > 0 {"
@@ -1833,7 +1833,7 @@ why = """with no step of its own the audit's `max_step` is 0, so the \
 mutant's `max(0, d.max_step)` is `d.max_step`, `d`'s steps being `>= 0`"""
 
 [[equivalent]]
-file = "crates/online-core/src/audit.rs"
+file = "crates/rheon-core/src/audit.rs"
 function = "<impl OnlineModel for Audit>::step_into"
 mutation = "replace > with >="
 line_has = "if weight.abs() <= INPUT_BOUND && weight > 0.0 {"
@@ -1841,7 +1841,7 @@ why = """the mutant adds a weight of `±0` to `n_eff`, which is `>= 0`, and \
 `n_eff + 0`, `n_eff + (−0)` are `n_eff` (`+0 + −0` is `+0`)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "<impl CoStep for EachRow>::rank_one"
 mutation = "replace > with <"
 line_has = "let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
@@ -1853,7 +1853,7 @@ branch runs decides whether rows leave the calling thread, never a bit \
 `set_threads` takes 0 as 1, so the mutant always takes the loop"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "<impl CoStep for EachRow>::rank_one"
 mutation = "replace > with >="
 line_has = "let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
@@ -1861,7 +1861,7 @@ why = """as `replace > with <` here: at one thread `par::rows` makes one band \
 and runs it in order on the calling thread, the loop's arithmetic"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "<impl CoStep for EachRow>::rank_one"
 mutation = "replace && with ||"
 line_has = "let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
@@ -1869,7 +1869,7 @@ why = """as `replace > with <` here: either branch, the same bits; at one \
 thread `par::rows` runs its one band in order"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "<impl CoStep for EachRow>::rank_one"
 mutation = "replace * with +"
 line_has = "let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
@@ -1877,7 +1877,7 @@ why = """as `replace > with <` here: the size only moves the floor at which \
 rows leave the calling thread, and either branch gives the same bits"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "<impl CoStep for EachRow>::rank_one"
 mutation = "replace * with /"
 line_has = "let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
@@ -1885,7 +1885,7 @@ why = """as `replace * with +` here (`k / k` is 1, below the floor, so the \
 loop always runs: the same bits)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "<impl CoStep for EachRow>::rank_one"
 mutation = "replace >= with <"
 line_has = "let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
@@ -1894,7 +1894,7 @@ why = """as `replace > with <` here: the mutant sends the narrow matrices to \
 bits"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "<impl CoStep for EachRow>::rank_one"
 mutation = "replace > with =="
 line_has = "let workers = if threads.0 > 1 && k * k >= par::PAR_MIN_ENTRIES {"
@@ -1903,7 +1903,7 @@ why = """as `replace > with <` here: at one thread the mutant asks \
 the loop always runs: the same bits (task 307)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "<impl CoStep for EachRow>::rank_one"
 mutation = "replace > with <"
 line_has = "if workers > 1 {"
@@ -1913,7 +1913,7 @@ expression in the same order: the same bits, on one thread \
 (`an_accumulator_has_the_same_bits_at_every_thread_count`; task 307)"""
 
 [[equivalent]]
-file = "crates/online-core/src/gramfit/ridge.rs"
+file = "crates/rheon-core/src/gramfit/ridge.rs"
 function = "ridge_fits"
 mutation = "replace > with >="
 line_has = ".filter(|&col| fits[col].sigma2.is_finite() && fits[col].n > 0.0)"
@@ -1923,7 +1923,7 @@ wherever the first operand holds `nkish > 0` does too, and `nkish = 0` \
 comes with a NaN `sigma2` that makes the line false either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/gramfit/ridge.rs"
+file = "crates/rheon-core/src/gramfit/ridge.rs"
 function = "ridge_fits"
 mutation = "replace < with <="
 line_has = "let d = if diag[r] < 0.0 { 0.0 } else { diag[r] };"
@@ -1934,7 +1934,7 @@ definite, which `<` and `<=` both let through; at exactly 0 both \
 branches give 0"""
 
 [[equivalent]]
-file = "crates/online-core/src/gramfit/ridge.rs"
+file = "crates/rheon-core/src/gramfit/ridge.rs"
 function = "ridge_fits"
 mutation = "replace < with =="
 line_has = "let d = if diag[r] < 0.0 { 0.0 } else { diag[r] };"
@@ -1946,7 +1946,7 @@ as it fails `<`, and at 0 both branches give 0"""
 # survivor there got a test.
 
 [[equivalent]]
-file = "crates/online-core/src/influence.rs"
+file = "crates/rheon-core/src/influence.rs"
 function = "Influence::update"
 mutation = "replace > with >="
 line_has = "if e.is_finite() && infl.is_finite() && infl >= 1.0 && w > 0.0 {"
@@ -1955,7 +1955,7 @@ squares, `v` finite by the line's own tests, which leaves both sums \
 as they were"""
 
 [[equivalent]]
-file = "crates/online-core/src/health.rs"
+file = "crates/rheon-core/src/health.rs"
 function = "FeatureHealth::update"
 mutation = "replace > with >="
 line_has = "let x: &[f64] = if w > 0.0 {"
@@ -1964,7 +1964,7 @@ passes zeros; `EwDiag::update` takes no step at a weight of 0 (`b = 0`) \
 and reads no value of the row, so both leave the same moments"""
 
 [[equivalent]]
-file = "crates/online-core/src/breaks.rs"
+file = "crates/rheon-core/src/breaks.rs"
 function = "Breaks::update"
 mutation = "replace > with >="
 line_has = "if self.lags > 0 {"
@@ -1973,7 +1973,7 @@ ring and truncates the ring to 0 at once; the ring is empty before the \
 loop over it, so no product is added and the ring stays empty"""
 
 [[equivalent]]
-file = "crates/online-core/src/breaks.rs"
+file = "crates/rheon-core/src/breaks.rs"
 function = "TwinFit::gram"
 mutation = "replace * with +"
 line_has = "g[a + 1] = w * dev[a];"
@@ -1982,14 +1982,14 @@ to `solve_spd`, whose factorization reads the lower triangle alone \
 (`solve.rs`, `factorize`), where the line below writes the same value"""
 
 [[equivalent]]
-file = "crates/online-core/src/breaks.rs"
+file = "crates/rheon-core/src/breaks.rs"
 function = "TwinFit::gram"
 mutation = "replace * with /"
 line_has = "g[a + 1] = w * dev[a];"
 why = "as `replace * with +` here: the upper triangle is never read"
 
 [[equivalent]]
-file = "crates/online-core/src/gramfit/lars.rs"
+file = "crates/rheon-core/src/gramfit/lars.rs"
 function = "lars_lasso_rows"
 mutation = "replace > with >="
 line_has = "if den > 0.0 && !knot.contains(&(j, s)) {"
@@ -2000,7 +2000,7 @@ path rather than make an event, and the column has no step to take either \
 way (task 236)"""
 
 [[equivalent]]
-file = "crates/online-core/src/gramfit/lars.rs"
+file = "crates/rheon-core/src/gramfit/lars.rs"
 function = "lars_lasso_rows"
 mutation = "replace < with <="
 line_has = "if best.is_none_or(|(least, _)| g < least) {"
@@ -2012,7 +2012,7 @@ to 0 would need `λ − c_j ≤ 0` and `λ + c_j ≤ 0`, so `λ ≤ 0`, which th
 loop never holds (task 236)"""
 
 [[equivalent]]
-file = "crates/online-core/src/gramfit/lars.rs"
+file = "crates/rheon-core/src/gramfit/lars.rs"
 function = "Active::anchor"
 mutation = "replace * with /"
 line_has = ".map(|p| d[self.cols[p]] - lambda * self.signs[p])"
@@ -2024,7 +2024,7 @@ why = """a sign is 1.0 or -1.0, and `λ / ±1` is `λ · ±1` to the bit \
 # survivor there got a test; its timeouts are in scripts/mutants_tolerated.toml.
 
 [[equivalent]]
-file = "crates/online-core/src/pa.rs"
+file = "crates/rheon-core/src/pa.rs"
 function = "<impl OnlineModel for Pa>::step_into"
 mutation = "replace * with /"
 line_has = """for (b, z) in b0.iter_mut().zip(head) {
@@ -2035,7 +2035,7 @@ row. `step / 1.0` is `step * 1.0`, both `step` to the bit. The slopes' \
 twin on the next loop is caught"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd/held.rs"
+file = "crates/rheon-core/src/bocpd/held.rs"
 function = "LengthTerms::find"
 mutation = "replace ^ with |"
 line_has = "let folded = bits ^ (bits >> 32);"
@@ -2047,28 +2047,28 @@ emptied (`the_length_terms_miss_each_length_once` reads them). A worse mix \
 changes only how many entries a lookup steps over. Both `^` of the fold's line"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd/held.rs"
+file = "crates/rheon-core/src/bocpd/held.rs"
 function = "LengthTerms::find"
 mutation = "replace ^ with &"
 line_has = "let folded = bits ^ (bits >> 32);"
 why = """as `replace ^ with |` on this line: the fold only mixes the bits the index is read from, and `find` walks on from wherever it lands to the key or a free entry"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd/held.rs"
+file = "crates/rheon-core/src/bocpd/held.rs"
 function = "LengthTerms::find"
 mutation = "replace >> with <<"
 line_has = "let folded = bits ^ (bits >> 32);"
 why = """as `replace ^ with |` on this line: a shift left by 32 cannot overflow into a panic, and the fold only mixes the bits the index is read from"""
 
 [[equivalent]]
-file = "crates/online-core/src/bocpd/held.rs"
+file = "crates/rheon-core/src/bocpd/held.rs"
 function = "LengthTerms::find"
 mutation = "replace >> with <<"
 line_has = "let mut at = (folded.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize & mask;"
 why = """as the fold above: the product shifted left leaves the index's low bits zero, every key starts its walk at entry 0, and `find` still ends at the key or a free entry; only the number of entries stepped over changes"""
 
 [[equivalent]]
-file = "crates/online-core/src/gaps.rs"
+file = "crates/rheon-core/src/gaps.rs"
 function = "fold_block"
 mutation = "replace > with >="
 line_has = "let gappy = b.u[..off].iter().any(|&u| u > 0.0)"
@@ -2081,7 +2081,7 @@ M)/U` is the Gram's `δ` to the bit. Taken where it was not needed, the \
 gappy form is the same number"""
 
 [[equivalent]]
-file = "crates/online-core/src/gaps.rs"
+file = "crates/rheon-core/src/gaps.rs"
 function = "fold_block"
 mutation = "delete !"
 line_has = "|| counted.iter().zip(us).any(|(&c, &u)| !c && u > 0.0);"
@@ -2091,7 +2091,7 @@ every block (a target with no row of weight in it returned earlier), so \
 Gram's `δ` to the bit"""
 
 [[equivalent]]
-file = "crates/online-core/src/gaps.rs"
+file = "crates/rheon-core/src/gaps.rs"
 function = "fold_block"
 mutation = "replace && with ||"
 line_has = "|| counted.iter().zip(us).any(|(&c, &u)| !c && u > 0.0);"
@@ -2100,7 +2100,7 @@ the clause always holds, and where `gappy` was false the gappy `ε` is the \
 Gram's `δ` to the bit"""
 
 [[equivalent]]
-file = "crates/online-core/src/gaps.rs"
+file = "crates/rheon-core/src/gaps.rs"
 function = "fold_block"
 mutation = "replace > with >="
 line_has = "|| counted.iter().zip(us).any(|(&c, &u)| !c && u > 0.0);"
@@ -2109,7 +2109,7 @@ weight the target misses, which turns `gappy` only from false to true, \
 and where it was false the gappy `ε` is the Gram's `δ` to the bit"""
 
 [[equivalent]]
-file = "crates/online-core/src/gaps.rs"
+file = "crates/rheon-core/src/gaps.rs"
 function = "accumulate"
 mutation = "replace > with <"
 line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
@@ -2122,42 +2122,42 @@ at least `FOLD_BAND_MIN`) gives the same bits \
 mutants move the cost alone"""
 
 [[equivalent]]
-file = "crates/online-core/src/gaps.rs"
+file = "crates/rheon-core/src/gaps.rs"
 function = "accumulate"
 mutation = "replace > with =="
 line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
 why = "as `replace > with <` here: a band width moves which thread sums a column, not the sum"
 
 [[equivalent]]
-file = "crates/online-core/src/gaps.rs"
+file = "crates/rheon-core/src/gaps.rs"
 function = "accumulate"
 mutation = "replace > with >="
 line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
 why = "as `replace > with <` here: a band width moves which thread sums a column, not the sum"
 
 [[equivalent]]
-file = "crates/online-core/src/gaps.rs"
+file = "crates/rheon-core/src/gaps.rs"
 function = "accumulate"
 mutation = "replace && with ||"
 line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
 why = "as `replace > with <` here: a band width moves which thread sums a column, not the sum"
 
 [[equivalent]]
-file = "crates/online-core/src/gaps.rs"
+file = "crates/rheon-core/src/gaps.rs"
 function = "accumulate"
 mutation = "replace >= with <"
 line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
 why = "as `replace > with <` here: a band width moves which thread sums a column, not the sum"
 
 [[equivalent]]
-file = "crates/online-core/src/gaps.rs"
+file = "crates/rheon-core/src/gaps.rs"
 function = "accumulate"
 mutation = "replace * with +"
 line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
 why = "as `replace > with <` here: a band width moves which thread sums a column, not the sum"
 
 [[equivalent]]
-file = "crates/online-core/src/gaps.rs"
+file = "crates/rheon-core/src/gaps.rs"
 function = "accumulate"
 mutation = "replace * with /"
 line_has = "let width = if threads > 1 && k >= 2 * FOLD_BAND_MIN {"
@@ -2168,7 +2168,7 @@ why = "as `replace > with <` here: a band width moves which thread sums a column
 # other survivor there got a test.
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::monitor_stat_at"
 mutation = "replace || with &&"
 line_has = "if den.is_nan() || den <= 0.0 {"
@@ -2179,7 +2179,7 @@ and the `!rj.is_finite()` guard on the next line skips it the same; `den` \
 is otherwise positive, where both forms let it through"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::window_stat_by"
 mutation = "replace < with >"
 line_has = "if n < 2 * w || w < 2 {"
@@ -2191,7 +2191,7 @@ being at least 3 at `new` and at `restore` (the cfg is private). On `w < \
 catches"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::window_stat_by"
 mutation = "replace * with +"
 line_has = "if n < 2 * w || w < 2 {"
@@ -2200,7 +2200,7 @@ why = """`n = 2 * w` on every call (see `replace < with >` here), and `2 * w < \
 the original is"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::window_stat_by"
 mutation = "replace * with /"
 line_has = "if n < 2 * w || w < 2 {"
@@ -2209,7 +2209,7 @@ is 0 for the window kind's `span_rows` of at least 3: false as the \
 original is"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::window_stat_by"
 mutation = "replace || with &&"
 line_has = "if n < 2 * w || w < 2 {"
@@ -2217,7 +2217,7 @@ why = """both clauses are false on every call (see `replace < with >` here), \
 so their `&&` is false as their `||` is"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::window_stat_by"
 mutation = "replace < with <="
 line_has = "if n < 2 * w || w < 2 {"
@@ -2226,7 +2226,7 @@ at `restore`, so `w <= 2` is false as `w < 2` is; `n <= 2 * w` on the \
 first clause would be true on every call, and is caught"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChange::window_stat_by"
 mutation = "replace < with =="
 line_has = "if n < 2 * w || w < 2 {"
@@ -2235,7 +2235,7 @@ at least 3, as `w < 2` is; `n == 2 * w` on the first clause would be \
 true on every call, and is caught"""
 
 [[equivalent]]
-file = "crates/online-core/src/seqtest.rs"
+file = "crates/rheon-core/src/seqtest.rs"
 function = "SeqTest::outputs_into"
 mutation = "replace * with +"
 line_has = "pred.reserve(SLOTS * m);"
@@ -2244,7 +2244,7 @@ why = """`reserve` sets only the buffer's capacity, which nothing reads: the \
 values whatever was reserved"""
 
 [[equivalent]]
-file = "crates/online-core/src/seqtest.rs"
+file = "crates/rheon-core/src/seqtest.rs"
 function = "SeqTest::outputs_into"
 mutation = "replace * with /"
 line_has = "pred.reserve(SLOTS * m);"
@@ -2254,7 +2254,7 @@ why = """as `replace * with +` here: a capacity, not a value"""
 # test can catch.
 
 [[equivalent]]
-file = "crates/online-core/src/margbins.rs"
+file = "crates/rheon-core/src/margbins.rs"
 function = "BinScales::learn"
 mutation = "replace > with >="
 line_has = "if ob > 0.0 {"
@@ -2266,7 +2266,7 @@ and at least 0 (`u > 0` finite, `0 <= c < |e|`), so `ob >= w[t] > 0`, never \
 `Ω` can round to 0 while its `W` is above it, and a test catches that one"""
 
 [[equivalent]]
-file = "crates/online-core/src/stats.rs"
+file = "crates/rheon-core/src/stats.rs"
 function = "EwQuantile::kept"
 mutation = "replace * with +"
 line_has = "let (below, above) = if below + above <= 2 * half {"
@@ -2281,7 +2281,7 @@ the clamp moves no value inside the span, as for the span itself; a span \
 that does not fit takes the same branch either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/stats.rs"
+file = "crates/rheon-core/src/stats.rs"
 function = "EwQuantile::kept"
 mutation = "replace * with /"
 line_has = "let (below, above) = if below + above <= 2 * half {"
@@ -2289,7 +2289,7 @@ why = """as `replace * with +` here: `2 / half` is 0, a lower threshold still, \
 and each branch it sends a fitting span to returns a range holding it"""
 
 [[equivalent]]
-file = "crates/online-core/src/stats.rs"
+file = "crates/rheon-core/src/stats.rs"
 function = "EwQuantile::fold_to"
 mutation = "replace < with <="
 line_has = "if self.lo < lo {"
@@ -2299,7 +2299,7 @@ nothing changes. `fold_to` runs only on buckets that are not empty, so the \
 first bucket exists"""
 
 [[equivalent]]
-file = "crates/online-core/src/stats.rs"
+file = "crates/rheon-core/src/stats.rs"
 function = "EwQuantile::fold_to"
 mutation = "replace > with >="
 line_has = "if self.end() > hi {"
@@ -2310,7 +2310,7 @@ and adds `+0.0` to the last bucket, which changes no weight"""
 # sketch wider than one level's band folds on its next value.
 
 [[equivalent]]
-file = "crates/online-core/src/stats.rs"
+file = "crates/rheon-core/src/stats.rs"
 function = "EwQuantile::add"
 mutation = "replace < with <="
 line_has = "&& (k < self.lo || k > self.end() || self.wider_than_one_band())"
@@ -2321,7 +2321,7 @@ the first bucket, so `kept` returns the buckets' own extent: `fold_to` moves \
 nothing and the clamp leaves the value where it is"""
 
 [[equivalent]]
-file = "crates/online-core/src/stats.rs"
+file = "crates/rheon-core/src/stats.rs"
 function = "EwQuantile::add"
 mutation = "replace > with >="
 line_has = "&& (k < self.lo || k > self.end() || self.wider_than_one_band())"
@@ -2329,7 +2329,7 @@ why = """as `replace < with <=` here, at a value in the last bucket: a sketch \
 no wider than one level's band fits it, and `kept` returns its own extent"""
 
 [[equivalent]]
-file = "crates/online-core/src/stats.rs"
+file = "crates/rheon-core/src/stats.rs"
 function = "EwQuantile::wider_than_one_band"
 mutation = "replace EwQuantile::wider_than_one_band -> bool with true"
 line_has = "self.band"
@@ -2339,7 +2339,7 @@ that fits its band gets the sketch's own extent back from `kept` (as \
 the band for anyway"""
 
 [[equivalent]]
-file = "crates/online-core/src/stats.rs"
+file = "crates/rheon-core/src/stats.rs"
 function = "EwQuantile::wider_than_one_band"
 mutation = "replace > with >="
 line_has = ".is_some_and(|b| self.buckets.len() > Self::one_level_buckets(b))"
@@ -2347,7 +2347,7 @@ why = """at exactly one level's band, `len = 2·64·band + 1`, the sketch fits \
 its band, and `kept` returns its own extent: nothing folds"""
 
 [[equivalent]]
-file = "crates/online-core/src/robust.rs"
+file = "crates/rheon-core/src/robust.rs"
 function = "Robust::refit_target"
 mutation = "replace += with *="
 line_has = "self.refit[j].fail();\n            self.solve_failures += 1;"
@@ -2360,7 +2360,7 @@ the mean-form Gram's entries are at most `(2e100)²`, so no input reaches \
 the line"""
 
 [[equivalent]]
-file = "crates/online-core/src/robust.rs"
+file = "crates/rheon-core/src/robust.rs"
 function = "Robust::refit_target"
 mutation = "replace += with -="
 line_has = "self.refit[j].fail();\n            self.solve_failures += 1;"
@@ -2369,7 +2369,7 @@ jitter ladder factorizes a band system, which inputs within `INPUT_BOUND` \
 cannot make"""
 
 [[equivalent]]
-file = "crates/online-core/src/robust/quantile_refit.rs"
+file = "crates/rheon-core/src/robust/quantile_refit.rs"
 function = "Robust::refit_quantile"
 mutation = "replace += with *="
 line_has = "self.refit[j].fail();\n            self.solve_failures += 1;"
@@ -2378,14 +2378,14 @@ fails at every jitter rung, which needs a band system that is not finite, \
 and rows past `INPUT_BOUND` are refused before they reach the sums"""
 
 [[equivalent]]
-file = "crates/online-core/src/robust/quantile_refit.rs"
+file = "crates/rheon-core/src/robust/quantile_refit.rs"
 function = "Robust::refit_quantile"
 mutation = "replace += with -="
 line_has = "self.refit[j].fail();\n            self.solve_failures += 1;"
 why = """as `*=` on the same line: unreachable for inputs within `INPUT_BOUND`"""
 
 [[equivalent]]
-file = "crates/online-core/src/robust/quantile_refit.rs"
+file = "crates/rheon-core/src/robust/quantile_refit.rs"
 function = "check_change"
 mutation = "replace > with >="
 line_has = "        } else if e > 0.0 {"
@@ -2397,14 +2397,14 @@ zero (and likewise below): the value and the size agree, a zero's sign \
 aside, which a sum and an absolute value do not read"""
 
 [[equivalent]]
-file = "crates/online-core/src/robust/quantile_refit.rs"
+file = "crates/rheon-core/src/robust/quantile_refit.rs"
 function = "smoothed_check"
 mutation = "replace > with >="
 line_has = "    } else if r > 0.0 {"
 why = """as `check_change`'s: the branch runs where `|r| >= h > 0`, so `r = 0` reaches it only if `h` underflows to 0, and there both arms give a zero, `τ·0` and `(τ − 1)·0`, of opposite signs, which every caller adds or takes the size of alike."""
 
 [[equivalent]]
-file = "crates/online-core/src/sgd.rs"
+file = "crates/rheon-core/src/sgd.rs"
 function = "<impl OnlineModel for Sgd>::step_into"
 mutation = "replace > with >="
 line_has = "let along = if c > 0.0 {"
@@ -2421,7 +2421,7 @@ deviation, at most 2e100, where its variance is not usable): no square \
 overflows"""
 
 [[equivalent]]
-file = "crates/online-core/src/lasso.rs"
+file = "crates/rheon-core/src/lasso.rs"
 function = "Lasso::reaches_floor"
 mutation = "replace > with >="
 line_has = "if !(weight > 0.0 && weight.is_finite()) {"
@@ -2431,7 +2431,7 @@ a zero-weight row `step` returns before it reads `own_first`, the only use \
 of this answer"""
 
 [[equivalent]]
-file = "crates/online-core/src/lasso.rs"
+file = "crates/rheon-core/src/lasso.rs"
 function = "Lasso::reaches_floor"
 mutation = "replace && with ||"
 line_has = "if !(weight > 0.0 && weight.is_finite()) {"
@@ -2441,7 +2441,7 @@ false; on a zero-weight row `step` returns before it reads `own_first`, \
 the only use of this answer"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
+file = "crates/rheon-core/src/ewridge.rs"
 function = "<impl OnlineModel for EwRidge>::step_into"
 mutation = "replace < with <="
 line_has = "let below = if floor < self.cfg.min_weight && out.n_eff < self.cfg.min_weight {"
@@ -2453,7 +2453,7 @@ threshold only as `n_eff >= min_weight`. Either way it returns the first \
 read's predictions to the bit, and `pred` is the same"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
+file = "crates/rheon-core/src/ewridge.rs"
 function = "<impl OnlineModel for EwRidge>::step_into"
 mutation = "replace && with ||"
 line_has = "let below = if floor < self.cfg.min_weight && out.n_eff < self.cfg.min_weight {"
@@ -2464,7 +2464,7 @@ before the row's update, reads the threshold only as `n_eff >= \
 min_weight`, so it returns the first read's predictions to the bit"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve/condition.rs"
+file = "crates/rheon-core/src/solve/condition.rs"
 function = "SpdFactor::comparison_bound"
 mutation = "replace > with >="
 line_has = "let largest = |m: f64, v: f64| if v > m || v.is_nan() { v } else { m };"
@@ -2474,7 +2474,7 @@ sums of absolute values non-negative), so the two cannot be +0 and −0, and \
 a NaN takes the first branch either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve/condition.rs"
+file = "crates/rheon-core/src/solve/condition.rs"
 function = "norm1_estimate"
 mutation = "replace == with !="
 line_has = "let repeated = x.iter().zip(signs.iter()).all(|(&v, &s)| sign(v) == s);"
@@ -2491,7 +2491,7 @@ method over 200,000 random symmetric matrices of orders 2 to 5, integer \
 and real, found no difference"""
 
 [[equivalent]]
-file = "crates/online-core/src/cluster/kmeans.rs"
+file = "crates/rheon-core/src/cluster/kmeans.rs"
 function = "kmeanspp"
 mutation = "replace < with <="
 line_has = "cand[i] = if q < dd[i] { q } else { dd[i] };"
@@ -2504,7 +2504,7 @@ infinity and takes only such values); with either NaN both forms take \
 # The same guard in the held gate's twin of `reaches_floor`.
 
 [[equivalent]]
-file = "crates/online-core/src/lasso.rs"
+file = "crates/rheon-core/src/lasso.rs"
 function = "Lasso::own_first_solve"
 mutation = "replace > with >="
 line_has = "if !(weight > 0.0 && weight.is_finite()) {"
@@ -2514,7 +2514,7 @@ a zero-weight row `step` returns before it reads `own_first`, the only use \
 of this answer"""
 
 [[equivalent]]
-file = "crates/online-core/src/lasso.rs"
+file = "crates/rheon-core/src/lasso.rs"
 function = "Lasso::own_first_solve"
 mutation = "replace && with ||"
 line_has = "if !(weight > 0.0 && weight.is_finite()) {"
@@ -2524,7 +2524,7 @@ false; on a zero-weight row `step` returns before it reads `own_first`, \
 the only use of this answer"""
 
 [[equivalent]]
-file = "crates/online-core/src/margbins.rs"
+file = "crates/rheon-core/src/margbins.rs"
 function = "MarginalBins::refit"
 mutation = "replace > with >="
 line_has = """order.extend((0..n).filter(|&i| {
@@ -2540,7 +2540,7 @@ only row of a cell, `huber_location` gives `None` and the cell is left, \
 as an empty range leaves it"""
 
 [[equivalent]]
-file = "crates/online-core/src/margbins.rs"
+file = "crates/rheon-core/src/margbins.rs"
 function = "MarginalBins::refit"
 mutation = "replace > with >="
 line_has = "let weigh = |e: f64| if e.abs() > cut { cut / e.abs() } else { 1.0 };"
@@ -2550,7 +2550,7 @@ finite, or it is infinite; `e` is a difference of two finite values. At \
 branch's value"""
 
 [[equivalent]]
-file = "crates/online-core/src/stats.rs"
+file = "crates/rheon-core/src/stats.rs"
 function = "EwQuantile::get"
 mutation = "replace match guard a > 0.0 with true"
 line_has = "Some(a) if a > 0.0 => q * a,"
@@ -2561,14 +2561,14 @@ every pointer is at the zero bucket and `q = 0`, and `0 * 0 = 0 = q`. Any \
 other anchor is a positive normal float, where the guard holds either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/stats.rs"
+file = "crates/rheon-core/src/stats.rs"
 function = "EwQuantile::get"
 mutation = "replace > with >="
 line_has = "Some(a) if a > 0.0 => q * a,"
 why = "as the guard's `true` mutant: the two part only at an anchor of 0, where `q = 0`"
 
 [[equivalent]]
-file = "crates/online-core/src/breaks.rs"
+file = "crates/rheon-core/src/breaks.rs"
 function = "Breaks::scale_lead"
 mutation = "replace > with >="
 line_has = "if !(elapsed > 0.0 && elapsed.is_finite() && self.s1 > 0.0) {"
@@ -2579,7 +2579,7 @@ why = """let through at `elapsed = 0` (or -0), with `S1 > 0`, the body takes \
 which the clamp to `[0, 1]` returns as the guard's 0"""
 
 [[equivalent]]
-file = "crates/online-core/src/breaks.rs"
+file = "crates/rheon-core/src/breaks.rs"
 function = "cusum_null_at"
 mutation = "replace < with <="
 line_has = "let head = if l < 1.0 {"
@@ -2588,7 +2588,7 @@ and `j_full` is the same call with the same arguments, so the head is \
 exactly the other branch's 0"""
 
 [[equivalent]]
-file = "crates/online-core/src/breaks.rs"
+file = "crates/rheon-core/src/breaks.rs"
 function = "window_j"
 mutation = "replace > with >="
 line_has = "let h = if sigma > 0.0 {"
@@ -2596,7 +2596,7 @@ why = """`sigma` is ±1 at every call (`cusum_null_at` passes the literals \
 `1.0` and `-1.0`), never 0, where alone `>` and `>=` part"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "kolmogorov_sf"
 mutation = "replace * with /"
 line_has = "if term <= 0.25 * f64::EPSILON * sum {"
@@ -2614,7 +2614,7 @@ the sum. Bit-for-bit on 2,000,001 points of `[0.001, 25]`, the two part only \
 below `x = 0.078`, which the bisection never reads"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "kolmogorov_cdf_theta"
 mutation = "replace * with /"
 line_has = "if term <= 0.25 * f64::EPSILON * sum {"
@@ -2627,7 +2627,7 @@ underflows both rules see `0 ≤ …` and stop together. Bit-for-bit equal on \
 2,000,001 points of `[1e-4, 1.5]`"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "min_perm"
 mutation = "replace / with %"
 line_has = "let mut b = ((1.0 / alpha).ceil() as usize)"
@@ -2637,7 +2637,7 @@ why = """only the start moves: `1 % alpha` is in `[0, alpha)`, so the start is \
 (`perm_rejections` rises with `b`); at most `MAX_PERM` cheap steps"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "min_perm"
 mutation = "replace / with *"
 line_has = "let mut b = ((1.0 / alpha).ceil() as usize)"
@@ -2646,7 +2646,7 @@ here (`validate`; the Bonferroni share is smaller still): the start is 0 \
 and the second loop climbs to the answer, as for `%`"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "min_perm"
 mutation = "replace > with <"
 line_has = "while b > 0 && perm_rejections(alpha, b - 1) >= 1 {"
@@ -2661,7 +2661,7 @@ close the gap. (Checked too for `1/k` and its two neighbours, `k` up to \
 first test through `P`, and `b < 0 && P` is false too"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "min_perm"
 mutation = "replace > with =="
 line_has = "while b > 0 && perm_rejections(alpha, b - 1) >= 1 {"
@@ -2671,7 +2671,7 @@ false and the loop does not run, as the original's does not (the body \
 never runs: see `replace > with <`)"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "min_perm"
 mutation = "replace > with >="
 line_has = "while b > 0 && perm_rejections(alpha, b - 1) >= 1 {"
@@ -2680,7 +2680,7 @@ why = """the start is at least 1 for `alpha < 1`, and the body never runs (see \
 `replace > with <`), so `b` is never 0 at the test"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "min_perm"
 mutation = "replace - with +"
 line_has = "while b > 0 && perm_rejections(alpha, b - 1) >= 1 {"
@@ -2691,7 +2691,7 @@ down to 0, and the second loop walks it back up to `B`, the same answer by \
 a longer road (at most `2·MAX_PERM` cheap steps)"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "min_perm"
 mutation = "replace - with /"
 line_has = "while b > 0 && perm_rejections(alpha, b - 1) >= 1 {"
@@ -2701,7 +2701,7 @@ where `perm_rejections` is 0, and the second loop steps back to `B`; from \
 `B − 1` it does not run and the second loop steps to `B`"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "min_perm"
 mutation = "replace >= with <"
 line_has = "while b > 0 && perm_rejections(alpha, b - 1) >= 1 {"
@@ -2710,7 +2710,7 @@ why = """every `b` up to the start, at most `B`, has `perm_rejections(b − 1) =
 0 < 1`, so the loop walks `b` down to 0 and the second loop back up to `B`"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "min_perm"
 mutation = "replace -= with +="
 line_has = "        b -= 1;"
@@ -2718,7 +2718,7 @@ why = """the first loop's body never runs for an `alpha` in `(0, 1)` (see \
 `replace > with <`)"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "min_perm"
 mutation = "replace -= with /="
 line_has = "        b -= 1;"
@@ -2726,7 +2726,7 @@ why = """the first loop's body never runs for an `alpha` in `(0, 1)` (see \
 `replace > with <`)"""
 
 [[equivalent]]
-file = "crates/online-core/src/spread.rs"
+file = "crates/rheon-core/src/spread.rs"
 function = "TargetSpread::update"
 mutation = "replace > with >="
 line_has = "Some(v) if v.is_finite() && weight > 0.0 => self.0[j].update_one(v, lam, weight),"
@@ -2738,7 +2738,7 @@ why = """at weight 0 the guard's two arms agree: `update_one(v, lam, 0)` and \
 # huber_refit.rs's selection paths, stats.rs's table, robust.rs's `false`).
 
 [[equivalent]]
-file = "crates/online-core/src/robust.rs"
+file = "crates/rheon-core/src/robust.rs"
 function = "<impl OnlineModel for Robust>::step_into"
 mutation = "replace match guard emit with true"
 line_has = "Some(crate::Extra::Huber { scale }) if emit => scale,"
@@ -2755,7 +2755,7 @@ output and the same allocations (`Vec::new()` allocates nothing). The \
 # ewcov/held.rs, ewridge's tests, ewclass.rs and hmm.rs).
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/held.rs"
+file = "crates/rheon-core/src/ewcov/held.rs"
 function = "HeldSteps::take_tiles"
 mutation = "replace - with +"
 line_has = "match self.k - pb * 4 {"
@@ -2768,7 +2768,7 @@ takes the padding rows below `k` too, which hold zeros (`d` and \
 so the same bits, a little slower"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/held.rs"
+file = "crates/rheon-core/src/ewcov/held.rs"
 function = "HeldSteps::take_tiles"
 mutation = "replace * with +"
 line_has = "match self.k - pb * 4 {"
@@ -2777,7 +2777,7 @@ rows `k − 4·pb` (and never wraps, `pb < k`), so a tile takes padding rows \
 at most, which stay zero and are not copied back"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/held.rs"
+file = "crates/rheon-core/src/ewcov/held.rs"
 function = "HeldSteps::take_tiles"
 mutation = "replace * with /"
 line_has = "match self.k - pb * 4 {"
@@ -2786,7 +2786,7 @@ is 1 to 3 only where `k` is (`pb = 0`), so a tile takes padding rows at \
 most"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/held.rs"
+file = "crates/rheon-core/src/ewcov/held.rs"
 function = "HeldSteps::take_tiles"
 mutation = "delete match arm 1"
 line_has = "1 => self.row_block::<1>(pb),"
@@ -2795,7 +2795,7 @@ the padding rows, which hold zeros, stay zero and are not copied back \
 (`replace - with +` here): the same bits"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/held.rs"
+file = "crates/rheon-core/src/ewcov/held.rs"
 function = "HeldSteps::take_tiles"
 mutation = "delete match arm 2"
 line_has = "2 => self.row_block::<2>(pb),"
@@ -2803,7 +2803,7 @@ why = """as `delete match arm 1` here: two rows in a tile of four, the other \
 two padding"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/held.rs"
+file = "crates/rheon-core/src/ewcov/held.rs"
 function = "HeldSteps::take_tiles"
 mutation = "delete match arm 3"
 line_has = "3 => self.row_block::<3>(pb),"
@@ -2811,7 +2811,7 @@ why = """as `delete match arm 1` here: three rows in a tile of four, the other \
 padding"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/held.rs"
+file = "crates/rheon-core/src/ewcov/held.rs"
 function = "HeldSteps::row_block"
 mutation = "replace < with >"
 line_has = "if qb < pb {"
@@ -2821,7 +2821,7 @@ takes the same expression down the held rows in the same order, so the \
 same bits, where the wide tile only keeps more sums in registers"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/held.rs"
+file = "crates/rheon-core/src/ewcov/held.rs"
 function = "<impl pulp::WithSimd for HeldLanes<'_>>::with_simd"
 mutation = "replace < with >"
 line_has = "let wide = qb < pb;"
@@ -2830,7 +2830,7 @@ of four columns a row, and each entry takes the same expression in the \
 same order"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/held.rs"
+file = "crates/rheon-core/src/ewcov/held.rs"
 function = "<impl pulp::WithSimd for HeldLanes<'_>>::with_simd"
 mutation = "replace - with +"
 line_has = "match (k - pb * 4, wide) {"
@@ -2839,7 +2839,7 @@ than the block's, and the padding rows it takes besides stay zero and \
 are not copied back"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/held.rs"
+file = "crates/rheon-core/src/ewcov/held.rs"
 function = "<impl pulp::WithSimd for HeldLanes<'_>>::with_simd"
 mutation = "replace * with +"
 line_has = "match (k - pb * 4, wide) {"
@@ -2847,7 +2847,7 @@ why = """as `HeldSteps::take_tiles`'s `replace * with +`: `k − pb + 4` is \
 never below the block's rows"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/held.rs"
+file = "crates/rheon-core/src/ewcov/held.rs"
 function = "<impl pulp::WithSimd for HeldLanes<'_>>::with_simd"
 mutation = "replace * with /"
 line_has = "match (k - pb * 4, wide) {"
@@ -2855,7 +2855,7 @@ why = """as `HeldSteps::take_tiles`'s `replace * with /`: `k − pb/4` is never 
 below the block's rows"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve.rs"
+file = "crates/rheon-core/src/solve.rs"
 function = "factorize_into"
 mutation = "replace && with ||"
 line_has = "if l.nrows() == k && l.ncols() == k {"
@@ -2865,7 +2865,7 @@ sizes are both `k` or neither is, and `||` decides as `&&` does (its two \
 `a_factor_of_a_held_order_is_written_into_the_held_matrix` catches them)"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve.rs"
+file = "crates/rheon-core/src/solve.rs"
 function = "<impl Clone for SpdFactor>::clone_from"
 mutation = "replace && with ||"
 line_has = "if self.l.nrows() == source.l.nrows() && self.l.ncols() == source.l.ncols() {"
@@ -2873,7 +2873,7 @@ why = """as `factorize_into`'s: both factors' `L` are square, so the two size \
 checks agree"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve.rs"
+file = "crates/rheon-core/src/solve.rs"
 function = "rung_entry"
 mutation = "delete match arm Ordering::Less"
 line_has = "Ordering::Less => 0.0,"
@@ -2884,21 +2884,21 @@ the factor is the same bits even with NaN and `-1e300` there \
 (`a_systems_strict_upper_triangle_is_never_read`, which the mutant passes)"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve.rs"
+file = "crates/rheon-core/src/solve.rs"
 function = "<impl Clone for CholWork>::clone"
 mutation = "replace <impl Clone for CholWork>::clone -> Self with Default::default()"
 line_has = "Self::default()"
 why = "the body is `Self::default()` already: a copy of faer's scratch is empty by design"
 
 [[equivalent]]
-file = "crates/online-core/src/solve.rs"
+file = "crates/rheon-core/src/solve.rs"
 function = "<impl Clone for FactorWork>::clone"
 mutation = "replace <impl Clone for FactorWork>::clone -> Self with Default::default()"
 line_has = "Self::default()"
 why = "the body is `Self::default()` already: a copy of the working space keeps none of it by design"
 
 [[equivalent]]
-file = "crates/online-core/src/hmm.rs"
+file = "crates/rheon-core/src/hmm.rs"
 function = "Hmm::read_into"
 mutation = "replace > with >="
 line_has = "if pred[l] > 0.0 {"
@@ -2915,7 +2915,7 @@ negative, and `−0.0` gives `ln(−0.0) = −∞` too"""
 # guard does.
 
 [[equivalent]]
-file = "crates/online-core/src/solve/condition.rs"
+file = "crates/rheon-core/src/solve/condition.rs"
 function = "ridge_holds"
 mutation = "replace || with &&"
 line_has = "if k == 0 || (3.0 * order + 1.0) * U > 0.01 {"
@@ -2931,7 +2931,7 @@ a live Gram (each term of `c_ii` is), 1 standardized, and at least `−Ê ≥ \
 system of that order is 7e27 bytes"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve/condition.rs"
+file = "crates/rheon-core/src/solve/condition.rs"
 function = "ridge_holds"
 mutation = "replace * with +"
 line_has = "if k == 0 || (3.0 * order + 1.0) * U > 0.01 {"
@@ -2940,7 +2940,7 @@ why = """as `replace || with &&` on this line: the guard moves to `k` past \
 9.0e13, where the last comparison declines as it does past 3.0e13"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve/condition.rs"
+file = "crates/rheon-core/src/solve/condition.rs"
 function = "ridge_holds"
 mutation = "replace * with /"
 line_has = "if k == 0 || (3.0 * order + 1.0) * U > 0.01 {"
@@ -2950,7 +2950,7 @@ for `k ≥ 1` (infinite at `k = 0`, which `k == 0` declines first), so the \
 guard declines nothing, and past 3.0e13 the last comparison does"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve/condition.rs"
+file = "crates/rheon-core/src/solve/condition.rs"
 function = "ridge_holds"
 mutation = "replace + with *"
 line_has = "if k == 0 || (3.0 * order + 1.0) * U > 0.01 {"
@@ -2958,7 +2958,7 @@ why = """as `replace || with &&` on this line: `3k u` moves the guard by \
 one order, at 3.0e13, where the last comparison declines either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve/condition.rs"
+file = "crates/rheon-core/src/solve/condition.rs"
 function = "ridge_holds"
 mutation = "replace + with -"
 line_has = "if k == 0 || (3.0 * order + 1.0) * U > 0.01 {"
@@ -2966,7 +2966,7 @@ why = """as `replace + with *` on this line: the guard moves by one order, \
 at 3.0e13"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve/condition.rs"
+file = "crates/rheon-core/src/solve/condition.rs"
 function = "ridge_holds"
 mutation = "replace > with =="
 line_has = "if k == 0 || (3.0 * order + 1.0) * U > 0.01 {"
@@ -2975,7 +2975,7 @@ why = """as `replace || with &&` on this line: the guard declines nothing \
 does"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve/condition.rs"
+file = "crates/rheon-core/src/solve/condition.rs"
 function = "ridge_holds"
 mutation = "replace > with >="
 line_has = "if k == 0 || (3.0 * order + 1.0) * U > 0.01 {"
@@ -2985,7 +2985,7 @@ and it never is: `3k + 1` is an integer, exact or rounded to one, and `u = \
 an odd 53-bit integer times `2⁻⁵⁹`, which no integer times `2⁻⁵³` is"""
 
 [[equivalent]]
-file = "crates/online-core/src/solve/condition.rs"
+file = "crates/rheon-core/src/solve/condition.rs"
 function = "ridge_holds"
 mutation = "replace > with >="
 line_has = "Behind::Rows(rows) if (2.0 * rows as f64 + 6.0) * U > 0.01 => return false,"
@@ -2999,7 +2999,7 @@ are never equal"""
 # a variance its kept columns already passed.
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/held.rs"
+file = "crates/rheon-core/src/ewcov/held.rs"
 function = "HeldSteps::is_open"
 mutation = "replace HeldSteps::is_open -> bool with false"
 line_has = "self.open"
@@ -3016,7 +3016,7 @@ is not known, and forgetting it again moves nothing (`merge_rounding` is \
 `None` throughout, and the next merge rebuilds it from the matrix)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/merge_bound.rs"
+file = "crates/rheon-core/src/ewcov/merge_bound.rs"
 function = "MergeBound::merged"
 mutation = "replace * with +"
 line_has = "let tau_n = 2.0 * spread;"
@@ -3030,7 +3030,7 @@ the term left out. Where `spread` is infinite both `r` are; checked over \
 300,000 random merges across the overflow (task 312), none moved `e'`"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
+file = "crates/rheon-core/src/ewridge.rs"
 function = "EwRidge::solve_centred"
 mutation = "replace || with &&"
 line_has = "if v.is_nan() || v <= 0.0 {"
@@ -3046,7 +3046,7 @@ neither NaN nor at most 0 and both forms are false"""
 # `unread_tests::the_first_rows_solve_is_passed_strictly_below_the_threshold`.
 
 [[equivalent]]
-file = "crates/online-core/src/ewridge/unread.rs"
+file = "crates/rheon-core/src/ewridge/unread.rs"
 function = "EwRidge::solve_is_unread"
 mutation = "replace match guard first with true"
 line_has = "None if first => crate::DEFAULT_SOLVE_SHARE,"
@@ -3068,7 +3068,7 @@ return false; a window returns false before it in both"""
 # and the scratch check's `<` → `==` by `a_model_read_without_restore_steps_as_its_original`.
 
 [[equivalent]]
-file = "crates/online-core/src/sgd.rs"
+file = "crates/rheon-core/src/sgd.rs"
 function = "<impl OnlineModel for Sgd>::step_into"
 mutation = "replace < with <="
 line_has = "if self.dbuf.len() < n {"
@@ -3090,7 +3090,7 @@ values, same capacity"""
 # against 32 and 16.5 unmutated; a list is 4,096 deep).
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "priority"
 mutation = "replace >> with <<"
 line_has = "z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);"
@@ -3100,7 +3100,7 @@ mixes `seq` (an odd multiply and a later xor-shift follow), so the tree \
 stays logarithmic: deepest 30, mean depth 15.0 on 4,096 sorted rows"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "priority"
 mutation = "replace ^ with &"
 line_has = "z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);"
@@ -3109,7 +3109,7 @@ multiply `z & (z >> 27)` is still a mixed value of `seq`: deepest 28, mean \
 depth 15.1 on 4,096 sorted rows"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "priority"
 mutation = "replace ^ with |"
 line_has = "z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);"
@@ -3118,7 +3118,7 @@ still a mixed value of `seq`: deepest 28, mean depth 14.3 on 4,096 sorted \
 rows"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "priority"
 mutation = "replace >> with <<"
 line_has = "z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);"
@@ -3127,7 +3127,7 @@ xor-shift after one odd multiply still mixes: deepest 27, mean depth 14.6 \
 on 4,096 sorted rows"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "priority"
 mutation = "replace >> with <<"
 line_has = "    z ^ (z >> 31)"
@@ -3136,7 +3136,7 @@ acts on a value two odd multiplies have mixed: deepest 27, mean depth 14.6 \
 on 4,096 sorted rows"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "priority"
 mutation = "replace ^ with &"
 line_has = "    z ^ (z >> 31)"
@@ -3144,7 +3144,7 @@ why = """the priority only shapes the treap (as above); `z & (z >> 31)` of a \
 mixed `z` is still mixed: deepest 26, mean depth 13.7 on 4,096 sorted rows"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "priority"
 mutation = "replace ^ with |"
 line_has = "    z ^ (z >> 31)"
@@ -3153,7 +3153,7 @@ why = """the priority only shapes the treap (as above); `z | (z >> 31)` keeps \
 tree is the unmutated one's on the 4,096-row streams (deepest 32, mean 16.5)"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "Tree::put"
 mutation = "replace > with <"
 line_has = "if priority(self.nodes[l as usize].seq) > priority(self.nodes[at as usize].seq) {"
@@ -3163,7 +3163,7 @@ rotating by the lower priority the tree stays logarithmic: deepest 27 to \
 32, mean depth 14.4 to 16.5 on 4,096 rows rising, falling and random"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "Tree::put"
 mutation = "replace > with >="
 line_has = "if priority(self.nodes[l as usize].seq) > priority(self.nodes[at as usize].seq) {"
@@ -3172,7 +3172,7 @@ SplitMix64's finalizer (two xor-shifts and two odd multiplies after adding \
 the constant) is a bijection of `u64`: the two priorities are never equal"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "Tree::put"
 mutation = "replace > with <"
 line_has = "if priority(self.nodes[r as usize].seq) > priority(self.nodes[at as usize].seq) {"
@@ -3181,7 +3181,7 @@ with the right side rotating by the lower priority the tree stays \
 logarithmic: deepest 27 to 32, mean depth 14.9 to 16.5 on 4,096 rows"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "Tree::put"
 mutation = "replace > with >="
 line_has = "if priority(self.nodes[r as usize].seq) > priority(self.nodes[at as usize].seq) {"
@@ -3189,7 +3189,7 @@ why = """as for the left rotation: distinct `seq`, and the hash a bijection, \
 so the priorities are never equal"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "dyadic"
 mutation = "replace < with <="
 line_has = "s.fract() == 0.0 && w < 8_589_934_592.0 // 2^33"
@@ -3200,7 +3200,7 @@ none; the next row of positive weight takes the sum past `2^33`, which both \
 refuse"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "Tree::median"
 mutation = "replace || with &&"
 line_has = "if total.is_nan() || total <= 0.0 {"
@@ -3210,7 +3210,7 @@ every weight is 0, and the walk ends in the definition's, which finds no \
 positive weight and returns `None`, as the guard does"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "Tree::median"
 mutation = "replace < with <="
 line_has = """let clear = if self.exact {
@@ -3222,7 +3222,7 @@ whose half rounds to 0; under the exact flag every positive weight is a \
 multiple of `2^-20`, so the total is 0 (no read) or at least `2^-20`"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "frexp"
 mutation = "replace < with <="
 line_has = "let (x, bias) = if x < f64::MIN_POSITIVE {"
@@ -3231,7 +3231,7 @@ by `2^64` exactly and returns with 64 taken off the exponent: `(1/2, \
 -1021)` either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/held_median.rs"
+file = "crates/rheon-core/src/held_median.rs"
 function = "frexp"
 mutation = "replace | with ^"
 line_has = "let m = f64::from_bits((bits & !(0x7ff << 52)) | (1022u64 << 52));"
@@ -3239,7 +3239,7 @@ why = """the mask clears the exponent field, so the bits `1022 << 52` sets \
 are all 0 in the other operand, where `|` and `^` agree"""
 
 [[equivalent]]
-file = "crates/online-core/src/margbins.rs"
+file = "crates/rheon-core/src/margbins.rs"
 function = "BinScales::learn"
 mutation = "replace > with >="
 line_has = "if a.is_finite() && w > 0.0 && w.is_finite() {"
@@ -3248,7 +3248,7 @@ only once `row_weight` has found its weight finite and above 0, so `w = 0` \
 never reaches this line"""
 
 [[equivalent]]
-file = "crates/online-core/src/window_moments.rs"
+file = "crates/rheon-core/src/window_moments.rs"
 function = "Layout::corr"
 mutation = "replace > with >="
 line_has = "if den > 0.0 {"
@@ -3260,7 +3260,7 @@ way (`den` is never negative: the diagonal co-moments are sums of squares \
 and of non-negative merge terms)"""
 
 [[equivalent]]
-file = "crates/online-core/src/window_moments.rs"
+file = "crates/rheon-core/src/window_moments.rs"
 function = "<impl PartialEq for WindowSums>::eq"
 mutation = "replace <impl PartialEq for WindowSums>::eq -> bool with false"
 line_has = "fn eq(&self, _: &Self) -> bool {\n        true"
@@ -3270,7 +3270,7 @@ is NaN under every kind but `sequential`: the comparison is false before \
 it reaches the sums, so this `eq` is never called"""
 
 [[equivalent]]
-file = "crates/online-core/src/window_moments.rs"
+file = "crates/rheon-core/src/window_moments.rs"
 function = "WindowSums::ready"
 mutation = "replace < with <="
 line_has = "if s.low < low {"
@@ -3280,7 +3280,7 @@ length), so at `s.low == low` the truncation is to the length the sums \
 have and `s.low` is set to itself"""
 
 [[equivalent]]
-file = "crates/online-core/src/huber_refit.rs"
+file = "crates/rheon-core/src/huber_refit.rs"
 function = "<impl Clone for Reserved>::clone"
 mutation = "replace <impl Clone for Reserved>::clone -> Self with Default::default()"
 line_has = "Self(false)"
@@ -3290,7 +3290,7 @@ returns: a copied buffer is unreserved by design and reserves its full \
 size again on its next learned row"""
 
 [[equivalent]]
-file = "crates/online-core/src/window/flat.rs"
+file = "crates/rheon-core/src/window/flat.rs"
 function = "i128_of"
 mutation = "replace | with ^"
 line_has = "(u128::from(lo) | (u128::from(hi) << 64)) as i128"
@@ -3298,7 +3298,7 @@ why = """`u128::from(lo)` holds bits 0-63 and `u128::from(hi) << 64` bits \
 64-127, so the two share no set bit and `a | b` is `a ^ b`"""
 
 [[equivalent]]
-file = "crates/online-core/src/window/flat.rs"
+file = "crates/rheon-core/src/window/flat.rs"
 function = "Ring<S>::push_offer"
 mutation = "replace && with ||"
 line_has = "if V::VIEW && cfg!(debug_assertions) {"
@@ -3310,7 +3310,7 @@ build it is the views' check, which every debug test already holds; \
 nothing is written or kept differently either way"""
 
 [[equivalent]]
-file = "crates/online-core/src/window/flat.rs"
+file = "crates/rheon-core/src/window/flat.rs"
 function = "Ring<S>::push_offer"
 mutation = "replace > with >="
 line_has = "let rec = (block.len() > cap).then(|| {"
@@ -3321,7 +3321,7 @@ copies it back, so the block's words, capacity and the run recorded are \
 those of the other branch"""
 
 [[equivalent]]
-file = "crates/online-core/src/window/flat.rs"
+file = "crates/rheon-core/src/window/flat.rs"
 function = "Ring<S>::pop_front"
 mutation = "replace > with <"
 line_has = "while self.blocks.len() > 1 {"
@@ -3330,11 +3330,11 @@ loop above has popped every block before the one holding it, and no block \
 follows the newest snapshot's (a block is made only just before a record is \
 written, and one left empty by a record that overflowed it precedes the \
 block the record moved to), so one block remains either way (held by an \
-`assert_eq!(blocks.len(), 1)` in its place over every online-core and \
-online-polars test, extended included)"""
+`assert_eq!(blocks.len(), 1)` in its place over every rheon-core and \
+rheon-polars test, extended included)"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChangeCfg::validate"
 mutation = "replace < with <="
 line_has = "} else if self.alpha >= floor && least < 1.0 {"
@@ -3344,7 +3344,7 @@ which needs `npairs` within about 2e-6 of 2e10; `npairs` is 1 or \
 configuration reaches the boundary (task 358)"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "CorrChangeCfg::validate"
 mutation = "replace < with <="
 line_has = "} else if least < 1.0 {"
@@ -3352,7 +3352,7 @@ why = """as the branch above's: `least` is never 1 exactly, since no pair \
 count `d(d − 1)/2` is 2e10 (task 358)"""
 
 [[equivalent]]
-file = "crates/online-core/src/rcov.rs"
+file = "crates/rheon-core/src/rcov.rs"
 function = "RcovCfg::validate"
 mutation = "replace > with >="
 line_has = "if ring > 0 && most >= 1.0 && some_max {"
@@ -3362,7 +3362,7 @@ of the same double `k·k`), so `most = ⌊2²⁸/8k²⌋ − 1 ≤ ring − 1`, 
 `most ≥ 1` already needs `ring ≥ 2` (task 358)"""
 
 [[equivalent]]
-file = "crates/online-core/src/rcov.rs"
+file = "crates/rheon-core/src/rcov.rs"
 function = "RcovCfg::validate"
 mutation = "replace > with >="
 line_has = "} else if ring > 0 && most >= 1.0 && some_bandwidth {"
@@ -3370,7 +3370,7 @@ why = """as the first branch's: `most ≥ 1` over the limit already needs \
 `ring ≥ 2`, so `ring > 0` never decides (task 358)"""
 
 [[equivalent]]
-file = "crates/online-core/src/rcov.rs"
+file = "crates/rheon-core/src/rcov.rs"
 function = "RcovCfg::validate"
 mutation = "replace > with >="
 line_has = "} else if ring > 0 && most >= 1.0 {"
@@ -3378,7 +3378,7 @@ why = """as the first branch's: `most ≥ 1` over the limit already needs \
 `ring ≥ 2`, so `ring > 0` never decides (task 358)"""
 
 [[equivalent]]
-file = "crates/online-core/src/model.rs"
+file = "crates/rheon-core/src/model.rs"
 function = "schema_refusal"
 mutation = "replace > with >="
 line_has = "if found > current {"
@@ -3387,7 +3387,7 @@ only for a version outside `MIN_SCHEMA_VERSION..=SCHEMA_VERSION`, with \
 `current = SCHEMA_VERSION`, so `found` is never `current` (task 358)"""
 
 [[equivalent]]
-file = "crates/online-core/src/conformal.rs"
+file = "crates/rheon-core/src/conformal.rs"
 function = "Conformal::update_against"
 mutation = "replace > with >="
 line_has = "if held > 0 || self.held_mean != 0.0 {"
@@ -3399,7 +3399,7 @@ it starts at `+0`, `+0 − +0` and a sum of two zeros of which one is \
 (task 358)"""
 
 [[equivalent]]
-file = "crates/online-core/src/conformal.rs"
+file = "crates/rheon-core/src/conformal.rs"
 function = "Conformal::update_against"
 mutation = "replace > with >="
 line_has = "if self.held_mean > 0.0 {"
@@ -3408,7 +3408,7 @@ since `rate` is finite (`Conformal::new` refuses any other) and \
 `g = 2φ(·) < 0.8`, so `rate·g·0` is a zero; `η/1 = η` (task 358)"""
 
 [[equivalent]]
-file = "crates/online-core/src/conformal.rs"
+file = "crates/rheon-core/src/conformal.rs"
 function = "ln_basic"
 mutation = "replace < with <="
 line_has = "let (x, k0) = if x < f64::MIN_POSITIVE {"
@@ -3419,7 +3419,7 @@ original reads from `x` itself, so every later line computes the same \
 bits (task 373)"""
 
 [[equivalent]]
-file = "crates/online-core/src/conformal.rs"
+file = "crates/rheon-core/src/conformal.rs"
 function = "ln_basic"
 mutation = "replace | with ^"
 line_has = "let mut f = f64::from_bits((bits & ((1u64 << 52) - 1)) | (1023u64 << 52));"
@@ -3428,7 +3428,7 @@ bits 52 to 61, so the two operands share no set bit and their `^` is their \
 `|` (task 373)"""
 
 [[equivalent]]
-file = "crates/online-polars/src/stream/stack_line.rs"
+file = "crates/rheon-polars/src/stream/stack_line.rs"
 function = "StackLine::keep"
 mutation = "replace StackLine::keep with ()"
 line_has = "std::hint::black_box(&self.0);"
@@ -3441,7 +3441,7 @@ same without it"""
 # 371, 374 and 375) that no input can tell from the original.
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "rank_one_rows"
 mutation = "delete match arm 3"
 line_has = "3 => rank_one_fixed::<3>(c, d, a, b),"
@@ -3452,70 +3452,70 @@ deleted arm falls to; no operation is fused or reordered, so every entry \
 is the same bits, and only the loop's speed differs (task 378)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "rank_one_rows"
 mutation = "delete match arm 4"
 line_has = "4 => rank_one_fixed::<4>(c, d, a, b),"
 why = """as `delete match arm 3` here, at the side 4 (task 378)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "rank_one_rows"
 mutation = "delete match arm 5"
 line_has = "5 => rank_one_fixed::<5>(c, d, a, b),"
 why = """as `delete match arm 3` here, at the side 5 (task 378)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "rank_one_rows"
 mutation = "delete match arm 6"
 line_has = "6 => rank_one_fixed::<6>(c, d, a, b),"
 why = """as `delete match arm 3` here, at the side 6 (task 378)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "rank_one_rows"
 mutation = "delete match arm 7"
 line_has = "7 => rank_one_fixed::<7>(c, d, a, b),"
 why = """as `delete match arm 3` here, at the side 7 (task 378)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "rank_one_rows"
 mutation = "delete match arm 8"
 line_has = "8 => rank_one_fixed::<8>(c, d, a, b),"
 why = """as `delete match arm 3` here, at the side 8 (task 378)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "rank_one_rows"
 mutation = "delete match arm 9"
 line_has = "9 => rank_one_fixed::<9>(c, d, a, b),"
 why = """as `delete match arm 3` here, at the side 9 (task 378)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "rank_one_rows"
 mutation = "delete match arm 10"
 line_has = "10 => rank_one_fixed::<10>(c, d, a, b),"
 why = """as `delete match arm 3` here, at the side 10 (task 378)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "rank_one_rows"
 mutation = "delete match arm 11"
 line_has = "11 => rank_one_fixed::<11>(c, d, a, b),"
 why = """as `delete match arm 3` here, at the side 11 (task 378)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov.rs"
+file = "crates/rheon-core/src/ewcov.rs"
 function = "rank_one_rows"
 mutation = "delete match arm 12"
 line_has = "12 => rank_one_fixed::<12>(c, d, a, b),"
 why = """as `delete match arm 3` here, at the side 12 (task 378)"""
 
 [[equivalent]]
-file = "crates/online-core/src/window.rs"
+file = "crates/rheon-core/src/window.rs"
 function = "<impl Clone for Kept<T>>::clone"
 mutation = "replace <impl Clone for Kept<T>>::clone -> Self with Default::default()"
 line_has = "Self(None)"
@@ -3523,7 +3523,7 @@ why = """`Kept`'s `Default` is `Self(None)`, the very value the body returns: a 
 copy of a model's scratch holds none (task 378)"""
 
 [[equivalent]]
-file = "crates/online-core/src/window/flat.rs"
+file = "crates/rheon-core/src/window/flat.rs"
 function = "Ring<S>::record_same"
 mutation = "replace match guard run.shape.footprint == footprint && run.shape.words == n with false"
 line_has = "Some(run) if run.shape.footprint == footprint && run.shape.words == n => {"
@@ -3536,7 +3536,7 @@ not, both start a run (held by \
 (task 378)"""
 
 [[equivalent]]
-file = "crates/online-core/src/window/flat.rs"
+file = "crates/rheon-core/src/window/flat.rs"
 function = "Ring<S>::record_same"
 mutation = "replace == with !="
 line_has = "Some(run) if run.shape.footprint == footprint && run.shape.words == n => {"
@@ -3549,7 +3549,7 @@ false, and `match guard ... with false` here says why that is the same \
 (task 378)"""
 
 [[equivalent]]
-file = "crates/online-core/src/window/flat.rs"
+file = "crates/rheon-core/src/window/flat.rs"
 function = "Ring<S>::pop_front"
 mutation = "replace > with <"
 line_has = "self.shaped = run.count > 0;"
@@ -3563,7 +3563,7 @@ the general path taken where the fast one was; only the decoding's speed \
 differs, and the flag is never wrongly true (task 378)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewcov/par.rs"
+file = "crates/rheon-core/src/ewcov/par.rs"
 function = "merge_lower_cut"
 mutation = "replace < with <="
 line_has = "if buf.len() < len {"
@@ -3573,7 +3573,7 @@ piece reads is laid in before it is read, so the buffer and the merge are \
 the same to the bit (task 384)"""
 
 [[equivalent]]
-file = "crates/online-polars/src/resolvers.rs"
+file = "crates/rheon-polars/src/resolvers.rs"
 function = "resolve_targets"
 mutation = "replace > with =="
 line_has = "if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {"
@@ -3583,42 +3583,42 @@ order and read the results in the groups' order: which branch runs decides \
 which thread feeds a core, never a bit (`groups_resolve_on_many_threads_to_the_same_bits`)"""
 
 [[equivalent]]
-file = "crates/online-polars/src/resolvers.rs"
+file = "crates/rheon-polars/src/resolvers.rs"
 function = "resolve_targets"
 mutation = "replace > with <"
 line_has = "if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {"
 why = """as `replace > with ==` here: either branch feeds each core the same rows, so the same bits"""
 
 [[equivalent]]
-file = "crates/online-polars/src/resolvers.rs"
+file = "crates/rheon-polars/src/resolvers.rs"
 function = "resolve_targets"
 mutation = "replace > with >="
 line_has = "if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {"
 why = """as `replace > with ==` here: either branch feeds each core the same rows, so the same bits"""
 
 [[equivalent]]
-file = "crates/online-polars/src/resolvers.rs"
+file = "crates/rheon-polars/src/resolvers.rs"
 function = "resolve_targets"
 mutation = "replace >= with <"
 line_has = "if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {"
 why = """as `replace > with ==` here: either branch feeds each core the same rows, so the same bits"""
 
 [[equivalent]]
-file = "crates/online-polars/src/resolvers.rs"
+file = "crates/rheon-polars/src/resolvers.rs"
 function = "resolve_targets"
 mutation = "replace && with ||"
 line_has = "if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {"
 why = """as `replace > with ==` here: either branch feeds each core the same rows, so the same bits"""
 
 [[equivalent]]
-file = "crates/online-polars/src/resolvers.rs"
+file = "crates/rheon-polars/src/resolvers.rs"
 function = "resolve_targets"
 mutation = "replace || with &&"
 line_has = "if groups.len() > 1 && (n >= PAR_MIN_ROWS || groups.len() >= PAR_MIN_GROUPS) {"
 why = """as `replace > with ==` here: either branch feeds each core the same rows, so the same bits"""
 
 [[equivalent]]
-file = "crates/online-polars/src/resolvers.rs"
+file = "crates/rheon-polars/src/resolvers.rs"
 function = "resolve_targets"
 mutation = "replace r.is_err() with false"
 line_has = "let refused = r.is_err();"
@@ -3628,7 +3628,7 @@ snapshot it takes wherever a formula can refuse (a cast, a second formula \
 spec, a ring that can refuse), and where none can, no group refuses"""
 
 [[equivalent]]
-file = "crates/online-polars/src/windows_frame.rs"
+file = "crates/rheon-polars/src/windows_frame.rs"
 function = "short_cuts"
 mutation = "replace short_cuts -> bool with true"
 line_has = "fn short_cuts() -> bool {"
@@ -3636,7 +3636,7 @@ why = """the short cuts are the lazy engine's values to the bit (`the_short_cuts
 holds the two, a thread-local switching them off), so which a run takes decides its speed, never a value"""
 
 [[equivalent]]
-file = "crates/online-polars/src/windows_frame.rs"
+file = "crates/rheon-polars/src/windows_frame.rs"
 function = "short_cuts"
 mutation = "replace short_cuts -> bool with false"
 line_has = "fn short_cuts() -> bool {"
@@ -3644,14 +3644,14 @@ why = """the short cuts are the lazy engine's values to the bit (`the_short_cuts
 holds the two, a thread-local switching them off), so which a run takes decides its speed, never a value"""
 
 [[equivalent]]
-file = "crates/online-polars/src/formula.rs"
+file = "crates/rheon-polars/src/formula.rs"
 function = "bare_operator"
 mutation = "replace Node::bare_operator -> Option<&OpNode> with None"
 line_has = "pub fn bare_operator(&self) -> Option<&OpNode> {"
 why = """as `short_cuts` -> false: no formula is bare, so every formula takes the lazy engine, which gives the same values to the bit"""
 
 [[equivalent]]
-file = "crates/online-polars/src/resolvers.rs"
+file = "crates/rheon-polars/src/resolvers.rs"
 function = "resolve_targets"
 mutation = "replace > with =="
 line_has = "let shared = (groups.len() > 1)"
@@ -3664,7 +3664,7 @@ either way, and a chunk of several is handed them or evaluates them itself, \
 the same bits (`a_chunk_s_shared_increments_are_each_run_s_own`)"""
 
 [[equivalent]]
-file = "crates/online-polars/src/resolvers.rs"
+file = "crates/rheon-polars/src/resolvers.rs"
 function = "resolve_targets"
 mutation = "replace > with <"
 line_has = "let shared = (groups.len() > 1)"
@@ -3677,7 +3677,7 @@ either way, and a chunk of several is handed them or evaluates them itself, \
 the same bits (`a_chunk_s_shared_increments_are_each_run_s_own`)"""
 
 [[equivalent]]
-file = "crates/online-polars/src/resolvers.rs"
+file = "crates/rheon-polars/src/resolvers.rs"
 function = "resolve_targets"
 mutation = "replace > with >="
 line_has = "let shared = (groups.len() > 1)"
@@ -3690,7 +3690,7 @@ either way, and a chunk of several is handed them or evaluates them itself, \
 the same bits (`a_chunk_s_shared_increments_are_each_run_s_own`)"""
 
 [[equivalent]]
-file = "crates/online-core/src/ewridge.rs"
+file = "crates/rheon-core/src/ewridge.rs"
 function = "EwRidge::solve_in"
 mutation = "replace * with + in"
 line_has = "if ready.support.len() != m * nc {"
@@ -3701,7 +3701,7 @@ With `m + nc` the branch is entered on every length but `m + nc`, which \
 `support` never has unless it equals `m * nc`, where the resize is a no-op"""
 
 [[equivalent]]
-file = "crates/online-core/src/rls.rs"
+file = "crates/rheon-core/src/rls.rs"
 function = "zero_unseen"
 mutation = "replace zero_unseen -> f64 with 0.0"
 line_has = "std::hint::black_box(0.0)"
@@ -3709,7 +3709,7 @@ why = """`black_box` is the identity on its argument: the mutant returns the \
 same 0.0, and only the optimizer's view of the value, not any number, differs"""
 
 [[equivalent]]
-file = "crates/online-core/src/rls.rs"
+file = "crates/rheon-core/src/rls.rs"
 function = "solve_block"
 mutation = "replace >= with < in solve_block"
 line_has = "if k >= WIDE {"
@@ -3719,7 +3719,7 @@ same order whatever the block (the function's doc), so a 2-wide and a \
 4-wide sweep give the same bits at every `k`"""
 
 [[equivalent]]
-file = "crates/online-core/src/corrchange.rs"
+file = "crates/rheon-core/src/corrchange.rs"
 function = "below_by"
 mutation = "replace < with <="
 line_has = "if (m as u64) < n {"
@@ -3730,7 +3730,7 @@ the same as when the branch is skipped (`a_low_word_of_exactly_n_is_kept`)"""
 # Task 480: the survivors of run on main 2332d24c in `young` (task 475).
 
 [[equivalent]]
-file = "crates/online-core/src/gramfit/cd.rs"
+file = "crates/rheon-core/src/gramfit/cd.rs"
 function = "young"
 mutation = "replace match guard `prior_scale < 1.0` with true"
 line_has = "Some(n) if prior_scale < 1.0 =>"
@@ -3740,7 +3740,7 @@ above 1, and at exactly 1 the mutant's limit is `n * 2 / 0`, ±inf (NaN for \
 returns true, as the guard's other arm does"""
 
 [[equivalent]]
-file = "crates/online-core/src/gramfit/cd.rs"
+file = "crates/rheon-core/src/gramfit/cd.rs"
 function = "young"
 mutation = "replace < with <="
 line_has = "Some(n) if prior_scale < 1.0 =>"

@@ -25,9 +25,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online._formula import FormulaError, from_tree, to_tree
+import rheon as po
 from polars_version import INSTALLED, needs_polars
+from rheon._formula import FormulaError, from_tree, to_tree
 
 TIER = "mixed"
 
@@ -721,7 +721,7 @@ def test_the_refusal_lists_exactly_what_a_formula_reads() -> None:
     messages. Its nodes are the ones an expression using every construct
     reads into, its words are the guide's table cell, and the Rust reader's
     list is the same."""
-    from polars_online._formula import ACCEPTED, OPERATORS, accepted_text
+    from rheon._formula import ACCEPTED, OPERATORS, accepted_text
 
     x, w = pl.col("x"), po.ewm_mean("x", half_life=2.0)
     every = (
@@ -747,7 +747,7 @@ def test_the_refusal_lists_exactly_what_a_formula_reads() -> None:
     assert cell.group(1).replace("`", "").replace("\\|", "|") == accepted_text()
 
     rust = (
-        Path(__file__).resolve().parent.parent / "crates" / "online-polars" / "src" / "formula.rs"
+        Path(__file__).resolve().parent.parent / "crates" / "rheon-polars" / "src" / "formula.rs"
     ).read_text(encoding="utf-8")
     block = re.search(r"^const ACCEPTED: .*?^\];", rust, re.S | re.M)
     assert block, "no ACCEPTED in formula.rs"

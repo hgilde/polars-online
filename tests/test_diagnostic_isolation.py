@@ -55,7 +55,7 @@ that runs.
 Essentials: ``ewridge``, ``sgd`` and ``holt``. Extended: the other linear
 kinds, ``huber`` and ``sgd(loss="huber")`` among them, with the refit of
 their first rows on (task 277). The Rust twin, which ``cargo mutants`` sees, is
-``crates/online-polars/tests/diagnostic_isolation.rs``.
+``crates/rheon-polars/tests/diagnostic_isolation.rs``.
 """
 
 from __future__ import annotations
@@ -72,7 +72,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from test_model_registry import REGRESSIONS
 
 TIER = "mixed"

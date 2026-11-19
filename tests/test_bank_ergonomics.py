@@ -16,7 +16,7 @@ import polars as pl
 import polars.testing as plt
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 

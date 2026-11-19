@@ -71,7 +71,7 @@ def test_the_dispatch_inputs():
     assert inputs["digests"]["type"] == "boolean"
     assert inputs["digests"]["default"] is False
     assert inputs["tests"]["default"] == ""
-    assert inputs["test_package"]["default"] == "online-core"
+    assert inputs["test_package"]["default"] == "rheon-core"
     assert inputs["qemu_cpu"]["default"] == ""
 
 
@@ -352,7 +352,7 @@ def _fake_builds(monkeypatch, tmp_path, kept: dict):
 
     def build_wheel(repo, layout, target_dir, out):
         out.mkdir(parents=True, exist_ok=True)
-        wheel = out / f"polars_online-{layout}.whl"
+        wheel = out / f"rheon-{layout}.whl"
         wheel.write_text("", encoding="utf-8")
         built.append((Path(repo).name, layout, Path(target_dir)))
         return wheel
@@ -451,21 +451,21 @@ def test_the_test_binaries_are_the_test_profile_artifacts_with_their_package_dir
         {"reason": "compiler-artifact", "executable": None, "profile": {"test": False}},
         {
             "reason": "compiler-artifact",
-            "executable": "/t/release/deps/online_core-abc",
+            "executable": "/t/release/deps/rheon_core-abc",
             "profile": {"test": True},
-            "manifest_path": "/w/crates/online-core/Cargo.toml",
+            "manifest_path": "/w/crates/rheon-core/Cargo.toml",
         },
         {
             "reason": "compiler-artifact",
             "executable": "/t/release/deps/some_bin",
             "profile": {"test": False},
-            "manifest_path": "/w/crates/online-core/Cargo.toml",
+            "manifest_path": "/w/crates/rheon-core/Cargo.toml",
         },
         {"reason": "build-finished", "success": True},
     ]
     text = "\n".join(json.dumps(m) for m in lines) + "\nnot json\n"
     assert vm.built_test_binaries(text) == [
-        (Path("/t/release/deps/online_core-abc"), Path("/w/crates/online-core"))
+        (Path("/t/release/deps/rheon_core-abc"), Path("/w/crates/rheon-core"))
     ]
 
 
@@ -474,10 +474,10 @@ def test_the_tests_table_says_each_run():
         {"run": "native", "exit": 0, "passed": 7, "failed": 0, "ignored": 1},
         {"run": "qemu -cpu Nehalem", "exit": 0, "passed": 0, "failed": 0, "ignored": 0},
     ]
-    table = vm.tests_table("online-core", ["solve::"], rows)
+    table = vm.tests_table("rheon-core", ["solve::"], rows)
     assert "| native | 7 | 0 | 1 | ok |" in table
     assert "| qemu -cpu Nehalem | 0 | 0 | 0 | the filter matched no test |" in table
-    assert "cargo test -p online-core --release solve::" in table
+    assert "cargo test -p rheon-core --release solve::" in table
 
 
 # --- the digest table -----------------------------------------------------------------------
@@ -538,7 +538,7 @@ def _fake_tools(tmp_path: Path, monkeypatch, passed: int) -> list[str]:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     log = tmp_path / "qemu.log"
-    exe = tmp_path / "online_core-abc"
+    exe = tmp_path / "rheon_core-abc"
     exe.write_text("", encoding="utf-8")
     artifact = json.dumps(
         {
@@ -572,7 +572,7 @@ _POSIX_TOOLS = pytest.mark.skipif(
 @_POSIX_TOOLS
 def test_the_tests_run_natively_and_under_qemu_with_the_same_filter(tmp_path, monkeypatch):
     (log,) = _fake_tools(tmp_path, monkeypatch, passed=4)
-    rows = vm.run_tests(tmp_path, "online-core", ["solve::"], "Nehalem")
+    rows = vm.run_tests(tmp_path, "rheon-core", ["solve::"], "Nehalem")
     assert [r["run"] for r in rows] == ["native", "qemu -cpu Nehalem"]
     assert [r["passed"] for r in rows] == [4, 4]
     assert all(vm.verdict(r) is None for r in rows)
@@ -584,7 +584,7 @@ def test_the_tests_run_natively_and_under_qemu_with_the_same_filter(tmp_path, mo
 def test_a_filter_that_matches_nothing_fails_the_step(tmp_path, monkeypatch, capsys):
     _fake_tools(tmp_path, monkeypatch, passed=0)
     args = vm.argparse.Namespace(
-        repo=tmp_path, package="online-core", filter="nothing::", qemu_cpu=""
+        repo=tmp_path, package="rheon-core", filter="nothing::", qemu_cpu=""
     )
     assert vm._cmd_tests(args) == 1
     assert "the filter matched no test" in capsys.readouterr().out

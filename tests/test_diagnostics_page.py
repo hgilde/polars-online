@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-import polars_online as po
+import rheon as po
 from doc_recipes import differences, recipes, run
 
 TIER = "essential"

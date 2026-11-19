@@ -22,7 +22,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online
+import rheon
 
 TIER = "essential"
 
@@ -68,10 +68,10 @@ _nudge()
 
 
 def _copy_of_package(dest: Path, nudge: bool) -> Path:
-    """``dest/polars_online``: the installed package, its native library linked
+    """``dest/rheon``: the installed package, its native library linked
     (copied where a link is not allowed), and the nudge appended if asked."""
-    src = Path(polars_online.__file__).parent
-    pkg = dest / "polars_online"
+    src = Path(rheon.__file__).parent
+    pkg = dest / "rheon"
     pkg.mkdir(parents=True)
     for f in src.iterdir():
         if f.is_dir():

@@ -18,8 +18,8 @@ These steps need the library:
 - A model that takes bounds: `sgd`, stochastic gradient descent, or `pa`,
   passive-aggressive regression. No other model takes `coef_min`,
   `coef_max` or `coef_sum`. Their docstrings,
-  [`po.spec.sgd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.sgd)
-  and [`po.spec.pa`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa),
+  [`po.spec.sgd`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.sgd)
+  and [`po.spec.pa`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.pa),
   define each parameter.
 
 ## Bound the slopes of `sgd`
@@ -94,7 +94,7 @@ This code builds its own data:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # y = 0.9·a + 0.6·b plus noise: weights that sum to 1.5, outside a sum of 1.
 rng = np.random.default_rng(12)

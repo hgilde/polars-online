@@ -24,7 +24,7 @@ import pytest
 from sklearn.linear_model import Ridge, enet_path
 
 import ledger
-import polars_online as po
+import rheon as po
 
 TIER = "mixed"
 
@@ -254,14 +254,14 @@ class TestLassoPathsWeightsAreEnetPathOnRescaledColumns:
 # The solve's condition estimate, `‖H⁻¹‖₁` of the equilibrated matrix `H =
 # D⁻¹ A D⁻¹` by Hager's method as Higham refined it, is the one LAPACK's
 # `dpocon` runs (`dlacn2`). It is not exposed to Python, so the Rust test
-# `crates/online-core/src/solve/condition_tests.rs::the_estimate_is_lapacks_dpocon`
+# `crates/rheon-core/src/solve/condition_tests.rs::the_estimate_is_lapacks_dpocon`
 # holds it to a table of `dpocon`'s numbers, and this test holds the table
 # to scipy: each matrix is rebuilt from the same formula (exact entries,
 # the same bits in both languages), and scipy's `dpocon` on its factor must
 # read the number the table says, to the rounding of a solve with `H`.
 
 CONDITION_TESTS = (
-    Path(__file__).resolve().parents[1] / "crates/online-core/src/solve/condition_tests.rs"
+    Path(__file__).resolve().parents[1] / "crates/rheon-core/src/solve/condition_tests.rs"
 )
 
 

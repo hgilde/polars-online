@@ -3,7 +3,7 @@ read in one pass.
 
 The statistics are held to scipy, statsmodels and numpy in
 ``tests/test_second_opinion.py`` (``TestAuditIsScipyAndStatsmodels``) and to
-their definitions in ``crates/online-core/src/audit/tests.rs``. Here: the
+their definitions in ``crates/rheon-core/src/audit/tests.rs``. Here: the
 builder's refusals, every row read where a model skips one, a null counted
 apart from a NaN, the same frames from 1, 7 and 600 chunks (hard rule 3) and
 from a saved state, a restart that keeps the counts, the groups merged, and
@@ -19,7 +19,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 

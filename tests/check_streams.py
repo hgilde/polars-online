@@ -16,7 +16,7 @@ from typing import Any
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 N = 2000
 FEATURES = ["x0", "x1", "x2"]

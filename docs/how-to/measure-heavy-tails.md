@@ -56,7 +56,7 @@ first flag after it:
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # 200,000 rows of a stable relation whose noise is Student's t with 3 degrees of freedom, then
 # 20,000 rows where the noise is three times as large.

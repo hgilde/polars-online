@@ -13,7 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fold  # noqa: E402
 import streams  # noqa: E402
 
-import polars_online as po  # noqa: E402
+import rheon as po  # noqa: E402
 
 cases = [("flights", d) for d in streams.FLIGHT_DELAYS] + [
     ("generated", (0, nz, rt, d))

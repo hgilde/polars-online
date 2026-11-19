@@ -11,8 +11,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online import sim
+import rheon as po
+from rheon import sim
 
 TIER = "essential"
 
@@ -294,7 +294,7 @@ def test_async_rates_drop_ticks_and_the_epps_curve_rises():
 
 
 def test_the_output_feeds_refresh_time():
-    from polars_online import stream
+    from rheon import stream
 
     out = sim.regimes(
         3,

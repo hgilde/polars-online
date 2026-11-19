@@ -22,7 +22,7 @@ These steps need the library and an `ewridge` spec:
 
 `solve_every` and `max_rows_between_solves` are defined in
 [`po.spec.ewridge`'s
-docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge),
+docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.ewridge),
 whose Notes, under *The solve schedule*, give the rules at the schedule's
 edges.
 
@@ -86,7 +86,7 @@ the recipe counts a solve where the slope changes:
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # y = slope * x0 - x1 + 0.5 x2 plus noise, one row a clock unit; the slope on x0 jumps from 1 to 3 at row 10,000.
 rng = np.random.default_rng(7)

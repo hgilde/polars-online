@@ -16,7 +16,7 @@ import common as C  # noqa: E402
 import numpy as np  # noqa: E402
 from leafrefit import bank, leaf_values, rmse, synth, train_trees  # noqa: E402
 
-import polars_online as po  # noqa: E402
+import rheon as po  # noqa: E402
 
 print(C.load_line())
 res = {}

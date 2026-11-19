@@ -45,7 +45,7 @@ def _within(horizon: float, closed: str):
 
 class WindowRing:
     """A window's ring of snapshots, written from its documented rule
-    (``crates/online-core/src/window.rs``, the ``snapshot_every``,
+    (``crates/rheon-core/src/window.rs``, the ``snapshot_every``,
     ``max_rows_between_snapshots``, ``closed`` and ``window_budget``
     docstrings), holding each snapshot as the row it precedes: the window
     is the rows from the ring's front snapshot on.

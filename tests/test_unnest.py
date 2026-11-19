@@ -12,7 +12,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from polars_version import needs_polars
 
 TIER = "essential"

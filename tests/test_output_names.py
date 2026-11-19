@@ -28,11 +28,11 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
-pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+pytestmark = pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
 
 
 def _rows(n: int = 120, seed: int = 0) -> pl.DataFrame:

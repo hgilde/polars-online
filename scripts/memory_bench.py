@@ -5,7 +5,7 @@ line* give, and the advice to filter after the bank.
 
     uv run python scripts/memory_bench.py generate .cache/memory
     uv run python scripts/memory_bench.py all .cache/memory
-    uv run python scripts/memory_bench.py all .cache/memory --online target/release/polars-online
+    uv run python scripts/memory_bench.py all .cache/memory --online target/release/rheon
 
 ``generate`` writes a seeded file of 3M rows, 20 features, a clock, a weight
 and 32 groups (0.5 GB of parquet), and the same rows four times over, the
@@ -42,7 +42,7 @@ peak commit (``PeakPagefileUsage``, private memory). A resident set counts a
 mapped parquet file's clean pages, so compare a platform's figures with one
 another and not with macOS's. The python cases (``all``) stay macOS-only.
 
-    uv run python scripts/memory_bench.py cli .cache/memory --online target/release/polars-online \\
+    uv run python scripts/memory_bench.py cli .cache/memory --online target/release/rheon \\
         --sizes 3m,12m,24m --json cli-memory.json [--variant K=V,K=V ...]
 
 ``cli`` runs only the command line, on any platform, one size at a time
@@ -115,7 +115,7 @@ def repeat(d: Path, size: str) -> None:
 
 
 def _spec():
-    import polars_online as po
+    import rheon as po
 
     return po.spec.ewridge(
         "m",
@@ -134,7 +134,7 @@ def run(d: Path, case: str, size: str) -> None:
     """One case, in this process."""
     import polars as pl
 
-    import polars_online as po
+    import rheon as po
 
     spec = _spec()
     keep = pl.col("w") > 0  # every row

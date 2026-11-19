@@ -1,7 +1,7 @@
 # Online clustering, every family that can be made to fit
 
 Status as of 2026-09-06: **investigation complete, and two of its designs
-shipped — `kmeans` (task 23) and `micro` (task 24), `crates/online-core/src/cluster/`,
+shipped — `kmeans` (task 23) and `micro` (task 24), `crates/rheon-core/src/cluster/`,
 `po.spec.kmeans` and `po.spec.micro`, with `docs/PLAN.md` §11h recording what
 the build changed from the prototypes.** The numbers below are the numpy
 prototypes' and are kept as the record of why those two designs were chosen.
@@ -161,7 +161,7 @@ bank already enforces (`docs/PLAN.md` §2–§3, `CLAUDE.md`):
    must be guarded.
 8. **A null feature** skips the row (`docs/PLAN.md` §3's null policy).
 9. **State is versioned msgpack**, loadable on macOS and Windows; `f64`
-   throughout; no `unsafe` in `online-core`; the model knows nothing about
+   throughout; no `unsafe` in `rheon-core`; the model knows nothing about
    Polars.
 10. **A static output schema** derivable from the spec alone — `output_fields()`
     declares a spec's columns before a single row is fed, which is what lets a
@@ -279,7 +279,7 @@ leak must be named in the output, not buried in a parameter.
 
 *The surfaces disagree about whether a second pass is even possible.* The
 CLI over a file can re-scan cheaply; the IO plugin
-(`python/polars_online/_frame.py`) would have to re-execute its input plan
+(`python/rheon/_frame.py`) would have to re-execute its input plan
 inside the source, which doubles any upstream compute and is not obviously sound
 under polars' semantics for a plan used twice in one query. So a two-pass model
 cannot be an ordinary `ModelKind` in the bank — it needs its own entry point.
@@ -1323,7 +1323,7 @@ final centroids; the true silhouette needs all pairwise distances and is out.
 
 ## 9. What building it in Rust would take
 
-- `online-core`: `cluster/kmeans.rs` (+ `gmm.rs`, `micro.rs` if wanted) and a
+- `rheon-core`: `cluster/kmeans.rs` (+ `gmm.rs`, `micro.rs` if wanted) and a
   shared `cluster/summary.rs` holding §6.1's accumulator; ~400 lines for
   `kmeans` plus tests, and it reuses `EwCov` rather than reimplementing it.
   Arrays preallocated at construction; `f64`; no `unsafe`.

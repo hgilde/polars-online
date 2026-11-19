@@ -4,7 +4,7 @@ The reference gives each public function and class a page of its own,
 grouped by family on its module's page (``docs/reference/families.py``).
 Before that, each module page documented its objects in place, so the README
 of every release on PyPI links ids such as
-``spec.html#polars_online.spec.ewridge``, and keeps linking them after this
+``spec.html#rheon.spec.ewridge``, and keeps linking them after this
 repository has moved on. Each module page therefore carries an anchor with
 every id it once gave, beside a link to the object's own page. This builds
 the reference and holds the README's links, and every placed object's
@@ -104,6 +104,6 @@ def test_each_module_page_keeps_an_anchor_for_every_object_it_lists(built):
 
 def test_twins_of_another_case_get_two_files():
     """``Target`` and ``target`` would be one file on macOS and Windows."""
-    assert families.page_name("polars_online.Target", "class") == "polars_online.Target-class"
-    assert families.page_name("polars_online.target", "function") == "polars_online.target"
-    assert families.page_name("polars_online.ModelBank", "class") == "polars_online.ModelBank"
+    assert families.page_name("rheon.Target", "class") == "rheon.Target-class"
+    assert families.page_name("rheon.target", "function") == "rheon.target"
+    assert families.page_name("rheon.ModelBank", "class") == "rheon.ModelBank"

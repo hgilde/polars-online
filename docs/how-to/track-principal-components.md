@@ -59,7 +59,7 @@ the ones read before the last row:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # Four columns moved by one factor with known loadings, each with noise of its own.
 rng = np.random.default_rng(8)
@@ -114,4 +114,4 @@ the rows were chunked.
 
 The fields, in the table under `pca`, and every parameter are defined in
 `ew_cov`'s
-[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_cov).
+[docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.ew_cov).

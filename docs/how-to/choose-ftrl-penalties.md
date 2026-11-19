@@ -16,7 +16,7 @@ These steps need the library:
   clock requires. Without one, each row is one clock unit. The recipe's
   clock `t` steps by 1 a row, the same as no clock.
 - The parameters of
-  [`po.spec.ftrl`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl),
+  [`po.spec.ftrl`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.ftrl),
   which its docstring defines: `alpha`, the learning-rate scale (0.1 by
   default), `beta`, its smoothing (1.0), `l1`, the L1 penalty (0.0), and
   `l2`, the L2 penalty (1.0). Its entry in
@@ -64,7 +64,7 @@ ridge's prediction, at two half-lives, at the default penalties and at
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # A constant target of 5, and a feature x that is noise.
 n = 20_000

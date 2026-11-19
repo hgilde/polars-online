@@ -43,7 +43,7 @@ import statsmodels.api as sm
 from sklearn.linear_model import LinearRegression, LogisticRegression, PoissonRegressor
 
 import ledger
-import polars_online as po
+import rheon as po
 from public_benchmarks import libsvm_or_skip
 
 TIER = "mixed"

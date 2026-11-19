@@ -19,10 +19,10 @@ import polars as pl
 import pytest
 
 import check_streams as cs
-import polars_online as po
-from polars_online import _check
-from polars_online import _polars_online as _native
-from polars_online import gram as pg
+import rheon as po
+from rheon import _check
+from rheon import _rheon as _native
+from rheon import gram as pg
 
 TIER = "essential"
 

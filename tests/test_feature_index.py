@@ -25,8 +25,8 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import polars_online as po
-from polars_online import _polars_online as _native
+import rheon as po
+from rheon import _rheon as _native
 
 TIER = "essential"
 

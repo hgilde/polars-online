@@ -68,7 +68,7 @@ rescaling:
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # Twenty features, of which two matter: y = 1.0 x0 + 0.5 x1 + noise.
 rng = np.random.default_rng(1)

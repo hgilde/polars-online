@@ -112,7 +112,7 @@ one, so every chunk the bank takes is in order.
    in another order when it runs the query, so the output can change from run to run. Fix the order
    with maintain_order="left" on a join, maintain_order=True on a group_by, or a sort after a unique()
    or before the bank, or, where the order is fixed by other means, silence this warning with
-   `warnings.simplefilter("ignore", polars_online.OrderNotGuaranteedWarning)`.
+   `warnings.simplefilter("ignore", rheon.OrderNotGuaranteedWarning)`.
    maintain_order='left': no warning
    ```
 

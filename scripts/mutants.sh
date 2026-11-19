@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Mutation testing on online-core (docs/records/TESTING-LOG.md T-D4).
+# Mutation testing on rheon-core (docs/records/TESTING-LOG.md T-D4).
 #
 #   ./scripts/mutants.sh                      # the whole crate (11,138 mutants on 2026-10-03; over a day at 4 jobs)
-#   ./scripts/mutants.sh crates/online-core/src/clock.rs   # one file (85 mutants: minutes)
+#   ./scripts/mutants.sh crates/rheon-core/src/clock.rs   # one file (85 mutants: minutes)
 #   ./scripts/mutants.sh --iterate            # only what the last run did not catch
 #   ./scripts/mutants.sh --in-diff <(git diff main...)     # only code a diff touches
 #   python3 scripts/mutants_report.py mutants.out          # the survivors, less the equivalents
@@ -21,8 +21,8 @@
 # means every test still passed with the code deliberately broken, which is a
 # gap in the tests, not a bug in the code.
 #
-# Scoped to online-core on purpose: cargo-mutants only runs `cargo test`, so it
-# cannot see the pytest suite that exercises online-polars and online-py through
+# Scoped to rheon-core on purpose: cargo-mutants only runs `cargo test`, so it
+# cannot see the pytest suite that exercises rheon-polars and rheon-py through
 # the compiled extension. Mutants there would report as missed regardless.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -40,7 +40,7 @@ source scripts/env.sh
 # times it, so the 3 first tried counted most survivors as timeouts.
 # `--minimum-test-timeout` lowers cargo-mutants' 20 s floor, which no longer
 # binds.
-args=(--package online-core -j 4 --minimum-test-timeout 10 --cargo-test-arg=--tests --timeout-multiplier 10)
+args=(--package rheon-core -j 4 --minimum-test-timeout 10 --cargo-test-arg=--tests --timeout-multiplier 10)
 # Anything starting with `-` is a cargo-mutants flag; a bare word is a file to
 # scope to. That keeps the common `./scripts/mutants.sh some/file.rs` working
 # while allowing `--iterate` and `--in-diff <(...)` through: a `-`-flag takes

@@ -21,7 +21,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 from doc_recipes import differences, fenced_blocks
 
 TIER = "essential"

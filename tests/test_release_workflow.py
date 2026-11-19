@@ -432,7 +432,7 @@ def _wheel_smoke():
 
 
 def test_the_wheel_smoke_passes_on_this_build_and_refuses_the_wrong_version():
-    import polars_online as po
+    import rheon as po
 
     smoke = _wheel_smoke()
     assert smoke.check(po.__version__, installed=False).endswith(": ok")
@@ -441,7 +441,7 @@ def test_the_wheel_smoke_passes_on_this_build_and_refuses_the_wrong_version():
 
 
 def test_the_wheel_smoke_refuses_a_package_imported_from_the_checkout():
-    import polars_online as po
+    import rheon as po
 
     smoke = _wheel_smoke()
     if Path(po.__file__).resolve().is_relative_to(REPO / "python"):
@@ -545,7 +545,7 @@ def test_the_linux_cli_is_built_in_the_wheels_manylinux2014_image():
     assert linux["if"] == "matrix.cli && matrix.variant == 'default' && runner.os == 'Linux'"
     run = linux["run"]
     assert '"quay.io/pypa/manylinux2014_$(uname -m)"' in run
-    assert "cargo build --release --locked -p online-cli" in run
+    assert "cargo build --release --locked -p rheon-cli" in run
     assert "CARGO_TARGET_DIR=/io/target-cli" in run
     # The runner's own build is for macOS and Windows alone.
     host = next(s for s in _build_steps() if s.get("name") == "build the CLI")
@@ -626,7 +626,7 @@ _spec.loader.exec_module(release_version)
 PLACES = [
     "pyproject.toml",
     "Cargo.toml",
-    "python/polars_online/__init__.py",
+    "python/rheon/__init__.py",
     "docs/VALIDATION.md",
     "CHANGELOG.md",
     "docs/VERSIONS.md",
@@ -663,11 +663,11 @@ def test_the_repository_agrees_with_itself():
 
 
 def test_a_place_that_disagrees_is_named(copy):
-    init = copy / "python/polars_online/__init__.py"
+    init = copy / "python/rheon/__init__.py"
     v = release_version.versions(copy)["pyproject.toml"]
     init.write_text(init.read_text(encoding="utf-8").replace(f'"{v}"', '"9.9.9"'), encoding="utf-8")
     (bad,) = release_version.problems(copy)
-    assert "python/polars_online/__init__.py = 9.9.9" in bad
+    assert "python/rheon/__init__.py = 9.9.9" in bad
 
 
 def test_a_version_without_a_changelog_section_is_refused(copy):
@@ -897,7 +897,7 @@ def _verify_release():
 
 
 def test_the_release_check_passes_on_this_build_and_refuses_a_wrong_version_or_schema():
-    import polars_online as po
+    import rheon as po
 
     verify = _verify_release()
     assert verify.check(po.__version__, po.schema_version(), installed=False).endswith(": ok")
@@ -911,7 +911,7 @@ def test_the_release_check_passes_on_this_build_and_refuses_a_wrong_version_or_s
 
 
 def test_the_version_job_prints_the_schema_the_build_writes():
-    import polars_online as po
+    import rheon as po
 
     assert release_version.schema() == po.schema_version()
 

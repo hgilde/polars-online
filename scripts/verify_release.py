@@ -47,12 +47,12 @@ def check(
     be the first thing a user on this OS saw."""
     import polars as pl
 
-    import polars_online as po
-    from polars_online import _cpu_check
+    import rheon as po
+    from rheon import _cpu_check
 
     where = Path(po.__file__).resolve()
     if installed and where.is_relative_to(REPO / "python"):
-        raise SystemExit(f"polars_online came from the checkout ({where}), not from PyPI")
+        raise SystemExit(f"rheon came from the checkout ({where}), not from PyPI")
     if installed and distribution is not None:
         for name in DISTRIBUTIONS:
             try:
@@ -73,9 +73,9 @@ def check(
         ("native_version()", po.native_version()),
     ):
         if got != version:
-            raise SystemExit(f"polars_online.{name} is {got}, not {version}")
+            raise SystemExit(f"rheon.{name} is {got}, not {version}")
     if po.schema_version() != schema:
-        raise SystemExit(f"polars_online.schema_version() is {po.schema_version()}, not {schema}")
+        raise SystemExit(f"rheon.schema_version() is {po.schema_version()}, not {schema}")
 
     n = 2000
     xs = [((i * 37) % 101) / 10.0 - 5.0 for i in range(n)]

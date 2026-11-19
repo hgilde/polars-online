@@ -36,14 +36,14 @@ import pytest
 from hypothesis import HealthCheck, assume, example, given, settings
 from hypothesis import strategies as st
 
-import polars_online as po
+import rheon as po
 from test_model_registry import MINIMAL, REGRESSIONS, _build
 from test_properties_temporal import CLOCK_MODELS
 from tiers import examples
 
 TIER = "mixed"
 
-#: The bank's bound on a value it learns from (`online_core::INPUT_BOUND`):
+#: The bank's bound on a value it learns from (`rheon_core::INPUT_BOUND`):
 #: a magnitude past it, NaN and the infinities are missing, as a null is.
 INPUT_BOUND = 1e100
 
@@ -103,7 +103,7 @@ def _missing(col: str) -> pl.Expr:
 #: one-sided stream and were never made to: an all-negative feature reached 9
 #: of the 21 kinds, an all-negative target 7 of the 12 with one. This catches
 #: a NaN, an overflow or a divergence at a level, not a wrong fit, which
-#: `crates/online-core/tests/held_values.rs` holds.
+#: `crates/rheon-core/tests/held_values.rs` holds.
 SIGNS: dict[str, dict[str, float]] = {
     "mixed": {},
     "positive": {"sign": 1.0, "offset": 1e3},
@@ -487,7 +487,7 @@ class TestUniversalProperties:
 
         _given(sign, prop, df=_streams(model, sign, min_groups=2, max_groups=3))
 
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     def test_prediction_never_depends_on_the_current_target(self, model, extra, sign):
         """Out-of-sample by construction (docs/PLAN.md hard rule 2): changing a
         row's target must not change that row's own prediction.

@@ -11,7 +11,7 @@ release comparison's workload -- every kind the release has -- fitted on the fir
 half of its stream and saved.
 
 **Before 1.0, a released file is refused by its version.** The bank's minimum
-schema (``MIN_BANK_SCHEMA_VERSION``, crates/online-polars/src/bank.rs) is the
+schema (``MIN_BANK_SCHEMA_VERSION``, crates/rheon-polars/src/bank.rs) is the
 schema this build writes, above every release's: 0.10.0 wrote 14, 0.11.1 17,
 0.12.0 19 and 0.13.0 20. Each such file is refused naming the way out, and
 ``test_a_pre_1_0_state_is_refused_by_its_version`` holds each to that.
@@ -48,7 +48,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from data import Offline, is_transient, pypi_releases
 
 TIER = "extended"
@@ -363,7 +363,7 @@ LOADED = _from_1_0([v for v in RELEASES if _major(v) >= 1]) + [THIS_BUILD]
 # The workload's specs are built to reach every path, not to be ready: a
 # readiness warning about one of them is expected and says nothing here.
 pytestmark = [
-    pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning"),
+    pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning"),
     pytest.mark.extended(reason="the network: each release's wheel, downloaded from PyPI"),
 ]
 

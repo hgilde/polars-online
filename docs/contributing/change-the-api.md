@@ -83,10 +83,10 @@ The refusals are tables and stubs, on both sides:
 
 | the old name was | refused by |
 |---|---|
-| a spec parameter, in every model | `_RENAMED` (`python/polars_online/_spec.py`) and `RENAMED` (`crates/online-polars/src/spec.rs`) |
+| a spec parameter, in every model | `_RENAMED` (`python/rheon/_spec.py`) and `RENAMED` (`crates/rheon-polars/src/spec.rs`) |
 | a spec parameter, in one model, or one another model keeps | `_RENAMED_IN` and `RENAMED_WHERE_EXPECTED` |
 | a word of a spec parameter | `_RENAMED_WORDS` (`_spec_words.py`) and `RENAMED_VALUES` |
-| a keyword of a function | the decorator `renamed_keywords` (`python/polars_online/_renamed.py`) |
+| a keyword of a function | the decorator `renamed_keywords` (`python/rheon/_renamed.py`) |
 | a function | the stub `renamed_function` |
 | a method | the stub `renamed_method` |
 

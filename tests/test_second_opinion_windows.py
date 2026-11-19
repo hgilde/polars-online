@@ -33,7 +33,7 @@ import pytest
 from scipy.stats import multivariate_normal
 from statsmodels.regression.rolling import RollingWLS
 
-import polars_online as po
+import rheon as po
 
 TIER = "mixed"
 

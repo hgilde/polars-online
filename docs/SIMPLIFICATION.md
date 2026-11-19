@@ -213,7 +213,7 @@ and the compiler enforces completeness.
 
 **Risk.** **This changes the state file layout**, so it needs a
 `SCHEMA_VERSION` bump and a v-previous loader per CLAUDE.md hard rule 5, and
-`crates/online-polars/tests/state_v1.rs` gains a second frozen fixture. That is
+`crates/rheon-polars/tests/state_v1.rs` gains a second frozen fixture. That is
 real work for an internal tidy.
 
 **Verdict: not now.** Worth doing the *next* time `SCHEMA_VERSION` has to move
@@ -276,7 +276,7 @@ the disk, install, then write the linker.
   each task contiguous output; the *state* vectors are small (n_slots doubles)
   and accessed per row, so they are in L1 regardless. Churn without a measurement
   behind it.
-- **Merging `online-polars` and `online-py`.** They are separate so the CLI does
+- **Merging `rheon-polars` and `rheon-py`.** They are separate so the CLI does
   not link pyo3 — a real constraint, not an accident.
 - **Collapsing the eleven near-identical `po.spec.*` constructors in
   `_spec.py`.** They are the public API's discoverability: explicit keyword

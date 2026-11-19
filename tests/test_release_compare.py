@@ -159,7 +159,7 @@ def test_the_workload_reaches_every_field_name_and_every_named_path():
     """The release comparison is read as comparing every output: it holds
     the fullest workload's field names (the memory budgets', every output of
     every model switched on), all of them, and every path in `PATHS`."""
-    import polars_online as po
+    import rheon as po
     import test_budgets_memory as memory
 
     probed: set[str] = set()
@@ -184,7 +184,7 @@ def test_the_kalman_unsized_prior_path_is_reached_not_only_named():
     `below_warm_rows`, the rows past `min_weight` before the prior is sized
     (review 9's R4 §6: `kalman_standardized` reported none, so the release
     comparison never compared that path's rows)."""
-    import polars_online as po
+    import rheon as po
 
     specs = [(n, b, kw) for n, b, kw, _ in probe.WORKLOAD if _kalman_unsized(b, kw)]
     assert specs

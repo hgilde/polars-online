@@ -14,7 +14,7 @@
   },
 
   "rust-analyzer.linkedProjects": ["Cargo.toml"],
-  // online-py needs a >= 3.12 interpreter at build time (pyo3 abi3-py312).
+  // rheon-py needs a >= 3.12 interpreter at build time (pyo3 abi3-py312).
   // VIRTUAL_ENV rather than PYO3_PYTHON because this key cannot be made
   // OS-specific: pyo3 resolves the venv to bin/python or Scripts\python.exe
   // itself, so one value works on all three platforms where a hardcoded

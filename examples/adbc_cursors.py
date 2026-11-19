@@ -40,7 +40,7 @@ from typing import Any
 
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 SPEC = po.spec.ewridge(
     "m",

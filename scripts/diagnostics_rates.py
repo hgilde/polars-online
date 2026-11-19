@@ -63,7 +63,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from bench_header import header  # noqa: E402

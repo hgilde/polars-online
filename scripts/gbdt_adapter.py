@@ -1017,7 +1017,7 @@ def route_po(
 ) -> dict:
     """The package's own builder over the parts as one query, with the
     research's training parameters, so its trees compare by hash."""
-    import polars_online as po
+    import rheon as po
 
     lib, engine, opts = PO_ROUTES[name]
     feats = features_of(data)

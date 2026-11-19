@@ -1,6 +1,6 @@
 """T-W7: fixed numbers out of the whole pipeline, compared on every OS.
 
-`crates/online-core/tests/golden.rs` pins the Rust core's arithmetic, but
+`crates/rheon-core/tests/golden.rs` pins the Rust core's arithmetic, but
 nothing pinned what comes out of the *Polars* layer -- extraction, the
 per-group fan-out, the diagnostics, the struct assembly. A divergence
 introduced there, or by polars' own vectorized paths on a different CPU, would
@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -574,7 +574,7 @@ def switched_signature() -> dict[str, float | str | None]:
 #: by 119; the interval more, its radius keeping its start for many rows;
 #: ``tests/test_oracles_sigma.py`` holds ``sigma`` to its recursion over the
 #: residuals of the same spec with no gate, and
-#: ``crates/online-polars/tests/gate_isolation.rs`` to the gate never moving
+#: ``crates/rheon-polars/tests/gate_isolation.rs`` to the gate never moving
 #: it; nothing else moved. Task 323 (2026-11-05) moved the same 8,
 #: ``huber``'s and ``quantile``'s at rows 60 and 119: while each refit waits
 #: (500 rows here, past the stream) the MAD is the exact weighted median of

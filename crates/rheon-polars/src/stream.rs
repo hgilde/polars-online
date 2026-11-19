@@ -1,0 +1,5500 @@
+//! One (spec, group) stream: clock state + model instances (one per half-life
+//! grid entry), row-by-row processing with the docs/PLAN.md §3 null policy.
+
+use std::collections::VecDeque;
+
+use rheon_core::{
+    Bocpd, BocpdCfg, BocpdEmission, ChangeNorm, ClockState, Conformal, Constraint, CorrChange,
+    CorrChangeCfg, CorrChangeKind, Covariance, Decay, Deco, DecoCfg, DecoDynamics, Disorder,
+    EwAutoCorr, EwClass, EwClassCfg, EwCovCfg, EwCovModel, EwCovStat, EwQuantile, EwRidge,
+    EwRidgeCfg, Ftrl, FtrlCfg, FtrlLoss, HitTest, Hmm, HmmCfg, Holt, HoltCfg, HuberScale, KMeans,
+    KMeansCfg, Kalman, KalmanCfg, Lasso, LassoCfg, LearningRate, Marginal, MarginalCfg, Micro,
+    MicroCfg, OnlineModel, Pa, PaCfg, PaMode, PageHinkley, Rcov, RcovCfg, RcovKind, Rls, RlsCfg,
+    Robust, RobustCfg, RobustLoss, SeedRule, SeqTest, SeqTestCfg, Sgd, SgdCfg, SgdLoss,
+    SlotMetrics, State, WindowShadow,
+};
+use rheon_core::{ClockValue, CoefVariance, ExactCaps, Stamp};
+use serde::{Deserialize, Serialize};
+
+use crate::arrow::{ClockCol, LabelTimes};
+use crate::checks::{CheckCfg, Checks, RowView};
+use crate::resid_window::ResidWindow;
+use crate::rows::{FeatureCols, FeatureRows};
+use crate::span::{Span, SpanList};
+use crate::spec::{FloatOrList, ModelKind, ShardSpec, Spec};
+use crate::summary::{DataSummary, Fed};
+
+/// A refused backwards clock, for the bank to turn into the error naming it.
+#[derive(Debug, Clone, Copy)]
+pub struct ClockRefusal {
+    /// The raw delta, negative.
+    pub raw: f64,
+    /// The absolute row it happened at, in the chunk.
+    pub row: usize,
+    /// Under `"reset_state"`, the late-row minimum that refused it; `None`
+    /// under `"error"`, which refuses every step back.
+    pub disorder: Option<Disorder>,
+    /// On a temporal clock, the step back in integer nanoseconds: `raw` is a
+    /// double of seconds, which above about 104 days resolves more than a
+    /// nanosecond, and the message names the step exactly (review
+    /// 2026-09-28).
+    pub back_ns: Option<i128>,
+    /// On an integer clock, the step back in the column's own units,
+    /// exactly (docs/PLAN.md task 200).
+    pub back_int: Option<i128>,
+}
+
+impl ClockRefusal {
+    fn new(
+        raw: f64,
+        row: usize,
+        disorder: Option<Disorder>,
+        clock: Option<rheon_core::ClockValue>,
+        prev: Option<rheon_core::ClockValue>,
+    ) -> Self {
+        use rheon_core::ClockValue::Ns;
+        let back_ns = match (clock, prev) {
+            (Some(Ns(c)), Some(Ns(p))) => Some(i128::from(p) - i128::from(c)),
+            _ => None,
+        };
+        let back_int = match (clock, prev) {
+            (Some(c), Some(p)) => c.int_step(p).map(|step| -step),
+            _ => None,
+        };
+        Self {
+            raw,
+            row,
+            disorder,
+            back_ns,
+            back_int,
+        }
+    }
+}
+
+/// A refused clock step on a number clock: two values whose difference is
+/// past the largest double, for the bank to turn into the error naming it
+/// (review 2026-10-06, PB7).
+#[derive(Debug, Clone, Copy)]
+pub struct StepRefusal {
+    /// The absolute row it happened at, in the chunk.
+    pub row: usize,
+    /// The clock value of the row before it in the stream, and its own.
+    pub prev: f64,
+    pub now: f64,
+}
+
+/// Enum dispatch over the models the bank can run (serde-friendly).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AnyModel {
+    EwRidge(Box<EwRidge>),
+    Rls(Box<Rls>),
+    Lasso(Box<Lasso>),
+    Kalman(Box<Kalman>),
+    Robust(Box<Robust>),
+    Ftrl(Box<Ftrl>),
+    EwCov(Box<EwCovModel>),
+    Sgd(Box<Sgd>),
+    Pa(Box<Pa>),
+    Holt(Box<Holt>),
+    KMeans(Box<KMeans>),
+    Micro(Box<Micro>),
+    EwClass(Box<EwClass>),
+    SeqTest(Box<SeqTest>),
+    Marginal(Box<Marginal>),
+    Deco(Box<Deco>),
+    Rcov(Box<Rcov>),
+    Hmm(Box<Hmm>),
+    CorrChange(Box<CorrChange>),
+    Bocpd(Box<Bocpd>),
+    Audit(Box<rheon_core::Audit>),
+}
+
+/// A flush's shards, run on whichever pool the caller is in: the bank's
+/// own (pool.rs), since every learning path runs inside it.
+fn on_the_pool(count: usize) -> rheon_core::Shards<'static> {
+    fn run(shards: &mut [rheon_core::MarginalShard<'_>]) {
+        use rayon::prelude::*;
+        shards
+            .par_iter_mut()
+            .for_each(rheon_core::MarginalShard::run);
+    }
+    rheon_core::Shards { count, run: &run }
+}
+
+/// Bind the boxed model of whichever variant `$self` is, then run `$body`.
+///
+/// Only for the methods that are the *same* call on every variant. Three of
+/// `AnyModel`'s six are not — `solve_failures` groups the models that never
+/// factorize, `coefficients` reshapes per model, and `restore` matches on
+/// `ModelState` rather than on `Self` — and those stay written out, because a
+/// macro that needed a per-variant escape hatch would be harder to read than
+/// the match it replaced (docs/SIMPLIFICATION.md S3).
+macro_rules! dispatch {
+    ($self:expr, $m:ident => $body:expr) => {
+        match $self {
+            AnyModel::EwRidge($m) => $body,
+            AnyModel::Rls($m) => $body,
+            AnyModel::Lasso($m) => $body,
+            AnyModel::Kalman($m) => $body,
+            AnyModel::Robust($m) => $body,
+            AnyModel::Ftrl($m) => $body,
+            AnyModel::EwCov($m) => $body,
+            AnyModel::Sgd($m) => $body,
+            AnyModel::Pa($m) => $body,
+            AnyModel::Holt($m) => $body,
+            AnyModel::KMeans($m) => $body,
+            AnyModel::Micro($m) => $body,
+            AnyModel::EwClass($m) => $body,
+            AnyModel::SeqTest($m) => $body,
+            AnyModel::Marginal($m) => $body,
+            AnyModel::Deco($m) => $body,
+            AnyModel::Rcov($m) => $body,
+            AnyModel::Hmm($m) => $body,
+            AnyModel::CorrChange($m) => $body,
+            AnyModel::Bocpd($m) => $body,
+            AnyModel::Audit($m) => $body,
+        }
+    };
+}
+
+impl AnyModel {
+    /// Mix the main accumulators toward a long-run twin, where the model has
+    /// one (`session_shrink`). A no-op elsewhere.
+    pub fn blend_toward_long_run(&mut self) {
+        if let AnyModel::EwRidge(m) = self {
+            m.blend_toward_long_run();
+        }
+    }
+
+    pub fn step(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+    ) -> rheon_core::Step {
+        dispatch!(self, m => m.step(x, y, d_clock, weight))
+    }
+
+    /// [`Self::step`], into `out` ([`OnlineModel::step_into`]): the same
+    /// numbers, with `out`'s buffers reused where the model writes in place
+    /// (docs/PLAN.md task 270, M-4).
+    pub fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut rheon_core::Step,
+    ) {
+        dispatch!(self, m => m.step_into(x, y, d_clock, weight, out))
+    }
+
+    /// [`Self::step_into`], with a `marginal`'s pair work split into
+    /// `shards` ranges of features and run on the pool a batch of rows at a
+    /// time ([`rheon_core::Marginal::step_sharded`], docs/PLAN.md task
+    /// 126). Every other model, and one shard, steps as `step_into` does.
+    /// The rows a sharded step holds are learned by [`Self::flush`], which
+    /// every run of rows ends with; the numbers are `step`'s to the bit.
+    pub fn step_sharded_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        shards: usize,
+        out: &mut rheon_core::Step,
+    ) {
+        match self {
+            AnyModel::Marginal(m) if shards > 1 => {
+                *out = m.step_sharded(x, y, d_clock, weight, &on_the_pool(shards));
+            }
+            _ => self.step_into(x, y, d_clock, weight, out),
+        }
+    }
+
+    /// End a run of rows: learn every row a sharded step holds
+    /// ([`Self::step_sharded_into`]).
+    pub fn flush(&mut self, shards: usize) {
+        if let AnyModel::Marginal(m) = self {
+            m.flush(&on_the_pool(shards));
+        }
+    }
+
+    /// Take the readiness shares of every solve an `ewridge`, `huber` or
+    /// `quantile` left unread, dropping the factors they wait on
+    /// ([`rheon_core::EwRidge::settle_readiness`], docs/PLAN.md tasks 140
+    /// and 116). Once a stream's chunk is done, not once a run: a share
+    /// costs a solve against the identity, about `k³`, and a chunk of a
+    /// wide spec is many cache-sized runs (task 265).
+    pub fn settle_readiness(&mut self) {
+        match self {
+            AnyModel::EwRidge(m) => m.settle_readiness(),
+            AnyModel::Robust(m) => m.settle_readiness(),
+            _ => {}
+        }
+    }
+
+    /// The bytes the model's Huber refit buffers can hold at most
+    /// (`refit_reservation`, docs/PLAN.md task 277): 0 for a model without
+    /// the refit.
+    pub fn refit_reservation(&self) -> usize {
+        match self {
+            AnyModel::Robust(m) => m.refit_reservation(),
+            AnyModel::Sgd(m) => m.refit_reservation(),
+            AnyModel::Marginal(m) => m.refit_reservation(),
+            _ => 0,
+        }
+    }
+
+    /// Give the model's refits up, past its spec's `refit_budget`; a no-op
+    /// for a model without the refit.
+    pub fn refit_give_up(&mut self) {
+        match self {
+            AnyModel::Robust(m) => m.refit_give_up(),
+            AnyModel::Sgd(m) => m.refit_give_up(),
+            AnyModel::Marginal(m) => m.refit_give_up(),
+            _ => {}
+        }
+    }
+
+    /// How each target's refit stands; empty for a model without it.
+    pub fn refit_status(&self) -> Vec<rheon_core::RefitStatus> {
+        match self {
+            AnyModel::Robust(m) => m.refit_status(),
+            AnyModel::Sgd(m) => m.refit_status(),
+            AnyModel::Marginal(m) => m.refit_status(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The step's answer without the step
+    /// ([`OnlineModel::predict_with`]). `y` is passed because two models
+    /// read a number out of the targets slot -- `bocpd`'s hazard column and
+    /// `hmm`'s exogenous column -- and their answer depends on it; every
+    /// other model ignores it, which is what makes `predict` out of sample
+    /// (docs/REVIEW-E54-E64.md C1).
+    pub fn predict(&self, x: &[f64], y: &[Option<f64>], d_clock: f64) -> rheon_core::Step {
+        dispatch!(self, m => m.predict_with(x, y, d_clock))
+    }
+
+    /// [`Self::predict`] into the caller's step, which it overwrites in
+    /// full ([`OnlineModel::predict_with_into`]).
+    pub fn predict_into(
+        &self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        out: &mut rheon_core::Step,
+    ) {
+        dispatch!(self, m => m.predict_with_into(x, y, d_clock, out))
+    }
+
+    /// [`Self::predict`] at another `min_weight` floor, set for the read and
+    /// put back ([`OnlineModel::predict_with_floor`]): the prediction a
+    /// floor withholds from the output, which the residual spread folds.
+    pub fn predict_with_floor(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        floor: f64,
+    ) -> rheon_core::Step {
+        dispatch!(self, m => m.predict_with_floor(x, y, d_clock, floor))
+    }
+
+    /// Drop the row-lagged state ([`OnlineModel::clear_lags`]); a no-op for
+    /// a model that keeps none.
+    pub fn clear_lags(&mut self) {
+        dispatch!(self, m => m.clear_lags())
+    }
+
+    /// Hand the model the next learned row's stamp, its decayed clock held
+    /// exactly ([`OnlineModel::stamp_next`], docs/PLAN.md task 175); a no-op
+    /// for a model without a window.
+    pub fn stamp_next(&mut self, stamp: Stamp) {
+        dispatch!(self, m => m.stamp_next(stamp))
+    }
+
+    /// [`Self::stamp_next`] on a stream with no clock column
+    /// ([`OnlineModel::stamp_next_on_rows`], task 278, D13).
+    pub fn stamp_next_on_rows(&mut self, stamp: Stamp) {
+        dispatch!(self, m => m.stamp_next_on_rows(stamp))
+    }
+
+    /// Bound the model's window ([`OnlineModel::set_window_budget`]).
+    pub fn set_window_budget(&mut self, budget: Option<rheon_core::WindowBudget>) {
+        dispatch!(self, m => m.set_window_budget(budget))
+    }
+
+    /// Run the model's Gram work on `threads` threads
+    /// ([`OnlineModel::set_gram_threads`]).
+    pub fn set_gram_threads(&mut self, threads: usize) {
+        dispatch!(self, m => m.set_gram_threads(threads))
+    }
+
+    /// Set the model's window edge ([`OnlineModel::set_window_closed`]).
+    pub fn set_window_closed(&mut self, closed: rheon_core::WindowClosed) {
+        dispatch!(self, m => m.set_window_closed(closed))
+    }
+
+    /// The model's window ring as a shadow ([`OnlineModel::window_shadow`]).
+    pub fn window_shadow(&self) -> Option<WindowShadow> {
+        dispatch!(self, m => m.window_shadow())
+    }
+
+    /// [`OnlineModel::window_could_refuse`].
+    pub fn window_could_refuse(&self, rows: usize) -> bool {
+        dispatch!(self, m => m.window_could_refuse(rows))
+    }
+
+    /// The default schedule in an explicit cadence's first period
+    /// ([`OnlineModel::set_first_period_by_share`]).
+    pub fn set_first_period_by_share(&mut self, on: bool) {
+        dispatch!(self, m => m.set_first_period_by_share(on))
+    }
+
+    /// The weight-share cadence ([`OnlineModel::set_solve_share`]).
+    pub fn set_solve_share(&mut self, share: Option<f64>) {
+        dispatch!(self, m => m.set_solve_share(share))
+    }
+
+    /// The weight-share cadence the model runs by ([`OnlineModel::solve_share`]).
+    pub fn solve_share(&self) -> Option<f64> {
+        dispatch!(self, m => m.solve_share())
+    }
+
+    /// A refusing budget's overrun ([`OnlineModel::window_over_budget`]).
+    pub fn window_over_budget(&self) -> Option<(usize, rheon_core::Cadence)> {
+        dispatch!(self, m => m.window_over_budget())
+    }
+
+    /// Each target's own weight, for the per-target warmup
+    /// ([`OnlineModel::target_n_eff_into`]).
+    pub fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
+        dispatch!(self, m => m.target_n_eff_into(out))
+    }
+
+    /// The noise gate's statistic per slot
+    /// ([`OnlineModel::error_inflation_into`]); `false` for a model
+    /// without one.
+    pub fn error_inflation_into(&self, out: &mut Vec<f64>) -> bool {
+        dispatch!(self, m => m.error_inflation_into(out))
+    }
+
+    /// The same for the noise gate at `limit` on the row `x`, `d_clock`
+    /// after the last, where a bound may stand in below it
+    /// ([`OnlineModel::error_inflation_gate_into`]).
+    pub fn error_inflation_gate_into(
+        &self,
+        x: &[f64],
+        d_clock: f64,
+        out: &mut Vec<f64>,
+        limit: f64,
+    ) -> bool {
+        dispatch!(self, m => m.error_inflation_gate_into(x, d_clock, out, limit))
+    }
+
+    /// The same for one row's features
+    /// ([`OnlineModel::row_error_inflation_into`]).
+    pub fn row_error_inflation_into(&self, x: &[f64], d_clock: f64, out: &mut Vec<f64>) -> bool {
+        dispatch!(self, m => m.row_error_inflation_into(x, d_clock, out))
+    }
+
+    /// The coefficients' sampling variances
+    /// ([`OnlineModel::coef_variance`]).
+    pub fn coef_variance(&self) -> Option<rheon_core::CoefVariance> {
+        dispatch!(self, m => m.coef_variance())
+    }
+
+    /// Each coefficient's data share ([`OnlineModel::support_coef`]), laid
+    /// out like [`Self::coefficients`].
+    pub fn support_coef(&self) -> Option<Vec<Vec<f64>>> {
+        dispatch!(self, m => m.support_coef())
+    }
+
+    /// Each coefficient's data share as one list, slot after slot, written
+    /// over `out` ([`OnlineModel::support_coef_into`]); `false` where there
+    /// is none.
+    pub fn support_coef_into(&self, out: &mut Vec<f64>) -> bool {
+        dispatch!(self, m => m.support_coef_into(out))
+    }
+
+    /// Whether the model is still in its own warm-up: a standardizing `sgd`
+    /// or `pa` whose scaler has not switched the fit to the caller's units
+    /// ([`rheon_core::Warmup`]). Every other model has none.
+    pub fn scaler_warming(&self) -> bool {
+        match self {
+            AnyModel::Sgd(m) => m.scaler_warming(),
+            AnyModel::Pa(m) => m.scaler_warming(),
+            _ => false,
+        }
+    }
+
+    /// Whether the model is still holding its first rows to seed itself
+    /// from, its `warm_rows`, and so reports nothing: `kmeans`' centres,
+    /// `hmm`'s states, `bocpd`'s prior, `kalman`'s unsized priors.
+    pub fn seeding(&self) -> bool {
+        match self {
+            AnyModel::KMeans(m) => !m.seeded(),
+            AnyModel::Hmm(m) => !m.seeded(),
+            AnyModel::Bocpd(m) => m.warming(),
+            AnyModel::Kalman(m) => m.sizing(),
+            _ => false,
+        }
+    }
+
+    /// Whether a slot's fit is withheld because the system it was solved
+    /// from is past the condition at which a solve keeps a digit:
+    /// `ewridge`'s, whose normal equations can factorize past it
+    /// (`rheon_core::SpdFactor::carries_no_digit`). Every other model
+    /// solves nothing of the kind.
+    pub fn ill_conditioned(&self) -> bool {
+        match self {
+            AnyModel::EwRidge(m) => m.ill_conditioned(),
+            _ => false,
+        }
+    }
+
+    /// Per target, whether its predictions are withheld because its recent
+    /// steps say the learning rate is past its stability bound: `sgd`'s
+    /// gate (`rheon_core::Sgd::unstable_targets`), read from the state, so
+    /// it names the prediction the next row makes; empty for every other
+    /// model, which takes no gradient step of a rate the caller sets (task
+    /// 278, D8).
+    pub fn unstable_targets(&self) -> Vec<bool> {
+        match self {
+            AnyModel::Sgd(m) if m.unstable() => m.unstable_targets(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// What went wrong in a model's solves, counted (docs/PLAN.md §7):
+    /// `ewridge` and `robust` count their jittered or failed factorizations,
+    /// `lasso` its coordinate descents that ran out of sweeps, `ew_class` the
+    /// rows whose scoring met a failed factorization, `hmm` the rows its
+    /// filter could not evaluate, `bocpd` the rows whose predictive could
+    /// not be, `kmeans` and `hmm` the seeding's Lloyd runs that stopped at
+    /// their cap short of a fixed point (task 278, D7), and `robust`'s Huber
+    /// and `sgd(loss="huber")` the targets whose refit of their first rows
+    /// took every IRLS pass (task 278). Every other model reports 0 because
+    /// it counts nothing, not because nothing can fail: `kalman` inverts an
+    /// innovation variance, and `ew_cov` solves for `mahal` and
+    /// `partial_corr` (review 2026-09-12, S8).
+    pub fn solve_failures(&self) -> u64 {
+        match self {
+            AnyModel::EwRidge(m) => m.solve_failures,
+            AnyModel::Lasso(m) => m.solve_failures,
+            AnyModel::Robust(m) => m.solve_failures,
+            AnyModel::EwClass(m) => m.solve_failures,
+            AnyModel::Hmm(m) => m.solve_failures,
+            AnyModel::Bocpd(m) => m.solve_failures,
+            AnyModel::KMeans(m) => m.solve_failures,
+            AnyModel::Sgd(m) => m.solve_failures(),
+            AnyModel::Marginal(m) => m.solve_failures(),
+            AnyModel::Rls(_)
+            | AnyModel::Kalman(_)
+            | AnyModel::Ftrl(_)
+            | AnyModel::EwCov(_)
+            | AnyModel::Pa(_)
+            | AnyModel::Holt(_)
+            | AnyModel::Micro(_)
+            | AnyModel::SeqTest(_)
+            | AnyModel::Deco(_)
+            | AnyModel::Rcov(_)
+            | AnyModel::CorrChange(_)
+            | AnyModel::Audit(_) => 0,
+        }
+    }
+
+    pub fn n_outputs(&self) -> usize {
+        dispatch!(self, m => m.n_outputs())
+    }
+
+    pub fn n_features(&self) -> usize {
+        dispatch!(self, m => m.n_features())
+    }
+
+    pub fn n_targets(&self) -> usize {
+        dispatch!(self, m => m.n_targets())
+    }
+
+    /// The accumulated weight behind the model as it stands: what the next
+    /// row's `n_eff` field reports (before that row's update).
+    pub fn n_eff(&self) -> f64 {
+        dispatch!(self, m => m.n_eff())
+    }
+
+    pub fn coefficients(&self) -> Option<Vec<Vec<f64>>> {
+        match self {
+            AnyModel::EwRidge(m) => m.coefficients().map(|b| b.to_vec()),
+            AnyModel::Rls(m) => Some(m.coefficients().to_vec()),
+            // Flattened to (target x path point) rows, matching the pred slots.
+            AnyModel::Lasso(m) => m
+                .coefficients()
+                .map(|b| b.iter().flat_map(|per_t| per_t.iter().cloned()).collect()),
+            AnyModel::Kalman(m) => Some(m.coefficients()),
+            AnyModel::Robust(m) => m.coefficients().map(|b| b.to_vec()),
+            AnyModel::Ftrl(m) => Some(m.coefficients()),
+            // ew_cov has no coefficients: its outputs are the statistics.
+            AnyModel::EwCov(_) => None,
+            AnyModel::Sgd(m) => Some(m.coefficients()),
+            AnyModel::Pa(m) => Some(m.coefficients().to_vec()),
+            AnyModel::Holt(m) => Some(m.coefficients()),
+            // The centres, k rows of p; absent until seeded.
+            AnyModel::KMeans(m) => m.coefficients(),
+            // micro: one row per potential summary -- ragged, and absent
+            // until there is one.
+            AnyModel::Micro(m) => m.coefficients(),
+            // The class means, one row per class (NaN for a class not seen).
+            AnyModel::EwClass(m) => Some(m.coefficients()),
+            // seqtest has no coefficients: its outputs are the e-values and
+            // the counts they are staked on.
+            AnyModel::SeqTest(_) => None,
+            // marginal has no coefficients and no outputs: its pairs are
+            // read from the state by `Bank::marginal`.
+            AnyModel::Marginal(_) => None,
+            // The levels themselves, one row: `coef_fields` names one slot
+            // per correlation value, term `rho`.
+            AnyModel::Deco(m) => Some(vec![m.rho().to_vec()]),
+            // rcov has no coefficients: its value is the block it emits at
+            // the group's close.
+            AnyModel::Rcov(_) => None,
+            // The state means, one row per state, as `ew_class` reports its
+            // class means.
+            AnyModel::Hmm(m) => Some((0..m.cfg().k).map(|s| m.state_means(s).to_vec()).collect()),
+            // corrchange has no coefficients: its outputs are the test.
+            AnyModel::CorrChange(_) => None,
+            // bocpd has none either: its value is the run-length posterior.
+            AnyModel::Bocpd(_) => None,
+            // audit has none: its value is what it counted, read by
+            // `Bank::audit`.
+            AnyModel::Audit(_) => None,
+        }
+    }
+
+    pub fn state(&self) -> State {
+        dispatch!(self, m => m.state())
+    }
+
+    /// The model's configuration as built, as JSON: what
+    /// [`crate::resolved_defaults`] reads every model default from. Refused
+    /// where the JSON would not read back as the configuration, so an
+    /// infinity written as `null` cannot be pinned as one (`faithful_json`).
+    pub fn cfg_json(&self) -> Result<serde_json::Value, String> {
+        dispatch!(self, m => crate::defaults::faithful_json(m.cfg()))
+    }
+}
+
+/// The default `bins` the Python layer leaves to us: enough resolution to see
+/// a threshold or a V, and small enough that the histogram stays a rounding
+/// error next to the pair moments it rides along with. With `bin_edges` the
+/// count is the edges' and this is not read.
+const DEFAULT_BINS: usize = 16;
+
+/// Learned rows held before the bin edges are fixed. A thousand rows put
+/// roughly sixty in each of sixteen quantile bins -- enough for edges that do
+/// not move much -- and hold 8 KB per feature while they wait.
+const DEFAULT_BIN_WARM_ROWS: usize = 1_000;
+
+/// The cut of `bin_stat = "huber"` in units of the target's robust scale
+/// when the spec names none: `huber`'s default, the cut at which Huber's
+/// estimator keeps 95% of the mean's efficiency on normal errors.
+pub(crate) const DEFAULT_BIN_HUBER_DELTA: f64 = 1.345;
+
+/// Build the model instances for a spec: one per half-life grid entry. A
+/// model's own refusal names the spec, as `Spec::validate` names it for
+/// `bocpd`'s and the other cfg builders': in a bank of several specs
+/// `sgd: clip_gradient must be > 0` did not say which (review 2026-10-06,
+/// YA4). `decays` names it already.
+pub fn build_models(spec: &Spec) -> Result<Vec<(String, AnyModel)>, String> {
+    let decays = spec.decays()?;
+    decays
+        .into_iter()
+        .map(|(suffix, decay)| {
+            // A model reports every problem with its settings, one to a
+            // line; the spec names them once.
+            let m = build_one(spec, decay).map_err(|e| {
+                let mut no = rheon_core::Refusals::new();
+                no.take(Err(e));
+                crate::spec::render_refusal(&spec.name, spec.model.kind_name(), &no).unwrap_err()
+            })?;
+            Ok((suffix, m))
+        })
+        .collect()
+}
+
+/// `kmeans`' and `hmm`'s `init` as the core's [`SeedRule`]: scikit-learn's
+/// words, `"k-means++"` among them (task 244), `"lloyd"` when absent.
+pub(crate) fn init_rule(init: Option<&str>) -> Result<SeedRule, String> {
+    match init {
+        None | Some("lloyd") => Ok(SeedRule::Lloyd),
+        Some("k-means++") => Ok(SeedRule::Kmeanspp),
+        Some("farthest") => Ok(SeedRule::Farthest),
+        Some("first") => Ok(SeedRule::First),
+        Some(other) => Err(crate::words_refusal(
+            "init",
+            &crate::spec::INIT_WORDS,
+            other,
+        )),
+    }
+}
+
+/// The slope constraint of `sgd` / `pa` from the spec's `coef_min`,
+/// `coef_max` and `coef_sum`: a scalar bound is broadcast to every feature,
+/// a list is taken as given (its length is checked by the model's config,
+/// which names the offence). `None` when nothing is constrained.
+/// A spec's `huber_scale` word as the model takes it: `"mad"` where none
+/// is given, the default since task 271 (the word was validated with the
+/// spec).
+fn huber_scale_of(word: Option<&str>) -> HuberScale {
+    match word {
+        Some("rms") => HuberScale::Rms,
+        _ => HuberScale::Mad,
+    }
+}
+
+fn constraint(
+    k: usize,
+    coef_min: &Option<FloatOrList>,
+    coef_max: &Option<FloatOrList>,
+    coef_sum: Option<f64>,
+) -> Option<Constraint> {
+    if coef_min.is_none() && coef_max.is_none() && coef_sum.is_none() {
+        return None;
+    }
+    let bounds = |b: &Option<FloatOrList>, none: f64| match b {
+        None => vec![none; k],
+        Some(FloatOrList::Float(v)) => vec![v.0; k],
+        Some(list) => list.to_vec(),
+    };
+    let c = Constraint {
+        lo: bounds(coef_min, f64::NEG_INFINITY),
+        hi: bounds(coef_max, f64::INFINITY),
+        sum: coef_sum,
+    };
+    // A list of the wrong length goes to the model's check, which names
+    // it, whatever its bounds: dropped as trivial first, `coef_min =
+    // ["-inf"]` with two features, or `[]`, passed (task 160, PB4).
+    if c.lo.len() != k || c.hi.len() != k {
+        return Some(c);
+    }
+    (!c.is_trivial()).then_some(c)
+}
+
+/// One model instance, its window bounded as its spec says
+/// (`ModelKind::window_budget`). The budget is configuration, which a state
+/// does not carry, so every model built -- a stream's, a reset's -- gets it
+/// here, and every model restored gets it in [`Stream::restore`].
+fn build_one(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
+    let mut m = build_bare(spec, decay)?;
+    m.set_window_budget(spec.model.window_budget());
+    // Threads are configuration too (docs/PLAN.md task 225).
+    m.set_gram_threads(spec.model.gram_threads());
+    // The window's edge travels with the state, so it is set once, here,
+    // before the first row (docs/PLAN.md task 196, N17).
+    m.set_window_closed(spec.model.window_edge());
+    // An explicit solve cadence's first period runs on the default
+    // weight-share schedule (task 278, "Default cadence first"); a model
+    // with no explicit cadence leaves the mark off. It travels with the
+    // state, so a state written before it goes on as it was fitted.
+    m.set_first_period_by_share(true);
+    Ok(m)
+}
+
+/// The ring a windowed spread is cut from (review 2026-09-12, S1), for a
+/// windowed model that predicts a target, when anything reads the spread:
+/// the output fields, the ranking of `emit_selected` and `emit_averaged`,
+/// the drift detector or the conformal band. Without a reader it would be
+/// memory, and a budget to fail, for nothing.
+fn resid_window(spec: &Spec) -> Result<Option<ResidWindow>, String> {
+    let Some((window, cadence)) = spec.model.window_and_cadence() else {
+        return Ok(None);
+    };
+    let read = Buffers::of(spec).extras || spec.emit_drift || spec.conformal.is_some();
+    if spec.model.predicts_no_target() || !read {
+        return Ok(None);
+    }
+    ResidWindow::new(
+        window,
+        cadence,
+        spec.model.window_edge(),
+        spec.model.window_budget(),
+    )
+    .map(Some)
+}
+
+fn build_bare(spec: &Spec, decay: Decay) -> Result<AnyModel, String> {
+    match &spec.model {
+        ModelKind::EwRidge {
+            ridge,
+            feature_sets,
+            standardize,
+            ridge_scale,
+            coef_prior,
+            session_shrink,
+            long_half_life,
+            solve_every,
+            max_rows_between_solves,
+            gram_block_rows,
+            gram_threads: _,
+            target_gaps,
+            window_size: window,
+            snapshot_every,
+            max_rows_between_snapshots,
+            window_budget: _,
+            closed: _,
+        } => {
+            let fs = feature_sets
+                .as_ref()
+                .map(|sets| {
+                    sets.iter()
+                        .map(|(name, cols)| {
+                            let idx = cols
+                                .iter()
+                                .map(|c| spec.features.iter().position(|f| f == c).unwrap())
+                                .collect();
+                            (name.clone(), idx)
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            let cfg = EwRidgeCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                fit_intercept: spec.fit_intercept,
+                decay,
+                ridge: ridge
+                    .as_ref()
+                    .map(FloatOrList::to_vec)
+                    .unwrap_or_else(|| vec![1e-6]),
+                feature_sets: fs,
+                standardize: *standardize,
+                ridge_scale: *ridge_scale == crate::spec::RidgeScale::Sum,
+                session_shrink: *session_shrink,
+                long_half_life: long_half_life.as_ref().map(Span::value),
+                coef_prior: coef_prior.clone(),
+                // The spec's default is 0, the noise gate being this model's
+                // (docs/WARMUP-AND-CONVERGENCE.md §2.1); the model's own
+                // floor -- its first solve, and its own gate -- is then a
+                // row per unknown, as the old default was. An explicit value
+                // is the user's, above or below that.
+                min_weight: match spec.min_weight {
+                    Some(_) => spec.min_periods_or_default(),
+                    None => (spec.k() + usize::from(spec.fit_intercept)) as f64,
+                },
+                solve_every: solve_every.as_ref().map_or_else(
+                    || spec.solve_every_default(decay),
+                    model_cfgs::solve_every_of,
+                ),
+                max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
+                solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
+                gram_block_rows: gram_block_rows.unwrap_or(0),
+                target_gaps: *target_gaps,
+                window: window.as_ref().map(Span::value),
+                window_every: snapshot_every.as_ref().map(Span::value),
+                max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
+            };
+            let mut m = EwRidge::new(cfg)?;
+            // The per-row leverage needs the factors kept (§2.1), and so do
+            // the coefficients' standard errors (task 116, F).
+            // So does the breaks' studentized residual (task 221 (b)).
+            m.set_keep_factor(spec.emit_se_coef || spec.reads_row_inflation());
+            // Each target's own threshold, for its own first solve (task
+            // 195, S9b); left out, every target's is the model's.
+            // And `min_weight` withholds the output alone: the model's own
+            // noise and its first solve read its own floor (task 278).
+            if spec.min_weight.is_some() {
+                m.set_target_min_weight(spec.min_periods_per_target())?;
+                m.set_min_weight_output_only(true);
+            }
+            Ok(AnyModel::EwRidge(Box::new(m)))
+        }
+        ModelKind::Rls { delta, coef_prior } => {
+            let cfg = RlsCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                fit_intercept: spec.fit_intercept,
+                decay,
+                delta: delta.unwrap_or(1.0),
+                coef_prior: coef_prior.clone(),
+                min_weight: spec.min_periods_or_default(),
+            };
+            Ok(AnyModel::Rls(Box::new(Rls::new(cfg)?)))
+        }
+        ModelKind::Lasso {
+            penalties,
+            l1_ratio,
+            select_half_life,
+            solve_every,
+            max_rows_between_solves,
+            max_iter,
+            tol,
+            target_gaps,
+            window_size: window,
+            snapshot_every,
+            max_rows_between_snapshots,
+            window_budget: _,
+            closed: _,
+        } => {
+            let cfg = LassoCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                fit_intercept: spec.fit_intercept,
+                decay,
+                lasso_path: penalties.clone(),
+                l1_ratio: l1_ratio.unwrap_or(1.0),
+                select_half_life: select_half_life.as_ref().map(Span::value),
+                min_weight: spec.min_periods_or_default(),
+                // Each target's own, which a state written before schema 64
+                // counted its selection's errors from (CA3); this layer
+                // gates the output on it either way.
+                target_min_weight: spec.min_periods_per_target(),
+                // `min_weight` withholds the output alone: the selection
+                // scores every row from the model's floor, a row per
+                // coefficient (task 278, D10); a state saved before keeps
+                // its own.
+                min_weight_holds_learning: false,
+                solve_every: solve_every.as_ref().map_or_else(
+                    || spec.solve_every_default(decay),
+                    model_cfgs::solve_every_of,
+                ),
+                max_rows_between_solves: max_rows_between_solves.unwrap_or(u32::MAX),
+                solve_share: spec.solve_share_default(solve_every.as_ref(), decay),
+                window: window.as_ref().map(Span::value),
+                window_every: snapshot_every.as_ref().map(Span::value),
+                max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
+                max_iter: max_iter.unwrap_or(100),
+                tol: tol.unwrap_or(1e-10),
+                target_gaps: *target_gaps,
+            };
+            Ok(AnyModel::Lasso(Box::new(Lasso::new(cfg)?)))
+        }
+        ModelKind::Kalman {
+            coef_half_life,
+            q,
+            obs_var,
+            p0,
+            share_p,
+            revert_half_life,
+            standardize,
+        } => {
+            let cfg = KalmanCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                fit_intercept: spec.fit_intercept,
+                decay,
+                // None beside a `q`, which the model reads instead (review
+                // 2026-10-06, PC6).
+                half_life: coef_half_life
+                    .as_ref()
+                    .map_or_else(Vec::new, SpanList::to_vec),
+                q: q.as_ref().map(|v| v.iter().map(|n| n.0).collect()),
+                obs_var: *obs_var,
+                p0: p0.unwrap_or(1.0),
+                share_p: *share_p,
+                min_weight: spec.min_periods_or_default(),
+                // `min_weight` withholds the output alone: the residual
+                // variance learns from every row the filter predicts (task
+                // 278, D10); a state saved before keeps its own.
+                min_weight_holds_learning: false,
+                revert_half_life: revert_half_life
+                    .as_ref()
+                    .map_or_else(|| vec![f64::INFINITY], SpanList::to_vec),
+                standardize: *standardize,
+                // `P` in units of the noise, the intercept's prior diffuse
+                // (docs/PLAN.md task 278); a state saved before keeps its own.
+                noise_units: true,
+            };
+            Ok(AnyModel::Kalman(Box::new(Kalman::new(cfg)?)))
+        }
+        ModelKind::Huber { .. } => huber_model(spec, decay),
+        ModelKind::Quantile { .. } => quantile_model(spec, decay),
+        ModelKind::Ftrl {
+            alpha,
+            beta,
+            l1,
+            l2,
+            strict_binary,
+            loss,
+        } => {
+            let loss = match loss.as_deref() {
+                None | Some("logistic") => FtrlLoss::Logistic,
+                Some("squared") => FtrlLoss::Squared,
+                Some(other) => {
+                    return Err(crate::words_refusal(
+                        "loss",
+                        &["logistic", "squared"],
+                        other,
+                    ));
+                }
+            };
+            let cfg = FtrlCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                fit_intercept: spec.fit_intercept,
+                decay,
+                alpha: alpha.unwrap_or(0.1),
+                beta: beta.unwrap_or(1.0),
+                l1: l1.unwrap_or(0.0),
+                l2: l2.unwrap_or(1.0),
+                min_weight: spec.min_periods_or_default(),
+                strict_binary: *strict_binary,
+                loss,
+            };
+            Ok(AnyModel::Ftrl(Box::new(Ftrl::new(cfg)?)))
+        }
+        ModelKind::EwCov {
+            stats,
+            bias,
+            precision_prior,
+            mahal_quantiles,
+            pca,
+            pca_every,
+            max_rows_between_pcas,
+            lags,
+            gram_threads: _,
+            window_size: window,
+            snapshot_every,
+            max_rows_between_snapshots,
+            window_budget: _,
+            closed: _,
+        } => {
+            let names = stats
+                .clone()
+                .unwrap_or_else(|| vec!["mean".into(), "std".into(), "corr".into()]);
+            let stats = names
+                .iter()
+                .map(|s| match s.as_str() {
+                    "mean" => Ok(EwCovStat::Mean),
+                    "var" => Ok(EwCovStat::Var),
+                    "std" => Ok(EwCovStat::Std),
+                    "cov" => Ok(EwCovStat::Cov),
+                    "corr" => Ok(EwCovStat::Corr),
+                    "partial_corr" => Ok(EwCovStat::PartialCorr),
+                    "mahal" => Ok(EwCovStat::Mahal),
+                    "lag_corr" => Ok(EwCovStat::LagCorr),
+                    other => Err(format!(
+                        "stats lists {other:?}, which is not an ew_cov statistic. Use \
+                         \"mean\", \"var\", \"std\", \"cov\", \"corr\", \"partial_corr\", \
+                         \"mahal\" or \"lag_corr\"."
+                    )),
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let cfg = EwCovCfg {
+                n_features: spec.k(),
+                decay,
+                stats,
+                // Floored at 2 (`gate_floors`): a covariance below two rows
+                // has nothing to report (review 2026-09-18, minor).
+                min_weight: gate_floors(spec)[0],
+                bias: *bias,
+                precision_prior: *precision_prior,
+                mahal_quantiles: mahal_quantiles.clone().unwrap_or_default(),
+                pca: pca.unwrap_or(0),
+                // The regressions' schedule (task 161): the clock, the rows,
+                // or every row when neither is given.
+                pca_every: match (pca_every, max_rows_between_pcas) {
+                    (Some(e), _) => e.value(),
+                    (None, Some(_)) => f64::INFINITY,
+                    (None, None) => 0.0,
+                },
+                max_rows_between_pca: max_rows_between_pcas.unwrap_or(u32::MAX),
+                lags: lags.clone().unwrap_or_default(),
+                window: window.as_ref().map(Span::value),
+                window_every: snapshot_every.as_ref().map(Span::value),
+                max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
+            };
+            Ok(AnyModel::EwCov(Box::new(EwCovModel::new(cfg)?)))
+        }
+        ModelKind::Sgd { .. } => sgd_model(spec, decay),
+        ModelKind::Pa {
+            mode,
+            c,
+            eps,
+            coef_min,
+            coef_max,
+            coef_sum,
+            standardize,
+        } => {
+            let mode = match mode.as_deref().unwrap_or("pa1") {
+                "pa" => PaMode::Pa,
+                "pa1" => PaMode::Pa1,
+                "pa2" => PaMode::Pa2,
+                other => {
+                    return Err(format!(
+                        "mode must be \"pa\", \"pa1\" or \"pa2\", but it is {other:?}. Set mode \
+                         to one of those words."
+                    ));
+                }
+            };
+            let cfg = PaCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                fit_intercept: spec.fit_intercept,
+                decay,
+                mode,
+                // PA-I's cap, in the target's units over `‖z‖²`'s.
+                c: c.map_or(1.0, |n| n.0),
+                // As `sgd`'s tube: 1% of the target's own spread (task 203),
+                // kept by task 207's sweep.
+                eps: eps.unwrap_or(0.01),
+                min_weight: spec.min_periods_or_default(),
+                constraint: constraint(spec.k(), coef_min, coef_max, *coef_sum),
+                standardize: *standardize,
+            };
+            Ok(AnyModel::Pa(Box::new(Pa::new(cfg)?)))
+        }
+        ModelKind::Holt {
+            trend_half_life,
+            trend,
+        } => {
+            // The level's half-life is the spec's own, so `half_life` means
+            // the same thing here as it does for every other model; it had a
+            // second name, `level_half_life`, until task 196.
+            let level = match decay {
+                Decay::Halflife(h) => h,
+                // `lam = 1` forgets nothing, as for every other model; its
+                // log is 0, and the division made it `-inf` (review
+                // 2026-09-12, S30).
+                Decay::Lam(1.0) => f64::INFINITY,
+                Decay::Lam(l) => -std::f64::consts::LN_2 / l.ln(),
+            };
+            let cfg = HoltCfg {
+                n_targets: spec.m(),
+                level_half_life: level,
+                trend_half_life: trend_half_life.as_ref().map_or(level * 4.0, Span::value),
+                min_weight: spec.min_periods_or_default(),
+                trend: trend.unwrap_or(true),
+            };
+            Ok(AnyModel::Holt(Box::new(Holt::new(cfg)?)))
+        }
+        ModelKind::KMeans {
+            k,
+            warm_rows,
+            init,
+            seed,
+            update_every_rows,
+            split_merge,
+            split_merge_every_rows,
+            dead_frac,
+            standardize,
+            scale_floor,
+        } => {
+            let seed_rule = crate::stream::init_rule(init.as_deref())?;
+            let cfg = KMeansCfg {
+                n_features: spec.k(),
+                k: *k,
+                decay,
+                // One `min_weight` for the whole model: the spec's first
+                // (and only) entry, defaulting like the regressions do.
+                min_weight: spec.min_periods_per_target()[0],
+                // At least `k`: a smaller one given is refused, and left out
+                // it is the buffer `max(warm_rows, k)` always was (review
+                // 2026-10-06, PC8).
+                warm_rows: warm_rows.unwrap_or_else(|| (*k).max(500)),
+                seed_rule,
+                seed: seed.unwrap_or(0),
+                update_every_rows: update_every_rows.unwrap_or(1),
+                split_merge: split_merge.unwrap_or(0.5),
+                split_merge_every_rows: split_merge_every_rows.unwrap_or(100),
+                // The dead rule runs at a split-merge check, so with none it
+                // is 0, where a value above 0 is refused (CF6).
+                dead_frac: dead_frac.unwrap_or(if *split_merge == Some(0.0) { 0.0 } else { 0.05 }),
+                standardize: standardize.unwrap_or(true),
+                scale_floor: scale_floor.unwrap_or(0.1),
+            };
+            Ok(AnyModel::KMeans(Box::new(KMeans::new(cfg)?)))
+        }
+        ModelKind::Micro {
+            eps,
+            beta_mu,
+            max_clusters,
+            prune_every,
+            max_rows_between_prunes,
+            macro_link,
+            standardize,
+            scale_floor,
+        } => {
+            let cfg = MicroCfg {
+                n_features: spec.k(),
+                decay,
+                min_weight: spec.min_periods_per_target()[0],
+                eps: *eps,
+                beta_mu: beta_mu.unwrap_or(3.0),
+                max_clusters: max_clusters.unwrap_or(200),
+                // The regressions' schedule (task 163): the clock, the
+                // learned rows, or, with neither, every 100 learned rows.
+                prune_every: prune_every.as_ref().map_or(f64::INFINITY, Span::value),
+                max_rows_between_prunes: match (prune_every, max_rows_between_prunes) {
+                    (_, Some(r)) => *r,
+                    (None, None) => 100,
+                    (Some(_), None) => u32::MAX,
+                },
+                macro_link: *macro_link,
+                standardize: standardize.unwrap_or(true),
+                scale_floor: scale_floor.unwrap_or(0.1),
+            };
+            Ok(AnyModel::Micro(Box::new(Micro::new(cfg)?)))
+        }
+        ModelKind::EwClass {
+            classes,
+            covariance_type,
+            precision_prior,
+            window_size: window,
+            snapshot_every,
+            max_rows_between_snapshots,
+            window_budget: _,
+            closed: _,
+        } => {
+            let cfg = EwClassCfg {
+                n_features: spec.k(),
+                n_classes: classes.len(),
+                decay,
+                min_weight: spec.min_periods_per_target()[0],
+                covariance: match covariance_type {
+                    Some(c) => Covariance::parse(c)?,
+                    None => Covariance::Full,
+                },
+                precision_prior: *precision_prior,
+                window: window.as_ref().map(Span::value),
+                window_every: snapshot_every.as_ref().map(Span::value),
+                max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
+            };
+            Ok(AnyModel::EwClass(Box::new(EwClass::new(cfg)?)))
+        }
+        // No decay to build with: `decays()` gives one undecayed instance.
+        ModelKind::SeqTest { .. } => {
+            let cfg = SeqTestCfg {
+                n_targets: spec.m(),
+                min_weight: spec.min_periods_or_default(),
+            };
+            Ok(AnyModel::SeqTest(Box::new(SeqTest::new(cfg)?)))
+        }
+        ModelKind::Marginal {
+            window_size: window,
+            snapshot_every,
+            max_rows_between_snapshots,
+            window_budget: _,
+            closed: _,
+            // A spec-level acceptance of the price, checked in `validate`.
+            window_lags: _,
+            feature_moments,
+            lags,
+            serial_rule,
+            cross_lags,
+            bins,
+            bin_rule,
+            bin_warm_rows,
+            bin_edges,
+            bin_budget,
+            bin_stat,
+            bin_huber_delta,
+            bin_refit_rows,
+            // The bank's, against every group's reservation (`reserve_refits`).
+            refit_budget: _,
+            // How the pairs are run, not what they are (`marginal_shards`).
+            shards: _,
+        } => {
+            // The per-target thresholds go to the model whole: it is the
+            // reader of its own state, so it gates each target's pairs
+            // itself where a regression's stream layer would.
+            let cfg = MarginalCfg {
+                n_features: spec.k(),
+                n_targets: spec.m(),
+                decay,
+                min_weight: spec.min_periods_per_target(),
+                lags: lags.clone().unwrap_or_default(),
+                cross_lags: cross_lags.clone(),
+                serial_rule: match serial_rule.as_deref() {
+                    None => None,
+                    Some("truncated") => Some(rheon_core::SerialRule::Truncated),
+                    Some("geometric") => Some(rheon_core::SerialRule::Geometric),
+                    Some("bartlett") => Some(rheon_core::SerialRule::Bartlett),
+                    Some(other) => {
+                        return Err(crate::words_refusal(
+                            "serial_rule",
+                            &["truncated", "bartlett", "geometric"],
+                            other,
+                        ));
+                    }
+                },
+                bins: match (bins, bin_edges) {
+                    (None, None) => None,
+                    (_, edges) => Some(Box::new(rheon_core::BinCfg {
+                        n_bins: bins.unwrap_or(DEFAULT_BINS),
+                        edges: edges.clone(),
+                        rule: match bin_rule.as_deref() {
+                            None | Some("quantile") => rheon_core::BinRule::Quantile,
+                            Some("fixed") => rheon_core::BinRule::Fixed,
+                            Some(other) => {
+                                return Err(crate::words_refusal(
+                                    "bin_rule",
+                                    &["quantile", "fixed"],
+                                    other,
+                                ));
+                            }
+                        },
+                        warm_rows: bin_warm_rows.unwrap_or(DEFAULT_BIN_WARM_ROWS),
+                        stat: match bin_stat.as_deref() {
+                            None | Some("mean") => rheon_core::BinStat::Mean,
+                            Some("huber") => rheon_core::BinStat::Huber {
+                                delta: bin_huber_delta.map_or(DEFAULT_BIN_HUBER_DELTA, |n| n.0),
+                            },
+                            Some(other) => {
+                                return Err(crate::words_refusal(
+                                    "bin_stat",
+                                    &["mean", "huber"],
+                                    other,
+                                ));
+                            }
+                        },
+                        // On by default under a finite Huber cut, off
+                        // otherwise (`validate` refuses a count given there).
+                        refit_rows: match (bin_stat.as_deref(), bin_huber_delta) {
+                            // `max(500, 30 · bins)`, the widest feature's
+                            // bins (docs/PLAN.md task 278): 500 at the
+                            // default 16, which the learned edges' warm-up of
+                            // 1,000 rows covers, so by default the refit runs
+                            // when the edges are fixed and holds no row of
+                            // its own.
+                            (Some("huber"), d) if d.is_none_or(|d| d.0.is_finite()) => {
+                                bin_refit_rows.unwrap_or_else(|| {
+                                    rheon_core::default_bin_refit_rows(match edges {
+                                        Some(e) => e.iter().map(|f| f.len() + 1).max().unwrap_or(1),
+                                        None => bins.unwrap_or(DEFAULT_BINS),
+                                    })
+                                })
+                            }
+                            _ => 0,
+                        },
+                        // Under `bin_stat = "huber"`, the target's MAD
+                        // sketch in units of its first deviation.
+                        mad_anchor: true,
+                        budget_mib: bin_budget.map(|n| n.0),
+                    })),
+                },
+                feature_moments: match feature_moments.as_deref() {
+                    None | Some("per_target") => rheon_core::FeatureMomentLayout::PerTarget,
+                    Some("shared") => rheon_core::FeatureMomentLayout::Shared,
+                    Some(other) => {
+                        return Err(format!(
+                            "feature_moments must be \"per_target\" or \"shared\", but it is \
+                             {other:?}. Set feature_moments to one of those words."
+                        ));
+                    }
+                },
+                window: window.as_ref().map(Span::value),
+                window_every: snapshot_every.as_ref().map(Span::value),
+                max_rows_between_snapshots: max_rows_between_snapshots.map(|r| r as usize),
+            };
+            Ok(AnyModel::Marginal(Box::new(Marginal::new(cfg)?)))
+        }
+        ModelKind::Deco { .. } => {
+            let mut cfg = deco_cfg(spec)?;
+            cfg.decay = decay;
+            Ok(AnyModel::Deco(Box::new(Deco::new(cfg)?)))
+        }
+        // No decay to build with, so the one undecayed instance `decays()`
+        // gives is the only one.
+        ModelKind::Rcov { .. } => Ok(AnyModel::Rcov(Box::new(Rcov::new(rcov_cfg(spec)?)?))),
+        ModelKind::Hmm { .. } => {
+            let mut cfg = hmm_cfg(spec)?;
+            cfg.decay = decay;
+            Ok(AnyModel::Hmm(Box::new(Hmm::new(cfg)?)))
+        }
+        ModelKind::CorrChange { .. } => {
+            let mut cfg = corrchange_cfg(spec)?;
+            cfg.decay = decay;
+            Ok(AnyModel::CorrChange(Box::new(CorrChange::new(cfg)?)))
+        }
+        // No decay: the run-length posterior is what forgets.
+        ModelKind::Bocpd { .. } => Ok(AnyModel::Bocpd(Box::new(Bocpd::new(bocpd_cfg(spec)?)?))),
+        // No decay: an audit counts every row.
+        ModelKind::Audit { .. } => Ok(AnyModel::Audit(Box::new(rheon_core::Audit::new(
+            audit_cfg(spec)?,
+        )?))),
+    }
+}
+
+mod model_cfgs;
+use model_cfgs::read_floor;
+pub use model_cfgs::{
+    audit_cfg, bocpd_cfg, corrchange_cfg, deco_block_names, deco_cfg, hmm_cfg, huber_model,
+    quantile_model, rcov_cfg, sgd_model,
+};
+
+/// One grid combo: the rendered label plus the machine values it encodes, so
+/// metadata can never drift from the string (docs/RELEASE-READINESS.md, "What
+/// the API snapshot pins").
+#[derive(Debug, Clone, Default)]
+pub struct Combo {
+    /// Rendered suffix ("" when there is only one combo).
+    pub label: String,
+    pub ridge: Option<f64>,
+    pub feature_set: Option<String>,
+    /// Lasso path point.
+    pub lambda: Option<f64>,
+}
+
+/// Combo labels per model instance ("" when there is only one combo).
+pub fn combo_labels(spec: &Spec) -> Vec<String> {
+    combos(spec).into_iter().map(|c| c.label).collect()
+}
+
+/// The combos with their machine values.
+pub fn combos(spec: &Spec) -> Vec<Combo> {
+    match &spec.model {
+        ModelKind::EwRidge {
+            ridge,
+            feature_sets,
+            ..
+        } => {
+            let nr = ridge.as_ref().map(|r| r.to_vec().len()).unwrap_or(1);
+            let nf = feature_sets.as_ref().map(|f| f.len()).unwrap_or(0).max(1);
+            let ridges = ridge
+                .as_ref()
+                .map(FloatOrList::to_vec)
+                .unwrap_or(vec![1e-6]);
+            let fs_names: Vec<String> = feature_sets
+                .as_ref()
+                .map(|f| f.iter().map(|(n, _)| n.clone()).collect())
+                .unwrap_or_else(|| vec!["all".to_string()]);
+            let mut out = Vec::new();
+            for f in &fs_names {
+                for r in &ridges {
+                    // The label names what varies; the machine values say what
+                    // the slot is, whatever the count. A single combo carried
+                    // none, and a single named set was dropped from a ridge
+                    // grid's (review 2026-09-12, S5).
+                    let label = if nr * nf == 1 {
+                        String::new()
+                    } else if nf == 1 {
+                        format!("__r{}", crate::spec::num_label(*r))
+                    } else if nr == 1 {
+                        format!("__{f}")
+                    } else {
+                        format!("__{f}_r{}", crate::spec::num_label(*r))
+                    };
+                    out.push(Combo {
+                        label,
+                        ridge: Some(*r),
+                        feature_set: feature_sets.is_some().then(|| f.clone()),
+                        lambda: None,
+                    });
+                }
+            }
+            out
+        }
+        // One combo per feature set, labelled by its name where there are
+        // two or more, as `ewridge`'s single ridge has them.
+        ModelKind::Huber {
+            feature_sets: Some(sets),
+            ..
+        } => sets
+            .iter()
+            .map(|(name, _)| Combo {
+                label: if sets.len() == 1 {
+                    String::new()
+                } else {
+                    format!("__{name}")
+                },
+                ridge: None,
+                feature_set: Some(name.clone()),
+                lambda: None,
+            })
+            .collect(),
+        ModelKind::Rls { .. }
+        | ModelKind::Kalman { .. }
+        | ModelKind::Huber { .. }
+        | ModelKind::Quantile { .. }
+        | ModelKind::Ftrl { .. }
+        | ModelKind::EwCov { .. }
+        | ModelKind::Sgd { .. }
+        | ModelKind::Pa { .. }
+        | ModelKind::Holt { .. }
+        | ModelKind::KMeans { .. }
+        | ModelKind::Micro { .. }
+        | ModelKind::EwClass { .. }
+        | ModelKind::SeqTest { .. }
+        | ModelKind::Marginal { .. }
+        | ModelKind::Deco { .. }
+        | ModelKind::Rcov { .. }
+        | ModelKind::Hmm { .. }
+        | ModelKind::CorrChange { .. }
+        | ModelKind::Bocpd { .. }
+        | ModelKind::Audit { .. } => vec![Combo::default()],
+        // `p` for the penalty, since `l` is a lag's (`lag_corr_l1_a_b`); and
+        // no label for a path of one point, as a single ridge or half-life
+        // writes none, while the machine value says which it is.
+        ModelKind::Lasso { penalties, .. } => penalties
+            .iter()
+            .map(|l| Combo {
+                label: if penalties.len() == 1 {
+                    String::new()
+                } else {
+                    format!("__p{}", crate::spec::num_label(*l))
+                },
+                ridge: None,
+                feature_set: None,
+                lambda: Some(*l),
+            })
+            .collect(),
+    }
+}
+
+mod clock_dtype;
+pub use clock_dtype::{ClockDtype, ClockUnit};
+
+/// A break's events while they wait in the `embargo` buffer: a session
+/// change, the long-run blend it asks for, and a gap past `gap_cap`
+/// (docs/PLAN.md task 153). A skipped row's wait with the next accepted row,
+/// across a chunk boundary too.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct HeldBreak {
+    pub session_changed: bool,
+    pub blend: bool,
+    pub capped: bool,
+}
+
+impl HeldBreak {
+    fn is_none(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+mod label_delay;
+pub use label_delay::PendingRow;
+use label_delay::{LabelRun, held_kind};
+
+/// A spec's `embargo` as the release compares the elapsed clock with it
+/// (docs/PLAN.md task 176): its clock units, and its integer nanoseconds
+/// where it is a duration, so two temporal places compare as integers at
+/// any length ([`Stamp::cmp_span_ns`]), as a window operator's edge does.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Embargo {
+    units: f64,
+    ns: Option<i128>,
+}
+
+impl Embargo {
+    fn of(span: &Span) -> Self {
+        Embargo {
+            units: span.value(),
+            ns: match span {
+                Span::Duration(d) => Some(i128::from(d.nanos)),
+                Span::Units(_) => None,
+            },
+        }
+    }
+
+    /// Whether a row that arrived at `then` on the elapsed clock has waited
+    /// the embargo out at `now`: inclusive, so a row exactly one embargo
+    /// back is learned, as the countdown's `<= 0` learned it. A place
+    /// missing on either side, which no stream hands over, waits.
+    fn passed(self, now: Option<Stamp>, then: Option<Stamp>) -> bool {
+        match (now, then) {
+            (Some(now), Some(then)) => {
+                now.cmp_span_ns(then, self.units, self.ns) != std::cmp::Ordering::Less
+            }
+            _ => false,
+        }
+    }
+}
+
+/// What `coef_every` and `max_rows_between_coefs` ask of the `coef` field
+/// (docs/PLAN.md task 178).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum CoefPlan {
+    /// Neither given: each group's last accepted row in each chunk
+    /// ([`last_accepted`]).
+    ChunkEnds,
+    /// A cadence, as `solve_every` and `max_rows_between_solves` schedule a
+    /// solve: a `coef` row once the clock has moved `clock` units since the
+    /// last, `0` every row, or at the `rows`-th accepted row since,
+    /// whichever comes first; `INFINITY` and `u64::MAX` for the one not
+    /// given.
+    Cadence { clock: f64, rows: u64 },
+}
+
+impl CoefPlan {
+    fn of(spec: &Spec) -> Self {
+        match (&spec.coef_every, spec.max_rows_between_coefs) {
+            (None, None) => CoefPlan::ChunkEnds,
+            (every, rows) => CoefPlan::Cadence {
+                clock: every.as_ref().map_or(f64::INFINITY, Span::value),
+                rows: rows.map_or(u64::MAX, u64::from),
+            },
+        }
+    }
+}
+
+/// Where a stream's `coef` cadence stands (docs/PLAN.md task 178): the
+/// stamp its clock is measured from -- the last `coef` row's, or before the
+/// first the group's start or the clock's last reset ([`coef_origin`]) --
+/// and the accepted rows since. The clock is a [`Stamp`], the decayed
+/// clock held exactly, as a window spaces its snapshots by it (task 175):
+/// summed in doubles, two thousand steps of a millisecond come to less than
+/// two seconds, and `coef_every = "2s"` would write a row late.
+///
+/// Moved only under a cadence, so a spec without one writes the state it
+/// did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct CoefCadence {
+    /// `None` before the group's first row.
+    pub from: Option<Stamp>,
+    /// Accepted rows since `from`, rows of weight zero and rows with a null
+    /// target included.
+    pub rows: u64,
+}
+
+impl CoefCadence {
+    fn is_unset(&self) -> bool {
+        *self == Self::default()
+    }
+
+    /// One row under a cadence of `clock` units or `rows` accepted rows
+    /// ([`CoefPlan::Cadence`]), whether the stream accepts the row or not,
+    /// `now` its clock value and `adv` what the clock made of it: whether it
+    /// is a `coef` row. The group's first row, and a row the clock resets
+    /// at, start the cadence over, as they start the models over; a skipped
+    /// row is never one, and moves the clock only as the next accepted
+    /// row's stamp shows.
+    fn step(
+        &mut self,
+        clock: f64,
+        rows: u64,
+        now: Option<ClockValue>,
+        adv: &rheon_core::ClockAdvance,
+        accept: bool,
+    ) -> bool {
+        if adv.reset || self.from.is_none() {
+            *self = CoefCadence {
+                from: Some(coef_origin(now)),
+                rows: 0,
+            };
+        }
+        // `advance_stamped` stamps every accepted row.
+        debug_assert!(!accept || adv.stamp.is_some(), "an accepted row unstamped");
+        let (true, Some(stamp), Some(from)) = (accept, adv.stamp, self.from) else {
+            return false;
+        };
+        self.rows = self.rows.saturating_add(1);
+        let due = self.rows >= rows
+            || clock == 0.0
+            || (clock.is_finite() && stamp.cmp_span(from, clock) != std::cmp::Ordering::Less);
+        if due {
+            *self = CoefCadence {
+                from: Some(stamp),
+                rows: 0,
+            };
+        }
+        due
+    }
+}
+
+/// The stamp a stream's `coef` clock is measured from at the group's first
+/// row, or at a row the clock resets at (task 178). On a clock column, the
+/// stamp that row takes ([`ClockState::advance_stamped`]): 0 on a temporal
+/// clock, and the row's own value with nothing removed on a number clock,
+/// whether the row is accepted or skipped. Without one, the place before
+/// the row's: the clock is then the row's number, the first row being 1,
+/// so `coef_every = N` writes the `N`-th, `2N`-th, ... row, as the count of
+/// rows it read before task 178 did.
+fn coef_origin(now: Option<ClockValue>) -> Stamp {
+    match now {
+        Some(ClockValue::Ns(_)) => Stamp::Ns(0),
+        Some(ClockValue::I64(v)) => Stamp::Int(i128::from(v), 0.0),
+        Some(v) => Stamp::Raw(v.seconds(), 0.0),
+        None => Stamp::Raw(-1.0, 0.0),
+    }
+}
+
+/// What a spec's window core resolved in one chunk for one group
+/// (docs/PLAN.md task 104): per resolved row, in row order, its number,
+/// the number of the row that resolved it -- the row that closed, cut or
+/// discarded its windows -- and each formula target's value, NaN where the
+/// window gave none, row-major. Flat, so a chunk of rows costs no
+/// allocation per row. Applied in row order, so a resolution reaches the
+/// buffer at the row that made it and never earlier; see the review under
+/// task 104.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Resolutions {
+    pub seqs: Vec<u64>,
+    pub ats: Vec<u64>,
+    pub values: Vec<f64>,
+    pub width: usize,
+}
+
+impl Resolutions {
+    /// The resolution of row `seq`, if the chunk made one: the number of
+    /// the row that made it, and the values.
+    pub fn find(&self, seq: u64) -> Option<(u64, &[f64])> {
+        let i = self.seqs.binary_search(&seq).ok()?;
+        Some((
+            self.ats[i],
+            &self.values[i * self.width..(i + 1) * self.width],
+        ))
+    }
+}
+
+/// How a stream's formula targets reach it: which targets are formulas,
+/// each row's number in the bank's stream, in the laid-out row order the
+/// other columns have, and what the chunk resolved for this stream's group.
+#[derive(Clone, Copy)]
+pub struct FormulaTargets<'a> {
+    pub slots: &'a [usize],
+    pub seqs: &'a [u64],
+    pub resolved: Option<&'a Resolutions>,
+}
+
+/// Serialized per-stream state: each half-life's model, and the rest of the
+/// stream as it runs ([`Persisted`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StreamState {
+    pub models: Vec<State>,
+    pub persisted: Persisted,
+}
+
+/// Everything a stream keeps across a save but its models: the fields
+/// [`Stream`] runs on, held there as one value, so [`Stream::save`] is one
+/// clone of it and a field added here is saved by construction, where
+/// `save` once copied two dozen by hand and a forgotten one was silently
+/// not persisted (docs/SIMPLIFICATION.md S6, review round 4).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Persisted {
+    /// The clock the stream's rows are measured on.
+    pub clock: ClockState,
+    /// Rows the null policy accepted: what `rows_processed` reports.
+    pub rows_seen: u64,
+    /// EW mean squared out-of-sample residual, per model instance and output
+    /// slot. `#[serde(default)]` so state files written before this existed
+    /// still load (they simply restart the estimate).
+    #[serde(default)]
+    pub resid_var: Vec<Vec<f64>>,
+    #[serde(default)]
+    pub resid_w: Vec<Vec<f64>>,
+    #[serde(default)]
+    pub drift: Vec<Vec<PageHinkley>>,
+    #[serde(default)]
+    pub resid_q: Vec<Vec<EwQuantile>>,
+    #[serde(default)]
+    pub autocorr: Vec<Vec<EwAutoCorr>>,
+    #[serde(default)]
+    pub metrics: Vec<Vec<SlotMetrics>>,
+    #[serde(default)]
+    pub conformal: Vec<Vec<Conformal>>,
+    /// Per model instance, the diagnostics with a memory of their own
+    /// (docs/PLAN.md task 221): empty, and not written, for a spec that
+    /// switches none of them on, so no other spec's bytes move.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checks: Vec<Checks>,
+    /// The output row of the last row learned from (docs/PLAN.md task 34).
+    /// `None` before the first, and in files written before it existed.
+    #[serde(default)]
+    pub last_row: Option<LastRow>,
+    /// What the stream was fed (docs/PLAN.md task 35). `None` in files
+    /// written before it existed, and then for the life of the stream: a
+    /// count that began partway would read as a count.
+    #[serde(default)]
+    pub summary: Option<DataSummary>,
+    /// Per model instance, the decay time it has seen: every `d_clock` the
+    /// models decayed by, a capped gap at the cap, which `settled_frac` is
+    /// a fraction of (docs/WARMUP-AND-CONVERGENCE.md §2). Zero in a file
+    /// written before it existed.
+    #[serde(default)]
+    pub decay_time: Vec<f64>,
+    /// Per model instance, whether it was restarted and has learned no row
+    /// since: the next row it learns reads the step a fresh stream's first
+    /// accepted row does, 0 unless rows were skipped before it
+    /// (`RowPlan::d_fresh`), and under an `embargo` a row it scores reads the
+    /// held rows' clock as that fresh stream does (`Stream::front_cut`;
+    /// `Instance::reset`, `run_instance`). Set by a drift reset, with or
+    /// without an `embargo` (review round 10, S7-1), and by a clock reset,
+    /// whose own row's step is 0. Schema 64 (docs/PLAN.md task 277); a file
+    /// written before it holds none, which loads as `false` for every
+    /// instance.
+    #[serde(default)]
+    pub restarted: Vec<bool>,
+    /// Whether the bank gave this group's Huber refits up, past its spec's
+    /// `refit_budget` (docs/PLAN.md task 277): the models a reset rebuilds
+    /// give theirs up too, so the group never holds a buffer the bank did
+    /// not reserve for it. Schema 64; `false` in a file written before it,
+    /// and not written while `false`, so a stream that never met the budget
+    /// saves the bytes it did.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub refit_over_budget: bool,
+    /// Whether the residual spread (`resid_var`, `resid_w`, and its ring)
+    /// folds each slot's own prediction on the rows a readiness gate
+    /// withholds (task 278, batch 17): `sigma`, `zscore`, the ranking of
+    /// `emit_selected` and `emit_averaged` and the drift detector's scale
+    /// read it, and a gate withholds output only, so it must not move
+    /// them. A stream a spec builds sets it where the spec forms a
+    /// residual. Schema 64; `false` in a file written before it, which
+    /// goes on folding only the residuals it reports, to the bit; not
+    /// written while `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ungated_spread: bool,
+    /// Whether the residual autocorrelation weighs each residual by its
+    /// row's weight, as `sigma`, the residual quantiles and the metrics do
+    /// (task 278, batch 17; `EwAutoCorr::update_weighted`). A stream a spec
+    /// builds sets it under `emit_autocorr`. Schema 64; `false` in a file
+    /// written before it, which goes on weighing each residual 1, to the
+    /// bit; not written while `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub weighted_autocorr: bool,
+    /// Whether the drift detector folds each slot's own residual on the
+    /// rows a readiness gate withholds, as the spread does
+    /// ([`Self::ungated_spread`]; task 278): under `drift_action = "reset"`
+    /// it restarts the model, and a gate withholds output only, so it must
+    /// neither hide a break nor make a restart. A stream a spec builds sets
+    /// it under `emit_drift`. Schema 64; `false` in a file written before
+    /// it, which goes on folding only the residuals it reports, to the bit;
+    /// not written while `false`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ungated_drift: bool,
+    /// Per model instance, the clock the rows held under `embargo` have
+    /// covered and the model has not decayed by yet, which `settled_frac`
+    /// adds (`Instance::pending_clock`). Kept, not rebuilt at each chunk:
+    /// a running `+=`/`-=` and a fresh sum of the held rows round
+    /// differently, so rebuilding it made `settled_frac` depend on where a
+    /// chunk ended (hard rule 3; found by a property test, 2026-09-24).
+    /// Kept only by a stream with an `embargo`, one per model instance, and
+    /// empty without one, so a spec without one writes what it always did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_clock: Vec<f64>,
+    /// Per model instance, which readiness notices it has raised (§3), so a
+    /// resumed stream does not raise them again.
+    #[serde(default)]
+    pub notified: Vec<Notified>,
+    /// Rows accepted but not yet learned from (`embargo`, E47). Skipped
+    /// when empty, so a spec without a delay writes the same bytes it always
+    /// did. A deque, released from the front (task 270, M-3); written as
+    /// the sequence a `Vec` is.
+    #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
+    pub pending: VecDeque<PendingRow>,
+    /// The break skipped rows raised since the last accepted row, waiting
+    /// for the next one (docs/PLAN.md task 153). Skipped when there is none.
+    #[serde(default, skip_serializing_if = "HeldBreak::is_none")]
+    pub held_break: HeldBreak,
+    /// The clock of the newest row the models have learned from, and the
+    /// rows fed to this group: what `learned_clock` and a clockless
+    /// `scored_clock` show (docs/PLAN.md task 152).
+    #[serde(default)]
+    pub last_learned: Option<ClockValue>,
+    #[serde(default)]
+    pub fed: u64,
+    /// Per model instance, the prediction each row in `pending` was *scored*
+    /// with, in the same order (review 2026-09-12, C21): the one thing a
+    /// replay cannot recompute, and what the residual diagnostics fold when
+    /// the row's label matures. With a conformal interval, each record goes
+    /// on with the radius every slot's interval was shown with (schema 18),
+    /// which the release scores the row against. Skipped when there is none, so a spec
+    /// without a delay writes the same bytes it always did.
+    #[serde(default, skip_serializing_if = "no_score_preds")]
+    pub score_pred: Vec<std::collections::VecDeque<Vec<f64>>>,
+    /// Per model instance, the ring a windowed spread is cut from (review
+    /// 2026-09-12, S1): `None` for an instance with no window, or whose spec
+    /// reads no spread. Skipped when every entry is `None`, so no file
+    /// without one moves.
+    #[serde(default, skip_serializing_if = "no_resid_windows")]
+    pub resid_win: Vec<Option<ResidWindow>>,
+    /// The session value of the span this stream is in, under `group_close =
+    /// "session"` (docs/ENHANCEMENTS.md E54): the closed row reports it, and
+    /// the clock keeps only a hash. Written only by a spec that closes on
+    /// session, so no other spec's bytes move.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_session: Option<String>,
+    /// Where the `coef` cadence stands (docs/PLAN.md task 178): the clock
+    /// since the last `coef` row and the rows since, which a resumed stream
+    /// goes on counting. Written only once a cadence has moved it, so a
+    /// spec without one writes the bytes it did.
+    #[serde(default, skip_serializing_if = "CoefCadence::is_unset")]
+    pub coef_cadence: CoefCadence,
+    /// The clock a fresh stream begun at the first row skipped since the
+    /// last accepted one would keep, while such rows run: what a drift
+    /// reset's next accepted row steps by when rows were skipped in between
+    /// (`RowPlan::d_fresh`). A fresh bank fed the rows after the one that
+    /// fired starts its clock at the first of them, accepted or not: a
+    /// skipped first row reads no step, sets the clock the next row steps
+    /// from and folds the steps of the skipped rows after it. Kept only
+    /// under `drift_action = "reset"`, and only between a skipped row and
+    /// the next accepted one, so no other state's bytes move. Schema 64.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_fold: Option<ClockState>,
+    /// Under `label_clock`, the clock of the label times the models have
+    /// learned at: a released row's step is its label time's from the one
+    /// before it (task 341, schema 67). Written only by such a stream.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label_learned: Option<ClockState>,
+    /// Under `label_clock`, the rows accepted with a null label time, which
+    /// are scored and never learned. Not written while 0.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub labels_missing: u64,
+    /// Under `label_clock`, the held rows dropped unlearned: by a full
+    /// buffer under `held_overflow = "drop_oldest"`, or by a clock reset.
+    /// Not written while 0.
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub labels_dropped: u64,
+}
+
+fn is_zero_u64(v: &u64) -> bool {
+    *v == 0
+}
+
+/// [`Persisted::score_pred`] holds nothing worth writing.
+fn no_score_preds(v: &[std::collections::VecDeque<Vec<f64>>]) -> bool {
+    v.iter().all(std::collections::VecDeque::is_empty)
+}
+
+/// Whether a spec's model standardizes its features before its ridge
+/// applies (`ewridge`, `huber`, `quantile`): the models whose coefficients
+/// report `support_coef`.
+fn standardizes(spec: &Spec) -> bool {
+    match &spec.model {
+        ModelKind::EwRidge { standardize, .. }
+        | ModelKind::Huber { standardize, .. }
+        | ModelKind::Quantile { standardize, .. } => *standardize,
+        _ => false,
+    }
+}
+
+/// How long a gate has withheld every row, on the learned rows' clock: the
+/// decay time `now` less the decay time at the run's first row, NaN outside
+/// a run. A run begins at a withheld row of a stream `judged` 95% settled
+/// ([`settled_enough`]), and a row the gate lets through ends it. The two
+/// "not met" notices wait for a half-life of it ([`half_life_of`]): read at
+/// the first withheld row past 95% settled, the steady state they project
+/// from the spacing so far was wrong wherever the rows then came faster --
+/// a sorted feature used as the clock, dense at its mode, met a floor of 10
+/// on 381 of 400 rows after a notice that it never would (review round 5,
+/// F3).
+fn withheld_for(since: &mut Option<f64>, withheld: bool, judged: bool, now: f64) -> f64 {
+    if !withheld {
+        *since = None;
+        return f64::NAN;
+    }
+    if judged && since.is_none() {
+        *since = Some(now);
+    }
+    since.map_or(f64::NAN, |s| now - s)
+}
+
+/// One half-life of `decay`, in the clock units its decay time counts:
+/// infinite where nothing decays.
+fn half_life_of(decay: Decay) -> f64 {
+    match decay {
+        Decay::Halflife(h) => h,
+        Decay::Lam(l) if l < 1.0 => -1.0 / l.log2(),
+        Decay::Lam(_) => f64::INFINITY,
+    }
+}
+
+/// How far the decay window has filled toward steady state after `t`
+/// clock units of decay: `1 − 2^(−t/h)`, or `1 − λ^t`; NaN where nothing
+/// decays, there being no steady state to settle toward
+/// (docs/WARMUP-AND-CONVERGENCE.md §1). Rate-independent by construction:
+/// it reads the clock the decay has covered, not a count of rows.
+pub fn settled_frac(decay: Decay, t: f64) -> f64 {
+    match decay {
+        Decay::Halflife(h) if h.is_finite() => 1.0 - (-(t / h)).exp2(),
+        Decay::Lam(l) if l < 1.0 => 1.0 - l.powf(t),
+        _ => f64::NAN,
+    }
+}
+
+/// A projected weight as a notice prints it: four decimals in the range a
+/// reader reads at a glance, four significant figures outside it, so a
+/// ceiling of 3e-7 is not "0.0000" and one of 1e90 is not ninety digits.
+/// `None` where the projection is not a positive, finite weight: on an
+/// irregular stream `(W − w₁(1 − s))/s` can read 0 or below (a target
+/// present on one row in 50, or a heavy row where the notice comes), and a
+/// notice must not advise lowering a floor below such a figure (task 208).
+fn projected_figure(weight: f64) -> Option<String> {
+    if !(weight > 0.0 && weight.is_finite()) {
+        return None;
+    }
+    Some(if (1e-3..1e6).contains(&weight) {
+        format!("{weight:.4}")
+    } else {
+        format!("{weight:.4e}")
+    })
+}
+
+/// The weight a stream settles at, read from where it stands: `weight`, the
+/// accumulated weight before the next row (`weight_sum`'s meaning), less what
+/// is left of the first row's, over the settled fraction:
+///
+/// ```text
+/// weight_sum_settled = (W − w₁·(1 − s)) / s,    s = settled_frac
+/// ```
+///
+/// On a regular stream -- rows `d` apart, each of weight `w` -- `W` after
+/// `n` rows is `w·(1 − λⁿ)/(1 − λ)` and `s` is `1 − λⁿ⁻¹` (the first row
+/// brings no clock), so this is `w/(1 − λ)`, the ceiling `1/(1 − λ^d)` in
+/// rows (docs/WARMUP-AND-CONVERGENCE.md §5.1), exactly, from the second
+/// row; on the first `s` is 0 and there is none (NaN). `w₁` is the first
+/// row's weight, which on such a stream is every row's: the stream keeps no
+/// first weight, so a caller hands the weight a row has there (docs/PLAN.md
+/// task 198, D8).
+///
+/// Where `W − w₁(1 − s)` is 0 the stream has kept nothing but its first
+/// row's weight -- a target present on that row alone -- and the computed
+/// difference is the two terms' rounding, whose sign is the platform's
+/// libm's: +5.7e-17 with `exp2` 1 ulp high, at or below 0 on Apple's, and a
+/// positive one read as a ceiling of 5.7e-17 (task 273). So a difference
+/// within that rounding is exactly 0. With `u = 2^-53`, `n = steps` the
+/// decay steps `W` has been carried through (at least 1) and each libm
+/// result within 2 ulp:
+///
+/// - `W`: each step multiplies by a factor within `2u` of its own and rounds
+///   the product and the sum, `4u` of `W` a step, so at most `4u·n·W`. The
+///   row weight `w₁` a caller hands is a mean of up to `n` weights, within
+///   `u·n·w₁`.
+/// - `1 − s`: `s = 1 − e` rounds once, by at most `u` since `s <= 1`, and
+///   `e = 2^(−t/h)` carries `2u·e` from `exp2` and `ln 2·u·(t/h)·e <= 0.37u`
+///   from the rounding of `t/h` (`x·2^−x <= 1/(e ln 2)`); `1 − s` is then
+///   exact where `s >= 1/2` and rounds by `u` below. Within `4.4u` of the
+///   exact `e` in all, absolutely: when `s` is near 1, a part of `1 − s` many
+///   times `u` (`2.7e-15` of it at 98% settled). `λ^t` from `powf` is bounded
+///   the same way.
+/// - The product `w₁·(1 − s)` and the difference round by `u` of their
+///   operands.
+///
+/// That is at most `(4n + 2)·u·W + (n + 6.4)·u·w₁ <= 8u·n·(W + w₁)`. A real
+/// ceiling `C` comes in far above it: on a regular stream the difference is
+/// `s·C` and `W + w₁ <= C + 2w₁ <= 3C`, so the band takes it only where `s
+/// <= 24u·n`, which needs rows closer than `2^-47` of a half-life.
+pub fn settled_weight(weight: f64, first: f64, settled: f64, steps: f64) -> f64 {
+    if !(settled > 0.0 && settled.is_finite()) {
+        return f64::NAN;
+    }
+    let rest = weight - first * (1.0 - settled);
+    let noise = 8.0 * (f64::EPSILON / 2.0) * steps.max(1.0) * (weight.abs() + first.abs());
+    if rest.abs() <= noise {
+        0.0
+    } else {
+        rest / settled
+    }
+}
+
+/// The reasons a row's predictions are withheld, as `withheld_reason`
+/// spells them: the code the row buffer carries (0 for none) and the name
+/// the output shows. The order is the precedence when several apply. A
+/// state's last row keeps the code, so a new reason takes the next one:
+/// the model's own warm-up (`warm_rows`) came after the gates, and no model
+/// that has it has the noise gate before it; `ill_conditioned` came last
+/// (task 278, D4), and the noise gate reads a fit withheld for its
+/// condition as not a number, so it never names that fit in its place;
+/// `unstable_rate` after it (task 278, D8), `sgd`'s gate, which no model
+/// with an earlier reason of its own has.
+pub const WITHHELD_REASONS: [&str; 6] = [
+    "below_min_settled_frac",
+    "below_min_weight",
+    "above_max_error_inflation",
+    "below_warm_rows",
+    "ill_conditioned",
+    "unstable_rate",
+];
+const REASON_SETTLED: u8 = 1;
+const REASON_MIN_PERIODS: u8 = 2;
+const REASON_INFLATION: u8 = 3;
+const REASON_WARM_ROWS: u8 = 4;
+const REASON_ILL_CONDITIONED: u8 = 5;
+const REASON_UNSTABLE_RATE: u8 = 6;
+
+/// The settled fraction at which a readiness notice judges a stream
+/// (docs/WARMUP-AND-CONVERGENCE.md §3): the one rule all three notices
+/// share. Before it, the stream's own early rows still move what a notice
+/// would say -- a weight short of its ceiling, a ratio still falling, a
+/// data share read through the first rows' noisy feature variances -- and a
+/// notice cannot be retracted. A stream without decay never settles (its
+/// fraction is NaN), so it is never judged; the fields and the summary carry
+/// what it reads (docs/PLAN.md task 116, G).
+const NOTICE_SETTLED: f64 = 0.95;
+
+/// Whether a stream at `settled` is far enough along for a notice to judge
+/// it ([`NOTICE_SETTLED`]). The fraction a notice passes is the learned
+/// rows' -- the rows held under an embargo left out, as the weight it
+/// judges has them (review round 5, C1); the gate and the row field keep
+/// the held-inclusive one.
+fn settled_enough(settled: f64) -> bool {
+    settled >= NOTICE_SETTLED
+}
+
+/// Where a stream stands on the readiness statistics
+/// (docs/WARMUP-AND-CONVERGENCE.md §3), as `Bank::summary` reports it: NaN
+/// where a statistic does not exist for the model.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Readiness {
+    pub settled_frac: f64,
+    /// The weight the stream settles at, read from where it stands
+    /// ([`settled_weight`]); NaN where it has not one: no decay, a window,
+    /// or a single row.
+    pub weight_sum_settled: f64,
+    /// The largest over the instance's slots.
+    pub error_inflation: f64,
+    pub min_support_coef: f64,
+    pub min_support_coef_feature: Option<String>,
+    pub n_coef: u64,
+}
+
+/// Where the noise gate's notice reads the stream: the gate's largest ratio,
+/// its limit, the fraction the learned rows have settled -- the rows held
+/// under an embargo left out, as the weight has them (review round 5, C1)
+/// -- the weight before the row and the row's own (docs/PLAN.md task 198,
+/// D8).
+struct Unmet {
+    worst: f64,
+    max: f64,
+    settled: f64,
+    weight: f64,
+    row_weight: f64,
+    /// The decay steps `weight` has been carried through, at most
+    /// ([`settled_weight`]).
+    steps: f64,
+}
+
+impl Unmet {
+    /// Whether the gate stays shut at steady state at the rows' spacing so
+    /// far, which the notice says: the ratio's projection there -- `1 +
+    /// (worst² − 1)·s/(2 − s)`, Kish's size growing from `s/(2 − s)` of its
+    /// ceiling to all of it -- at or above the limit, or, where the model
+    /// has not solved, its weight's ceiling below the floor it needs. The
+    /// notice said so of the ratio read at 95% settled, which is still
+    /// falling there: a gate a little above the limit then opened later,
+    /// after a notice that it never would (docs/PLAN.md task 198, found by
+    /// its half-life figure's test).
+    fn stays_shut(&self, spec: &Spec) -> bool {
+        if self.worst.is_finite() {
+            let s = self.settled;
+            1.0 + (self.worst * self.worst - 1.0) * s / (2.0 - s) >= self.max * self.max
+        } else {
+            settled_weight(self.weight, self.row_weight, self.settled, self.steps)
+                < solve_floor(spec)
+        }
+    }
+}
+
+/// The floor each target's outputs are gated at: the spec's `min_weight`,
+/// or its kind's default, with `ew_cov`'s raised to 2. A variance needs two
+/// rows, so a lower one, 0 included, is raised rather than refused, and the
+/// model and the gate read the same floor: the rows it holds back say so,
+/// `below_min_weight`, where the model's floor alone left them with no
+/// reason.
+fn gate_floors(spec: &Spec) -> Vec<f64> {
+    let mut floors = spec.min_periods_per_target();
+    if matches!(spec.model, ModelKind::EwCov { .. }) {
+        for f in &mut floors {
+            *f = f.max(2.0);
+        }
+    }
+    floors
+}
+
+/// The weight a model with a noise gate needs before it solves at all: a
+/// row per coefficient, or the spec's own `min_weight` (`build_bare`). Below
+/// it the ratio is infinite.
+fn solve_floor(spec: &Spec) -> f64 {
+    match spec.min_weight {
+        Some(_) => spec.min_periods_or_default(),
+        None => (spec.k() + usize::from(spec.fit_intercept)) as f64,
+    }
+}
+
+/// What the noise gate's warning asks of the decay, in clock units: the
+/// half-life above which the gate opens at steady state on a regular stream (docs/PLAN.md task
+/// 198, D8; WARMUP-AND-CONVERGENCE §7).
+///
+/// The gate reads `sqrt(1 + edf/n)`, `n` Kish's effective sample size, and
+/// opens below `max`. Where it reads `worst`, finite, `n` must grow by
+/// `r = (worst² − 1)/(max² − 1)`. At steady state `n` is `(1 + λ)/(1 − λ)`,
+/// in proportion to the half-life where it is many rows, and at a settled
+/// fraction `s` it is `s/(2 − s)` of that -- `(1 − λᵐ)/(1 + λᵐ)` of the
+/// ceiling with `λᵐ = 1 − s` -- so the half-life must pass `h·r·s/(2 − s)`.
+///
+/// Where the ratio is infinite the model never solved: its weight tops out
+/// at `C = w/(1 − 2^(−d/h))` ([`settled_weight`]) below its floor `N`
+/// ([`solve_floor`]). From `C` the spacing is `d/h = −log2(1 − w/C)`, and
+/// the half-life must pass both `d/−log2(1 − w/N)`, for the weight to reach
+/// `N`, and `d/−log2((n − 1)/(n + 1))` with `n = k/(max² − 1)`, for Kish's
+/// size to carry `k` degrees of freedom, the most a ridge leaves.
+///
+/// "Above", since the gate withholds at equality; `unmet_floor::decay_above`
+/// puts it in the spec's own terms.
+///
+/// NaN or not positive where none opens the gate on the rows so far.
+fn half_life_need(spec: &Spec, decay: Decay, at: &Unmet) -> f64 {
+    let h = half_life_of(decay);
+    let (max, s, w) = (at.max, at.settled, at.row_weight);
+    if at.worst.is_finite() {
+        h * (at.worst * at.worst - 1.0) / (max * max - 1.0) * s / (2.0 - s)
+    } else {
+        let d = h * -(1.0 - w / settled_weight(at.weight, w, s, at.steps)).log2();
+        let k = (spec.k() + usize::from(spec.fit_intercept)) as f64;
+        let n = k / (max * max - 1.0);
+        let floor = d / -(1.0 - w / solve_floor(spec)).log2();
+        let kish = d / -((n - 1.0) / (n + 1.0)).log2();
+        // A bound that cannot bind -- a floor of one row, a Kish size of
+        // one -- is NaN, and `max` takes the other.
+        floor.max(kish)
+    }
+}
+
+/// [`Persisted::resid_win`] holds no ring.
+fn no_resid_windows(v: &[Option<ResidWindow>]) -> bool {
+    v.iter().all(Option::is_none)
+}
+
+/// Live per-stream state: the models, what a save keeps beside them
+/// ([`Persisted`]), and what the spec configures.
+pub struct Stream {
+    pub models: Vec<(String, AnyModel)>,
+    /// Everything else a save keeps, as it keeps it.
+    pub persisted: Persisted,
+    /// Decay of each model instance, needed to age `resid_var` on the same
+    /// clock the model itself uses.
+    decays: Vec<Decay>,
+    /// Warmup threshold per target (ENHANCEMENTS E7).
+    min_weight: Vec<f64>,
+    /// Row scratch, reused for the life of the stream so the chunk loop
+    /// itself allocates nothing (PERFORMANCE-LOG P1). The `pred` `Vec`
+    /// inside each `Step` is the one per-row allocation left, and it is cheap
+    /// (docs/IMPROVEMENTS.md P2).
+    scratch: Vec<Scratch>,
+    /// The time a row waits on the elapsed clock before the models learn
+    /// from it (E47, docs/PLAN.md task 176); `None` for the ordinary "learn
+    /// where it sits".
+    embargo: Option<Embargo>,
+    /// The spec's `gap_cap` and `session_gap` in integer nanoseconds, where
+    /// they are durations, for the rows' stamps (docs/PLAN.md task 175):
+    /// configuration from the spec, like `embargo`.
+    exact_caps: ExactCaps,
+    /// What each instance's diagnostics decay by, from the spec and the
+    /// instance's decay alone: configuration, built once with the stream.
+    /// Built for every run, it named every combo's label a run (task 270,
+    /// G-1).
+    check_cfgs: Vec<CheckCfg>,
+}
+
+impl Stream {
+    /// The first of this stream's windows to pass a refusing budget -- a
+    /// model instance's, or a spread's ring (S1): its ring's bytes and its
+    /// cadence, `snapshot_every` and `max_rows_between_snapshots` (review
+    /// 2026-09-12, P4; docs/PLAN.md task 162).
+    pub fn window_over_budget(&self) -> Option<(usize, rheon_core::Cadence)> {
+        self.models
+            .iter()
+            .find_map(|(_, m)| m.window_over_budget())
+            .or_else(|| {
+                self.persisted
+                    .resid_win
+                    .iter()
+                    .flatten()
+                    .find_map(ResidWindow::over_budget)
+            })
+    }
+
+    /// Whether `min_settled_frac` withholds what instance `i` reports from its
+    /// state as it stands -- `marginal`'s table, whose rows carry nothing to
+    /// withhold (task 278). The fraction is the one the next row would read,
+    /// as [`Self::readiness`] gives it: the clock the decay has covered, the
+    /// rows held under `embargo` counted. The row gate's test, so the two
+    /// open together.
+    pub fn settled_withholds(&self, spec: &Spec, i: usize) -> bool {
+        let min_settled = spec.min_settled_frac_or_default();
+        if min_settled <= 0.0 {
+            return false;
+        }
+        let Some(&decay) = self.decays.get(i) else {
+            return false;
+        };
+        let time = self.persisted.decay_time.get(i).copied().unwrap_or(0.0);
+        let settled = settled_frac(decay, time + self.held_clock(i));
+        settled.is_finite() && settled < min_settled
+    }
+
+    /// Whether a drift detection restarts this stream's models: its spec
+    /// says `drift_action = "reset"` and it keeps the detectors.
+    fn resets_on_drift(&self, spec: &Spec) -> bool {
+        !self.persisted.drift.is_empty() && spec.drift_action.as_deref() == Some("reset")
+    }
+
+    /// Summed over this stream's model instances (one per half-life).
+    /// The bytes this group's Huber refit buffers can hold at most, over
+    /// its model instances: what a bank reserves against the spec's
+    /// `refit_budget` (docs/PLAN.md task 277).
+    pub fn refit_reservation(&self) -> usize {
+        self.models.iter().map(|(_, m)| m.refit_reservation()).sum()
+    }
+
+    /// Give this group's Huber refits up, past its spec's `refit_budget`:
+    /// every model's, and those a reset rebuilds later.
+    pub fn refit_give_up(&mut self) {
+        self.persisted.refit_over_budget = true;
+        self.models.iter_mut().for_each(|(_, m)| m.refit_give_up());
+    }
+
+    /// Whether the bank gave this group's refits up past the budget.
+    pub fn refit_over_budget(&self) -> bool {
+        self.persisted.refit_over_budget
+    }
+
+    /// The targets, over the model instances, whose Huber refit was given
+    /// up: past the spec's `refit_budget`, or past the cap on a buffer's
+    /// ageing runs.
+    pub fn refits_given_up(&self) -> u64 {
+        self.models
+            .iter()
+            .flat_map(|(_, m)| m.refit_status())
+            .filter(|r| r.over_budget || r.abandoned)
+            .count() as u64
+    }
+
+    pub fn solve_failures(&self) -> u64 {
+        self.models.iter().map(|(_, m)| m.solve_failures()).sum()
+    }
+
+    /// The readiness notices raised since the last drain, in instance
+    /// order (docs/WARMUP-AND-CONVERGENCE.md §3); each is raised once per
+    /// instance for the life of the stream. Under `group_close = "session"`
+    /// each names the span it was raised in ([`Notice`]): the span the
+    /// stream is in, read from the session value it holds for its closed
+    /// row, unless it was carried here from a closed span already named.
+    pub fn take_notices(&mut self, spec: &Spec) -> Vec<Notice> {
+        let mut taken: Vec<Notice> = self
+            .persisted
+            .notified
+            .iter_mut()
+            .flat_map(|n| std::mem::take(&mut n.pending))
+            .collect();
+        if spec.closes_on_session() && taken.iter().any(|n| n.span.is_none()) {
+            let span = span_name(self.persisted.last_session.as_deref());
+            for n in taken.iter_mut().filter(|n| n.span.is_none()) {
+                n.span = Some(span.clone());
+            }
+        }
+        taken
+    }
+
+    /// Hold `notices`, taken from the stream this one replaces, to be taken
+    /// before any of its own ([`Self::take_notices`]): a session's span
+    /// closed within a call starts this stream, and the notices the closed
+    /// span raised in that call are said with the call's, as they are when
+    /// a chunk ends between the two spans, each naming the closed span. Same
+    /// spec, so the same instances: a stream that raised a notice has a first
+    /// one to hold them in.
+    pub fn carry_notices(&mut self, mut notices: Vec<Notice>) {
+        if notices.is_empty() {
+            return;
+        }
+        let first = self
+            .persisted
+            .notified
+            .first_mut()
+            .expect("a stream that raised a notice has an instance");
+        notices.append(&mut first.pending);
+        first.pending = notices;
+    }
+
+    /// Where this stream stands (§3), for `Bank::summary`: read from its
+    /// first instance, as it stands after the last row.
+    pub fn readiness(&self, spec: &Spec) -> Readiness {
+        let decay = self.decays.first().copied();
+        let decay_time = self.persisted.decay_time.first().copied().unwrap_or(0.0);
+        // Two fractions, as a row reads them (§8): the one reported counts
+        // the clock the rows held under `embargo` have covered, as the row's
+        // `settled_frac` does, so the summary reads what the next row would
+        // (review round 5, C4); `weight_sum_settled` divides by the learned
+        // rows' alone, the clock its weight has settled on, or the ceiling
+        // pairs a weight with a fraction it has not reached (review round 5,
+        // C1).
+        let held = self.held_clock(0);
+        let settled = decay.map_or(f64::NAN, |d| settled_frac(d, decay_time + held));
+        let learned = decay.map_or(f64::NAN, |d| settled_frac(d, decay_time));
+        let model = self.models.first().map(|(_, m)| m);
+        // The weight a row has: 1 without a weight column, and the rows'
+        // mean weight with one, which on the regular stream the estimate is
+        // exact for is every row's. A window's weight does not settle as the
+        // decay does, so it has no estimate.
+        let windowed = spec
+            .model
+            .window_parts()
+            .is_some_and(|(window, _)| window.is_some());
+        let row_weight = match (&spec.weight, self.summary()) {
+            (None, _) => 1.0,
+            (Some(_), Some(d)) if self.persisted.rows_seen > 0 => {
+                d.weight_sum / self.persisted.rows_seen as f64
+            }
+            _ => f64::NAN,
+        };
+        let weight_sum_settled = match model {
+            Some(m) if !windowed => settled_weight(
+                m.n_eff(),
+                row_weight,
+                learned,
+                self.persisted.rows_seen as f64,
+            ),
+            _ => f64::NAN,
+        };
+        let mut infl = Vec::new();
+        let error_inflation = match model {
+            Some(m) if m.error_inflation_into(&mut infl) => {
+                infl.iter().cloned().fold(f64::NAN, f64::max)
+            }
+            _ => f64::NAN,
+        };
+        let k_total = spec.k() + usize::from(spec.fit_intercept);
+        let (mut min_support, mut feature) = (f64::NAN, None);
+        if let Some(s) = model.and_then(|m| m.support_coef()) {
+            let worst = s
+                .iter()
+                .flat_map(|slot| slot.iter().enumerate())
+                .filter(|(_, v)| v.is_finite())
+                .min_by(|a, b| a.1.total_cmp(b.1));
+            if let Some((i, &share)) = worst {
+                min_support = share;
+                feature = spec
+                    .features
+                    .get(i % k_total - usize::from(spec.fit_intercept))
+                    .cloned();
+            }
+        }
+        Readiness {
+            settled_frac: settled,
+            weight_sum_settled,
+            error_inflation,
+            min_support_coef: min_support,
+            min_support_coef_feature: feature,
+            n_coef: k_total as u64,
+        }
+    }
+
+    /// Run every model instance's Gram work on `threads` threads
+    /// ([`OnlineModel::set_gram_threads`]); the bank sets it per chunk from
+    /// its pool's share (`crate::spec::gram_share`). Not state.
+    pub fn set_gram_threads(&mut self, threads: usize) {
+        for (_, m) in &mut self.models {
+            m.set_gram_threads(threads);
+        }
+    }
+
+    /// Settle every model instance's readiness shares
+    /// ([`AnyModel::settle_readiness`]): what the bank calls once the
+    /// stream's rows of a chunk are learned, so no factor outlives the
+    /// chunk that solved it.
+    pub fn settle_readiness(&mut self) {
+        for (_, m) in &mut self.models {
+            m.settle_readiness();
+        }
+    }
+
+    /// Model instances in this stream (one per half-life).
+    pub fn n_models(&self) -> usize {
+        self.models.len()
+    }
+
+    /// The warm-up threshold per target this stream gates its outputs on
+    /// (ENHANCEMENTS E7): the spec's `min_weight`, or its kind's default.
+    pub fn min_weight(&self) -> &[f64] {
+        &self.min_weight
+    }
+
+    /// Output slots per instance. Instances of one spec differ only in decay,
+    /// so they all report the same count; the max is that count.
+    pub fn n_slots(&self) -> usize {
+        self.models
+            .iter()
+            .map(|(_, m)| m.n_outputs())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The output row of the last row this stream learned from, if any
+    /// (docs/PLAN.md task 34): what [`Stream::process_chunk`] wrote for it,
+    /// kept across [`Stream::save`] and [`Stream::restore`].
+    pub fn last_row(&self) -> Option<&LastRow> {
+        self.persisted.last_row.as_ref()
+    }
+
+    /// What this stream has been fed (docs/PLAN.md task 35), accumulated
+    /// by [`Stream::process_chunk`] and kept across [`Stream::save`] and
+    /// [`Stream::restore`]. `None` for a stream restored from a file
+    /// written before the summary existed.
+    pub fn summary(&self) -> Option<&DataSummary> {
+        self.persisted.summary.as_ref()
+    }
+
+    /// Keep the last learned row of a run's buffers as [`Self::last_row`]:
+    /// the last row `processed` marks, so a chunk that ends in skipped rows
+    /// keeps the row before them. A run with no learned row changes nothing.
+    /// The vectors are reused, so after the first run this allocates only
+    /// for a `coef` the row carried.
+    pub fn remember_last(&mut self, out: &ChunkOut) {
+        if let Some(ri) = out.processed.iter().rposition(|&p| p) {
+            self.persisted
+                .last_row
+                .get_or_insert_with(Default::default)
+                .take(out, ri);
+        }
+    }
+}
+
+/// The core's one definition of a value a model learns from, which the
+/// stream reads its rows by: a feature or weight that is not usable skips
+/// the row, a target that is not makes it predict-only (docs/PLAN.md §3,
+/// task 183).
+pub use rheon_core::{all_usable, usable};
+
+/// Whether the stream accepts input row `i`: every feature and the weight
+/// usable. The one test [`Stream::process_chunk`]'s schedule and
+/// [`last_accepted`] share, so the row `coef` is promised on is a row the
+/// schedule accepts.
+#[inline]
+fn accepts(features: &FeatureRows, weight: Option<&[f64]>, i: usize) -> bool {
+    all_usable(features.row(i)) && weight.map(|w| usable(w[i])).unwrap_or(true)
+}
+
+/// The last of a group's input rows `base..base + n` in the chunk that the
+/// stream accepts: where `coef` is written without a cadence (review round
+/// 4, PB2). `None` when every one is skipped, and the chunk writes no
+/// `coef` for the group.
+///
+/// Read from the columns, a row at a time from the last: [`accepts`]'s test
+/// on the same values, before any run has copied them into rows.
+pub fn last_accepted(
+    features: &FeatureCols,
+    weight: Option<&[f64]>,
+    base: usize,
+    n: usize,
+) -> Option<usize> {
+    (base..base + n)
+        .rev()
+        .find(|&i| features.usable_at(i) && weight.map(|w| usable(w[i])).unwrap_or(true))
+}
+
+/// True when this target has not reached its own warmup threshold yet.
+#[inline]
+fn step_n_eff_below(n_eff: f64, min_weight: &[f64], target: usize) -> bool {
+    min_weight.get(target).is_some_and(|t| n_eff < *t)
+}
+
+/// Keep each slot's prediction as the step gave it, once, before the first
+/// readiness gate withholds any of it, where the spread folds the
+/// predictions a gate withholds ([`Persisted::ungated_spread`]).
+#[inline]
+fn keep_ungated(keep: bool, kept: &mut bool, ungated: &mut Vec<f64>, pred: &[f64]) {
+    if keep && !*kept {
+        ungated.clear();
+        ungated.extend_from_slice(pred);
+        *kept = true;
+    }
+}
+
+mod any_restore;
+mod chunk_out;
+mod run_parts;
+use chunk_out::Buffers;
+pub use chunk_out::ChunkOut;
+use run_parts::{build_instances, joined, keep_plans, plan_buffer};
+
+mod last_row;
+pub use last_row::LastRow;
+
+mod conformal_rows;
+mod notified;
+mod pre_row_sigma;
+mod stack_line;
+mod unmet_floor;
+use notified::span_name;
+pub use notified::{Notice, Notified};
+use pre_row_sigma::pre_row_sigma;
+use unmet_floor::{
+    Projection, inflation_notice, unmet_floor_notice, unsolved_notice, unstable_rate_notice,
+};
+
+impl Stream {
+    pub fn new(spec: &Spec) -> Result<Self, String> {
+        let models = build_models(spec)?;
+        let decays: Vec<Decay> = spec.decays()?.into_iter().map(|(_, d)| d).collect();
+        let check_cfgs = decays.iter().map(|&d| CheckCfg::of(spec, d)).collect();
+        let slots: Vec<usize> = models.iter().map(|(_, m)| m.n_outputs()).collect();
+        let drift = if spec.emit_drift {
+            // 20 only without a clock, where a row is one unit: the spec
+            // requires a threshold with a clock (task 168).
+            let d = PageHinkley::new(
+                spec.drift_delta_or_default(),
+                spec.drift_threshold_or_default(),
+            );
+            slots.iter().map(|&n| vec![d.clone(); n]).collect()
+        } else {
+            Vec::new()
+        };
+        let resid_win = models
+            .iter()
+            .map(|_| resid_window(spec))
+            .collect::<Result<Vec<_>, String>>()?;
+        let instances = slots.len();
+        let embargo = spec.embargo.as_ref().map(Embargo::of);
+        Ok(Self {
+            persisted: Persisted {
+                clock: ClockState::new(),
+                rows_seen: 0,
+                resid_var: slots.iter().map(|&n| vec![0.0; n]).collect(),
+                resid_w: slots.iter().map(|&n| vec![0.0; n]).collect(),
+                resid_win,
+                drift,
+                resid_q: match &spec.resid_quantiles {
+                    Some(levels) => {
+                        let proto = EwQuantile::new(levels)?;
+                        slots.iter().map(|&n| vec![proto.clone(); n]).collect()
+                    }
+                    None => Vec::new(),
+                },
+                autocorr: if spec.emit_autocorr {
+                    let proto = EwAutoCorr::new(spec.resid_autocorr_lag_or_default())?;
+                    slots.iter().map(|&n| vec![proto.clone(); n]).collect()
+                } else {
+                    Vec::new()
+                },
+                metrics: if spec.emit_metrics {
+                    slots.iter().map(|&n| vec![SlotMetrics::new(); n]).collect()
+                } else {
+                    Vec::new()
+                },
+                conformal: match spec.conformal {
+                    Some(level) => {
+                        let proto = Conformal::new(level, spec.conformal_rate_or_default())?;
+                        slots.iter().map(|&n| vec![proto.clone(); n]).collect()
+                    }
+                    None => Vec::new(),
+                },
+                checks: if Checks::any(spec) {
+                    slots.iter().map(|&n| Checks::new(spec, n)).collect()
+                } else {
+                    Vec::new()
+                },
+                last_row: None,
+                summary: Some(DataSummary::new(spec)),
+                decay_time: vec![0.0; instances],
+                restarted: vec![false; instances],
+                refit_over_budget: false,
+                ungated_spread: !spec.model.predicts_no_target(),
+                weighted_autocorr: spec.emit_autocorr,
+                ungated_drift: spec.emit_drift && !spec.model.predicts_no_target(),
+                // Only a delay ever holds rows: without one there is no
+                // clock to keep, and none is written.
+                pending_clock: if embargo.is_some() || spec.label_clock.is_some() {
+                    vec![0.0; instances]
+                } else {
+                    Vec::new()
+                },
+                notified: vec![Notified::default(); instances],
+                pending: VecDeque::new(),
+                held_break: HeldBreak::default(),
+                last_learned: None,
+                fed: 0,
+                score_pred: (0..instances)
+                    .map(|_| std::collections::VecDeque::new())
+                    .collect(),
+                last_session: None,
+                coef_cadence: CoefCadence::default(),
+                restart_fold: None,
+                label_learned: spec.label_clock.as_ref().map(|_| ClockState::new()),
+                labels_missing: 0,
+                labels_dropped: 0,
+            },
+            min_weight: gate_floors(spec),
+            models,
+            decays,
+            scratch: slots.iter().map(|_| Scratch::default()).collect(),
+            embargo,
+            exact_caps: spec.exact_caps(),
+            check_cfgs,
+        })
+        .inspect(|stream| {
+            // The bank replays only the rings of a spec that says it keeps
+            // one (`ModelKind::keeps_window_ring`).
+            debug_assert_eq!(
+                spec.model.keeps_window_ring(),
+                !stream.window_shadows().is_empty(),
+                "spec {:?}",
+                spec.name
+            );
+        })
+    }
+
+    /// The stream as a state file keeps it: each model's state, and the rest
+    /// as it stands ([`Persisted`]).
+    pub fn save(&self) -> StreamState {
+        StreamState {
+            models: self.models.iter().map(|(_, m)| m.state()).collect(),
+            persisted: self.persisted.clone(),
+        }
+    }
+
+    /// [`Self::save`]'s inverse, for `spec`: everything the state holds is
+    /// taken, once it is checked to be this spec's -- a field the spec has
+    /// since gained or lost the option for starts afresh, and one shaped for
+    /// another spec, which would index past this one's slots, is refused.
+    pub fn restore(spec: &Spec, saved: &StreamState) -> Result<Self, String> {
+        Self::restore_owned(spec, saved.clone())
+    }
+
+    /// [`Self::restore`] taking the state, so its models and the rest of it
+    /// are moved into the stream, not copied: loading a file holds one copy
+    /// of each group's state, not two.
+    pub fn restore_owned(spec: &Spec, saved: StreamState) -> Result<Self, String> {
+        let mut stream = Stream::new(spec)?;
+        if stream.models.len() != saved.models.len() {
+            return Err(format!(
+                "it is damaged, since it holds {} instances (the parts of the model that fit one \
+                 half-life each) where this spec keeps {}. Load an undamaged copy of the state file, \
+                 or rebuild it from its input.",
+                saved.models.len(),
+                stream.models.len()
+            ));
+        }
+        let models = stream
+            .models
+            .drain(..)
+            .zip(saved.models)
+            .map(|((suffix, fresh), st)| {
+                let mut m = AnyModel::restore_owned(st).map_err(|e| e.to_string())?;
+                // The cadence is the spec's, as the budget is: a state saved
+                // before the weight-share rule takes it on load (task 115 (b)).
+                m.set_solve_share(fresh.solve_share());
+                // The state's cfg is the model's, but the stream feeds it the
+                // spec's columns and reads the spec's slots: a state whose
+                // cfg is another width would index past both (review
+                // 2026-09-18, B3).
+                if m.n_features() != fresh.n_features()
+                    || m.n_targets() != fresh.n_targets()
+                    || m.n_outputs() != fresh.n_outputs()
+                {
+                    let which = if suffix.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " for instance {suffix:?} (the part of the model that fits one \
+                             half-life)"
+                        )
+                    };
+                    return Err(format!(
+                        "it is damaged, since its saved model{which} does not have this spec's \
+                         shape. Load an undamaged copy of the state file, or rebuild it from its input."
+                    ));
+                }
+                Ok((suffix, m))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        stream.models = models;
+        // The window's budget is configuration, which the state does not
+        // carry (`build_one`).
+        let budget = spec.model.window_budget();
+        for (_, m) in stream.models.iter_mut() {
+            m.set_window_budget(budget);
+            m.set_gram_threads(spec.model.gram_threads());
+        }
+        let fresh = &stream.persisted;
+        let mut p = saved.persisted;
+        // The decay time per instance, which every file this build loads
+        // keeps: one of the wrong length is damage, refused as the held-rows
+        // clock is below. Replaced with zeros, as a file written before it
+        // existed once was, it restarted `settled_frac` and
+        // `weight_sum_settled` from the load (review round 5, C7). The
+        // notices are flags, and a wrong length of those starts them over.
+        if p.decay_time.len() != fresh.decay_time.len() {
+            return Err(format!(
+                "it is damaged, since its record of how far each instance (the part of the model \
+                 that fits one half-life) has decayed has {} entries where this spec keeps {}. \
+                 Load an undamaged copy of the state file, or rebuild it from its input.",
+                p.decay_time.len(),
+                fresh.decay_time.len()
+            ));
+        }
+        // The restart marks, one per instance: none in a file written
+        // before schema 64, which loads as no instance restarted; any
+        // other length is damage, refused as the decay time is.
+        if p.restarted.is_empty() {
+            p.restarted = fresh.restarted.clone();
+        } else if p.restarted.len() != fresh.restarted.len() {
+            return Err(format!(
+                "it is damaged, since its record of which instances (the parts of the model that \
+                 fit one half-life each) have reset has {} entries where this spec keeps {}. Load \
+                 an undamaged copy of the state file, or rebuild it from its input.",
+                p.restarted.len(),
+                fresh.restarted.len()
+            ));
+        }
+        if p.notified.len() != fresh.notified.len() {
+            p.notified = fresh.notified.clone();
+        }
+        // A saved per-instance, per-slot diagnostic is taken when it is
+        // shaped as this spec's; one absent, or sized for another spec
+        // (written before the field existed, or under a spec that has since
+        // gained or lost the option), starts over. One with this spec's
+        // number of instances but another width is corrupt and is refused:
+        // it reached `build_instances`'s "one per instance" and the slot
+        // loops as a panic (review 2026-09-18, B3).
+        fn take_diag<T: Clone>(
+            name: &str,
+            kept: &mut Vec<Vec<T>>,
+            fresh: &[Vec<T>],
+            same: impl Fn(&T, &T) -> bool,
+        ) -> Result<(), String> {
+            if kept.len() != fresh.len() {
+                *kept = fresh.to_vec();
+                return Ok(());
+            }
+            let fits = kept
+                .iter()
+                .zip(fresh)
+                .all(|(s, l)| s.len() == l.len() && s.iter().zip(l).all(|(a, b)| same(a, b)));
+            if !fits {
+                return Err(format!(
+                    "it is damaged, since its {name} do not match this spec. Load an undamaged copy \
+                     of the state file, or rebuild it from its input."
+                ));
+            }
+            Ok(())
+        }
+        // The variance and its weight are one estimate: both or neither.
+        let n = fresh.resid_var.len();
+        if p.resid_var.len() == n || p.resid_w.len() == n {
+            let fits = p.resid_var.len() == n
+                && p.resid_w.len() == n
+                && p.resid_var
+                    .iter()
+                    .zip(&fresh.resid_var)
+                    .chain(p.resid_w.iter().zip(&fresh.resid_w))
+                    .all(|(s, l)| s.len() == l.len());
+            if !fits {
+                return Err(
+                    "it is damaged, since its residual variances do not match this spec. \
+                            Load an undamaged copy of the state file, or rebuild it from its input."
+                        .into(),
+                );
+            }
+        } else {
+            p.resid_var = fresh.resid_var.clone();
+            p.resid_w = fresh.resid_w.clone();
+            // A spread that starts over starts on this build's rule.
+            p.ungated_spread = fresh.ungated_spread;
+        }
+        // A spread's ring, where the spec still keeps one. A file written
+        // before it existed (S1) leaves the fresh one, so for one window the
+        // spread counts only the rows after the load.
+        let mut rings = fresh.resid_win.clone();
+        for ((live, saved), slots) in rings
+            .iter_mut()
+            .zip(&p.resid_win)
+            .zip(fresh.resid_var.iter().map(Vec::len))
+        {
+            if let (Some(live), Some(saved)) = (live.as_mut(), saved) {
+                if !saved.fits(slots) {
+                    return Err(
+                        "it is damaged, since the residuals it keeps for a spread under \
+                                a hard window do not match this spec. Load an undamaged copy of the \
+                                state file, or rebuild it from its input."
+                            .into(),
+                    );
+                }
+                *live = saved.clone();
+                live.set_budget(budget);
+            }
+        }
+        p.resid_win = rings;
+        // A detector that starts over starts on this build's rule.
+        if p.drift.len() != fresh.drift.len() {
+            p.ungated_drift = fresh.ungated_drift;
+        }
+        take_diag("drift detectors", &mut p.drift, &fresh.drift, |_, _| true)?;
+        // A sketch is held to its own shape too, as `ew_cov`'s is: the next
+        // residual indexes its buckets by its pointers (review 2026-10-06,
+        // CB2's class).
+        take_diag(
+            "residual quantiles",
+            &mut p.resid_q,
+            &fresh.resid_q,
+            |s, l| s.levels() == l.levels() && s.has_shape(),
+        )?;
+        // An autocorrelation that starts over starts on this build's rule.
+        if p.autocorr.len() != fresh.autocorr.len() {
+            p.weighted_autocorr = fresh.weighted_autocorr;
+        }
+        take_diag(
+            "autocorrelations",
+            &mut p.autocorr,
+            &fresh.autocorr,
+            |s, l| s.same_shape(l),
+        )?;
+        // A metrics slot too: its joint moments are indexed by their width
+        // on the next scored row, and one a value short loaded on the
+        // count alone (review round 5, C2).
+        take_diag("metrics", &mut p.metrics, &fresh.metrics, |s, _| {
+            s.has_shape()
+        })?;
+        take_diag(
+            "conformal intervals",
+            &mut p.conformal,
+            &fresh.conformal,
+            |_, _| true,
+        )?;
+        // Task 221's accumulators, by the same rule: absent, or kept for
+        // another set of switches, they start over; this spec's count but
+        // another shape is damage.
+        if p.checks.len() != fresh.checks.len() {
+            p.checks = fresh.checks.clone();
+        } else if !p
+            .checks
+            .iter()
+            .zip(&fresh.checks)
+            .all(|(s, l)| s.fits(l, spec))
+        {
+            return Err(
+                "it is damaged, since its residual diagnostics (the calibration, breaks, robust \
+                 standard errors, specification tests, tails, influence and feature health this \
+                 spec switches on) are shaped for other features, lags or levels. Load an \
+                 undamaged copy of the state file, or rebuild it from its input."
+                    .into(),
+            );
+        }
+        // A file written by a spec with a `embargo` carries the rows it
+        // had not learned from yet; one written without a delay has none, and
+        // one restored under a spec that has since gained or lost a delay
+        // gets whatever the file holds, which is what "resume this stream"
+        // means (E47).
+        // Each waiting row is replayed into `step` with the spec's columns,
+        // so it must carry exactly them (review 2026-09-18, B3), and its
+        // place on the elapsed clock, which its release is measured from
+        // (task 176): every row a stream holds has one.
+        let (nf, nt) = (spec.features.len(), spec.targets.len());
+        if p.pending
+            .iter()
+            .any(|r| r.xs.len() != nf || r.ys.len() != nt || r.arrived.is_none())
+        {
+            return Err(
+                "it is damaged, since the rows it holds to learn later do not match this spec. \
+                 Load an undamaged copy of the state file, or rebuild it from its input."
+                    .into(),
+            );
+        }
+        held_kind(spec, &mut p)?;
+        // And values the bank would send a model: a held row is learned at
+        // its release, where none of the bank's checks on a row run, so a
+        // feature or target that is not usable, a weight that is not usable
+        // or is below 0, or a step outside `[0, gap_cap]` -- where every
+        // step `ClockState` hands a model is -- is refused here (review
+        // 2026-10-06, PB4).
+        let cap = spec.clock_cfg()?.gap_cap;
+        for (i, r) in p.pending.iter().enumerate() {
+            let what = if !all_usable(&r.xs) {
+                "a feature that is not a usable number"
+            } else if !r.ys.iter().flatten().all(|&y| usable(y)) {
+                "a target that is not a usable number"
+            } else if !(usable(r.w) && r.w >= 0.0) {
+                "a weight that is not a usable number of at least 0"
+            } else if !(r.d_clock.is_finite() && r.d_clock >= 0.0 && r.d_clock <= cap) {
+                // `gap_cap` is a clock's: without one, a step is a row.
+                if spec.clock.is_some() {
+                    "a clock step below 0 or above gap_cap"
+                } else {
+                    "a step below 0"
+                }
+            } else {
+                continue;
+            };
+            return Err(format!(
+                "it is damaged, since row {i} (counting from 0) of those it holds to learn later \
+                 has {what}. Load an undamaged copy of the state file, or rebuild it from its input."
+            ));
+        }
+        // The held rows' clock per instance, kept where a delay holds rows
+        // and nowhere else. (A schema-14 file had none, and its loader
+        // rebuilt it from the rows still held, until the minimum schema
+        // passed it: docs/PLAN.md tasks 198 and 194-202.)
+        let instances = fresh.decay_time.len();
+        if p.pending_clock.len() != fresh.pending_clock.len() {
+            return Err(format!(
+                "it is damaged, since the clock of the rows it holds to learn later has {} \
+                 entries where this spec keeps \
+                 {}. Load an undamaged copy of the state file, or rebuild it from its input.",
+                p.pending_clock.len(),
+                fresh.pending_clock.len()
+            ));
+        }
+        // The score-time predictions ride with the waiting rows (C21). A file
+        // written before they were kept has none: each of its waiting rows
+        // gets an empty record, at the front where those rows sit, so every
+        // queue stays in step with `pending` and those rows fold nothing when
+        // they mature -- there being no honest prediction to fold.
+        let held = p.pending.len();
+        let mut saved_qs = std::mem::take(&mut p.score_pred);
+        p.score_pred = (0..instances)
+            .map(|mi| {
+                let mut saved_q = saved_qs.get_mut(mi).map(std::mem::take);
+                let kept = saved_q.as_ref().map_or(0, |q| q.len().min(held));
+                let mut q: std::collections::VecDeque<Vec<f64>> =
+                    std::iter::repeat_n(Vec::new(), held - kept).collect();
+                if let Some(saved_q) = saved_q.as_mut() {
+                    let skip = saved_q.len() - kept;
+                    q.extend(saved_q.drain(skip..));
+                }
+                q
+            })
+            .collect();
+        // Checked here, where a file that is not its spec's is refused with
+        // the models, rather than at the first read.
+        if let Some(last) = &p.last_row {
+            last.to_chunk(spec, stream.n_models(), stream.n_slots(), 0)?;
+        }
+        // A file from before the summary existed leaves it `None` for good:
+        // the alternative, counting from here on, would report a number
+        // that looks like the whole history and is not.
+        if let Some(summary) = &p.summary {
+            summary.validate(spec, p.rows_seen)?;
+        }
+        // The fresh stream's clock serves a drift reset alone: a state saved
+        // under a spec that reset on drift, loaded under one that does not,
+        // has none to keep.
+        if !(spec.drift_action.as_deref() == Some("reset") && !p.drift.is_empty()) {
+            p.restart_fold = None;
+        }
+        stream.persisted = p;
+        Ok(stream)
+    }
+
+    /// The first row of the chunk whose step from the row before it in this
+    /// stream -- the stream's last row, for the first -- is not a finite
+    /// number of clock units: two values of a number clock whose difference
+    /// is past the largest double, `1e308 − (−1e308)`. Such a step left the
+    /// decayed clock's removed time infinite for good, and every later stamp
+    /// compared equal to any span (review 2026-10-06, PB7). A temporal
+    /// clock's steps are integer nanoseconds and always finite. The bank runs
+    /// it beside [`Self::check_clock`], before any stream is touched, so the
+    /// refusal is the chunk's, as a clock value that is not a number is.
+    pub fn check_steps(
+        &self,
+        clock: Option<&ClockCol>,
+        rows: &[usize],
+        base: usize,
+    ) -> Result<(), StepRefusal> {
+        let Some(ClockCol::F64(values)) = clock else {
+            return Ok(());
+        };
+        let mut prev = match self.persisted.clock.last_clock() {
+            Some(ClockValue::F64(p)) => Some(p),
+            _ => None,
+        };
+        for (ri, &row) in rows.iter().enumerate() {
+            let now = values[base + ri];
+            if let Some(p) = prev
+                && !(now - p).is_finite()
+            {
+                return Err(StepRefusal { row, prev: p, now });
+            }
+            prev = Some(now);
+        }
+        Ok(())
+    }
+
+    /// The first row of the chunk at which this stream's clock would step back
+    /// in a way its policy refuses -- any step back under `"error"`, a late
+    /// row under `"reset_state"` -- exactly as [`Stream::process_chunk`] would
+    /// report it, found on a copy of the clock so nothing is touched.
+    ///
+    /// The bank runs this over every stream of a chunk before it runs any of
+    /// them (docs/IMPROVEMENTS.md C3). Without it a backwards clock in one
+    /// group refused that group's rows but left every other group updated, so
+    /// the corrected chunk could not be re-fed and only a `load` recovered the
+    /// bank.
+    pub fn check_clock(
+        &self,
+        cfg: &rheon_core::ClockCfg,
+        clock: Option<&ClockCol>,
+        session: Option<&[u64]>,
+        rows: &[usize],
+        base: usize,
+    ) -> Result<(), ClockRefusal> {
+        // A row-count clock cannot go backwards, so this costs nothing there.
+        // With a clock it can fail under `"error"`, the default, which
+        // refuses every step back, or under `"reset_state"` with a
+        // `min_backwards_jump` above 0, which refuses a late row; the pass
+        // runs whenever one of those can refuse a row: that is what keeps
+        // the refusal chunk-level and the bank untouched.
+        let Some(clock) = clock else {
+            return Ok(());
+        };
+        let can_refuse = matches!(cfg.on_clock_reset, rheon_core::OnClockReset::Error)
+            || cfg.min_backwards_jump > 0.0;
+        if !can_refuse {
+            return Ok(());
+        }
+        let mut state = self.persisted.clock.clone();
+        for (ri, &row) in rows.iter().enumerate() {
+            let at = base + ri;
+            // Whether the row is refused depends on the clock and session
+            // alone: `refusal` moves only those, and decides as `advance`
+            // does (task 250: the whole step here was a tenth of a row).
+            let prev = state.last_clock();
+            if let Some((raw, disorder)) =
+                state.refusal(cfg, Some(clock.at(at)), session.map(|s| s[at]))
+            {
+                return Err(ClockRefusal::new(
+                    raw,
+                    row,
+                    disorder,
+                    Some(clock.at(at)),
+                    prev,
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// Pass 1 of [`Self::process_chunk`]: the clock schedule of `rows`, on
+    /// a copy of the clock, with what it leaves: the clock, the count of
+    /// accepted rows and of rows fed, and where the `coef` cadence stands.
+    /// What it decides depends on the clock and the input columns alone,
+    /// never on the models, so the window budget's pre-pass
+    /// ([`Self::window_prepass`]) replays the schedule the run will follow. A
+    /// step back the policy refuses is handed back for the caller to name.
+    #[allow(clippy::too_many_arguments)]
+    fn schedule(
+        &self,
+        spec: &Spec,
+        cfg: &rheon_core::ClockCfg,
+        features: &FeatureRows,
+        clock: Option<&ClockCol>,
+        session: Option<&[u64]>,
+        weight: Option<&[f64]>,
+        rows: &[usize],
+        base: usize,
+        coef_at: Option<usize>,
+        keep_elapsed: bool,
+        restart_fold: &mut Option<ClockState>,
+        // Where the plans are written: empty, with whatever room it has.
+        mut plans: Vec<RowPlan>,
+    ) -> Result<Scheduled, ClockRefusal> {
+        let n_rows = rows.len();
+        let mut clock_state = self.persisted.clock.clone();
+        // The fresh stream's clock a drift reset's next row steps by
+        // (`RowPlan::d_fresh`), only where a detection restarts the models.
+        let fresh_steps = self.resets_on_drift(spec);
+        let mut rows_seen = self.persisted.rows_seen;
+        let mut fed = self.persisted.fed;
+        let coef_plan = CoefPlan::of(spec);
+        let mut coef_cadence = self.persisted.coef_cadence;
+        plans.reserve(n_rows);
+        // Each row's place on the elapsed clock, kept only where the
+        // `embargo` buffer reads it (task 250: beside the plan rather than
+        // in it, which every pass over the plans paid for).
+        let mut elapsed: Vec<Option<Stamp>> =
+            Vec::with_capacity(if keep_elapsed { n_rows } else { 0 });
+        for (ri, &row) in rows.iter().enumerate() {
+            let i = base + ri;
+            // Null arrives as NaN from extraction, so one `usable` covers
+            // null, NaN, infinity and the bound.
+            let w = weight.map(|w| w[i]);
+            // An `audit` reads every row: what is not usable is what it
+            // counts (docs/PLAN.md task 223 (b)).
+            let accept = spec.model.reads_every_row() || accepts(features, weight, i);
+            let c = clock.map(|c| c.at(i));
+            // A clock below the previous row's, before the schedule decides
+            // what to do about it; the summary counts them (task 35).
+            let prev = clock_state.last_clock();
+            let below = matches!((c, prev), (Some(c), Some(p)) if c.is_before(p));
+            // Stamped: every row this stream commits is, so the exact clock
+            // a window's edge reads never misses a step (task 175).
+            let adv = clock_state.advance_stamped(
+                cfg,
+                &self.exact_caps,
+                c,
+                session.map(|s| s[i]),
+                accept,
+            );
+            // A step back the policy refuses: hand the offending delta (and,
+            // for a late row, the minimum) back so the caller can name the
+            // row and column.
+            if let Some(raw) = adv.backwards {
+                return Err(ClockRefusal::new(raw, row, adv.disorder, c, prev));
+            }
+            // The step this row reads as a fresh stream's first accepted row,
+            // that stream begun right after the last accepted row: none
+            // where that row was the one before, else the clock of a fresh
+            // stream whose first row was the first skipped since, which
+            // reads no step there and folds the skipped rows after it.
+            let d_fresh = if !fresh_steps {
+                0.0
+            } else if accept {
+                restart_fold.take().map_or(0.0, |mut f| {
+                    f.advance_stamped(cfg, &self.exact_caps, c, session.map(|s| s[i]), true)
+                        .d_clock
+                })
+            } else {
+                restart_fold
+                    .get_or_insert_with(ClockState::new)
+                    .advance_stamped(cfg, &self.exact_caps, c, session.map(|s| s[i]), false);
+                0.0
+            };
+            // Saturating, as every count the bank keeps (task 160, PA2).
+            if accept {
+                rows_seen = rows_seen.saturating_add(1);
+            }
+            // The clock the fields show (task 152): the column's value, or
+            // the row's index in the group, every row counted.
+            let shown = c.or(Some(ClockValue::F64(fed as f64)));
+            fed = fed.saturating_add(1);
+            // With no cadence the group's last accepted row in the chunk
+            // reports the coefficients, `coef_at`, which may sit in an earlier
+            // run than the chunk's last (`ChunkOut::run_rows`); a chunk whose
+            // last row of the group was skipped carried none (review round 4,
+            // PB2). A cadence reads the clock and the rows alone, so its rows
+            // do not move with the chunking (task 178).
+            let want_coef = match coef_plan {
+                CoefPlan::ChunkEnds => accept && coef_at == Some(i),
+                CoefPlan::Cadence { clock: every, rows } => {
+                    coef_cadence.step(every, rows, c, &adv, accept)
+                }
+            };
+            plans.push(RowPlan {
+                ri,
+                i,
+                pending: usize::MAX,
+                d_clock: adv.d_clock,
+                d_fresh,
+                elapsed_step: adv.elapsed,
+                stamp: adv.stamp,
+                clock: shown,
+                reset: adv.reset,
+                blend: !adv.reset && adv.session_changed,
+                session_changed: adv.session_changed,
+                backwards: below && !adv.session_changed,
+                capped: adv.capped,
+                accept,
+                want_coef,
+                emit: true,
+                drift_ri: ri,
+                learn: true,
+                buffered: false,
+                parks: false,
+                w: w.unwrap_or(1.0),
+            });
+            if keep_elapsed {
+                elapsed.push(adv.elapsed_stamp);
+            }
+        }
+        Ok(Scheduled {
+            clock: clock_state,
+            rows_seen,
+            fed,
+            coef_cadence,
+            plans,
+            elapsed,
+        })
+    }
+
+    /// The first overrun a chunk's rows would give a window's ring past a
+    /// refusing budget -- the bytes and the cadence, as the ring would report
+    /// them -- found by replaying the chunk's schedule on shadows of every
+    /// ring ([`rheon_core::WindowShadow`]) before any model is touched
+    /// (docs/PLAN.md task 115 (d)). The bank refuses such a chunk whole; the
+    /// ring used to find the overrun with the chunk half learned, and the
+    /// bank then refused every call after it. `None` when no ring would
+    /// cross. `None` as well where the replay cannot see: under
+    /// `drift_action = "reset"`, whose resets depend on the residuals, and
+    /// for a snapshot that grows within the chunk. There the ring's own
+    /// refusal still stops the run.
+    #[allow(clippy::too_many_arguments)]
+    pub fn window_prepass(
+        &self,
+        spec: &Spec,
+        cfg: &rheon_core::ClockCfg,
+        features: &FeatureCols,
+        targets: &[Vec<f64>],
+        clock: Option<&ClockCol>,
+        label: Option<&LabelTimes>,
+        session: Option<&[u64]>,
+        weight: Option<&[f64]>,
+        rows: &[usize],
+        base: usize,
+        formulas: Option<FormulaTargets<'_>>,
+    ) -> Option<(usize, rheon_core::Cadence)> {
+        // A learned row adds at most one snapshot to a ring, and the rows a
+        // `embargo` holds are learned in this chunk at the most. A shadow
+        // copies its ring, so it is formed only where one could refuse.
+        let most = rows.len() + self.persisted.pending.len();
+        if !self.rings_could_refuse(most) {
+            return None;
+        }
+        let mut live = self.window_shadows();
+        if !self.persisted.drift.is_empty() && spec.drift_action.as_deref() == Some("reset") {
+            return None;
+        }
+        // The rows at once, only for a replay that may refuse: the replay is
+        // one pass over them.
+        let features = &features.rows(base, rows.len());
+        let Scheduled {
+            mut plans, elapsed, ..
+        } = self
+            .schedule(
+                spec,
+                cfg,
+                features,
+                clock,
+                session,
+                weight,
+                rows,
+                base,
+                None,
+                self.keeps_elapsed(formulas.is_some()),
+                &mut self.persisted.restart_fold.clone(),
+                Vec::new(),
+            )
+            .ok()?;
+        let mut pending = self.persisted.pending.clone();
+        let mut held_break = self.persisted.held_break;
+        let mut learned = self.persisted.label_learned.clone();
+        let (mut missing, mut dropped) = (0, 0);
+        let mut places = Vec::new();
+        let mut labels = LabelRun::of(
+            spec,
+            cfg,
+            self.exact_caps,
+            label,
+            &mut learned,
+            &mut missing,
+            &mut dropped,
+            &mut places,
+        );
+        Self::apply_label_delay(
+            self.embargo,
+            &mut pending,
+            &mut held_break,
+            &mut plans,
+            &elapsed,
+            features,
+            targets,
+            formulas,
+            None,
+            labels.as_mut(),
+        );
+        // A reset rebuilds each instance's model and its residual ring, as
+        // `Instance::reset` does, so their shadows start empty.
+        let mut fresh: Option<Vec<WindowShadow>> = None;
+        for plan in &plans {
+            if plan.reset {
+                live = fresh
+                    .get_or_insert_with(|| {
+                        Stream::new(spec)
+                            .map(|s| s.window_shadows())
+                            .unwrap_or_default()
+                    })
+                    .clone();
+            }
+            // The rows `run_instance` steps the models on, with the delta and
+            // the stamp it steps them with.
+            if !(plan.accept && plan.learn) {
+                continue;
+            }
+            for shadow in &mut live {
+                shadow.learn(plan.d_clock, plan.stamp);
+                if let Some(over) = shadow.over_budget() {
+                    return Some(over);
+                }
+            }
+        }
+        None
+    }
+
+    /// A shadow of every window ring: each model's, then each instance's
+    /// residual ring.
+    /// Whether a ring of this stream could refuse a chunk of `rows` rows
+    /// past its budget: what the window pre-pass replays for.
+    pub(crate) fn could_refuse_window(&self, rows: usize) -> bool {
+        self.rings_could_refuse(rows + self.persisted.pending.len())
+    }
+
+    /// [`WindowShadow::could_refuse`] of any of [`Self::window_shadows`],
+    /// read from the rings without copying them.
+    fn rings_could_refuse(&self, most: usize) -> bool {
+        let n_slots = self.n_slots();
+        self.models.iter().any(|(_, m)| m.window_could_refuse(most))
+            || self
+                .persisted
+                .resid_win
+                .iter()
+                .flatten()
+                .any(|r| r.could_refuse(n_slots, most))
+    }
+
+    fn window_shadows(&self) -> Vec<WindowShadow> {
+        let n_slots = self.n_slots();
+        self.models
+            .iter()
+            .filter_map(|(_, m)| m.window_shadow())
+            .chain(
+                self.persisted
+                    .resid_win
+                    .iter()
+                    .flatten()
+                    .map(|r| r.shadow(n_slots)),
+            )
+            .collect()
+    }
+
+    /// Process this stream's rows of one chunk, writing into flat per-slot
+    /// buffers (PERFORMANCE-LOG P1, P2).
+    ///
+    /// Two passes. The first walks the rows advancing the clock and deciding
+    /// which are accepted -- that depends only on the clock and the input
+    /// columns, never on the models. The second runs each model instance over
+    /// the whole chunk, and because instances share nothing but that schedule,
+    /// they run **in parallel**: a five-half-life grid on a single stream is
+    /// five independent recursions rather than one serial loop.
+    ///
+    /// The one exception is `drift_action = "reset"`, where a break detected by
+    /// any instance resets all of them, so instances are coupled *within a
+    /// row*. That case keeps row-major order. Both paths call the same
+    /// `run_instance`, so there is one implementation of the arithmetic.
+    ///
+    /// On a step back the policy refuses, returns the raw delta and the
+    /// absolute row it happened at, for the caller to name, and
+    /// leaves the stream untouched (pass 1 runs on a copy of the clock). The
+    /// bank runs [`Stream::check_clock`] over every stream before it runs
+    /// this on any, so the refusal is per chunk, not per stream.
+    ///
+    /// `rows` are the absolute rows of the chunk this stream owns, in order;
+    /// they name rows in the output and in errors. The input columns are read
+    /// at `base + ri` for the `ri`-th of them: the bank lays every spec's
+    /// columns out group after group (PERFORMANCE-LOG P9), so a stream's
+    /// rows are one contiguous run whatever order the frame interleaves its
+    /// groups in.
+    ///
+    /// The bank feeds a chunk's rows in runs of [`ChunkOut::run_rows`], each
+    /// into its own buffers, and says with `coef_at` which input row is the
+    /// group's last accepted one in the chunk ([`last_accepted`]): that row
+    /// is where the coefficients are reported without a cadence. Chunk
+    /// invariance makes the runs the same computation as one.
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_chunk(
+        &mut self,
+        spec: &Spec,
+        cfg: &rheon_core::ClockCfg,
+        features: &FeatureRows,
+        targets: &[Vec<f64>],
+        clock: Option<&ClockCol>,
+        label: Option<&LabelTimes>,
+        session: Option<&[u64]>,
+        weight: Option<&[f64]>,
+        rows: &[usize],
+        base: usize,
+        out: &mut ChunkOut,
+        coef_at: Option<usize>,
+        formulas: Option<FormulaTargets<'_>>,
+    ) -> Result<(), ClockRefusal> {
+        let n_rows = rows.len();
+        out.rows.extend_from_slice(rows);
+
+        // ---- pass 1: the clock schedule, models untouched ----
+        // On a copy of the clock, committed below, so a refused row leaves
+        // the stream exactly as it was; the fresh clock, under a drift reset.
+        let fresh_steps = self.resets_on_drift(spec);
+        let mut restart_fold = fresh_steps
+            .then(|| self.persisted.restart_fold.clone())
+            .flatten();
+        let Scheduled {
+            clock: clock_state,
+            rows_seen,
+            fed,
+            coef_cadence,
+            mut plans,
+            elapsed,
+        } = self.schedule(
+            spec,
+            cfg,
+            features,
+            clock,
+            session,
+            weight,
+            rows,
+            base,
+            coef_at,
+            self.keeps_elapsed(formulas.is_some()),
+            &mut restart_fold,
+            plan_buffer(),
+        )?;
+        for plan in plans.iter().filter(|p| p.accept) {
+            out.processed[plan.ri] = true;
+        }
+
+        self.persisted.clock = clock_state;
+        if fresh_steps {
+            self.persisted.restart_fold = restart_fold;
+        }
+        let rows_before = self.persisted.rows_seen;
+        self.persisted.rows_seen = rows_seen;
+        self.persisted.fed = fed;
+        self.persisted.coef_cadence = coef_cadence;
+
+        // ---- the data summary (docs/PLAN.md task 35) ----
+        // After the clock is committed, so a refused row above has fed
+        // nothing; per row in row order, so chunking cannot move a bit; and
+        // before `embargo` moves a break's events onto the row that
+        // learns them, so a break counts where it arrived.
+        // The column statistics, the clock range and the counts in one pass
+        // over the run's rows (`DataSummary::feed_rows`, task 250): a plain
+        // target counts at its row, a formula target when the row is
+        // released with a value (review R1, D3: a window cut null taught
+        // nothing), below.
+        if let Some(summary) = self.persisted.summary.as_mut() {
+            // A row the schedule accepted has every feature usable, for any
+            // model but an `audit`, which accepts every row.
+            let checked = !spec.model.reads_every_row();
+            summary.feed_rows_over(
+                DataSummary::ACROSS_RUN_FROM,
+                plans.iter().filter(|p| p.direct()).map(|p| Fed {
+                    i: p.i,
+                    usable: checked && p.accept,
+                    session_changed: p.session_changed,
+                    backwards: p.backwards,
+                    reset: p.reset,
+                    accept: p.accept,
+                    w: p.w,
+                }),
+                features,
+                targets,
+                weight,
+                clock,
+            );
+        }
+
+        // ---- embargo: hold each row back until its label matures ----
+        // Rewrites the plan list into (release, ..., score this row) order,
+        // and hands the released rows' values out beside it. Release depends
+        // on the rows alone, so chunking cannot move a single one.
+        // What a restarted instance takes out of the held rows' clock for
+        // each row scored (`Stream::front_cut`), kept where a drift
+        // detection restarts the models under an `embargo`.
+        let mut front_cuts: Vec<Option<f64>> = Vec::new();
+        let keep_cuts = self.embargo.is_some() && self.resets_on_drift(spec);
+        // The label run borrows its state in place: a spec without
+        // `label_clock` moves nothing out and back (task 375, P32).
+        let mut places: Vec<(u32, u32)> = Vec::new();
+        let mut labels = LabelRun::of(
+            spec,
+            cfg,
+            self.exact_caps,
+            label,
+            &mut self.persisted.label_learned,
+            &mut self.persisted.labels_missing,
+            &mut self.persisted.labels_dropped,
+            &mut places,
+        );
+        let released = Self::apply_label_delay(
+            self.embargo,
+            &mut self.persisted.pending,
+            &mut self.persisted.held_break,
+            &mut plans,
+            &elapsed,
+            features,
+            targets,
+            formulas,
+            keep_cuts.then_some(&mut front_cuts),
+            labels.as_mut(),
+        );
+
+        // A released row whose formula target resolved with a value, and
+        // whose plain targets gave none at its row, is learned from now
+        // (review R1, D3); counted here, after the release, in row order.
+        // The values themselves join the targets' statistics here too, at
+        // any weight, as a plain target's do at its row: the row was fed,
+        // and counted a null, before its window closed (review round 4,
+        // PA9).
+        if let (Some(summary), Some(f)) = (self.persisted.summary.as_mut(), formulas) {
+            let n_features = spec.features.len();
+            for plan in plans.iter().filter(|p| !p.direct()) {
+                let ys = &released[plan.pending].ys;
+                for &k in f.slots {
+                    if let Some(y) = ys[k] {
+                        summary.resolved(n_features, k, y);
+                    }
+                }
+                let plain = ys
+                    .iter()
+                    .enumerate()
+                    .any(|(k, y)| !f.slots.contains(&k) && y.is_some());
+                let formula = f.slots.iter().any(|&k| ys[k].is_some());
+                if plan.w > 0.0 && !plain && formula {
+                    summary.learned_late();
+                }
+            }
+        }
+
+        // ---- pass 2: the instances ----
+        let drift_resets = spec.drift_action.as_deref() == Some("reset");
+        let coupled = !self.persisted.drift.is_empty() && drift_resets;
+        // `min_weight` is read by every instance; move it out so the split
+        // below can borrow the rest of `self` mutably.
+        let min_weight = std::mem::take(&mut self.min_weight);
+        let models = self.models.iter_mut().map(|(_, m)| ModelRef::Learn(m));
+        let rings = self
+            .persisted
+            .resid_win
+            .iter_mut()
+            .map(|r| r.as_mut().map(SpreadRef::Learn));
+        let diag = Diagnostics {
+            resid_var: &mut self.persisted.resid_var,
+            resid_w: &mut self.persisted.resid_w,
+            drift: &mut self.persisted.drift,
+            resid_q: &mut self.persisted.resid_q,
+            autocorr: &mut self.persisted.autocorr,
+            metrics: &mut self.persisted.metrics,
+            conformal: &mut self.persisted.conformal,
+            checks: &mut self.persisted.checks,
+            scratch: &mut self.scratch,
+            score_pred: &mut self.persisted.score_pred,
+            decay_time: &mut self.persisted.decay_time,
+            restarted: &mut self.persisted.restarted,
+            pending_clock: &mut self.persisted.pending_clock,
+            notified: &mut self.persisted.notified,
+            refit_over_budget: self.persisted.refit_over_budget,
+            ungated_spread: self.persisted.ungated_spread,
+            weighted_autocorr: self.persisted.weighted_autocorr,
+            ungated_drift: self.persisted.ungated_drift,
+        };
+        let mut built = build_instances(
+            spec,
+            models,
+            rings,
+            &self.decays,
+            &self.check_cfgs,
+            diag,
+            out,
+            n_rows,
+            rows_before,
+        );
+        let insts = built.as_mut_slice();
+        // The plans, by position, after which a drift detection restarted
+        // the models, in order.
+        let mut fired: Vec<usize> = Vec::new();
+        if coupled && insts.len() > 1 {
+            for pi in 0..plans.len() {
+                let mut seen = false;
+                for inst in insts.iter_mut() {
+                    // false: the caller resets every instance below, once all
+                    // of them have seen this row.
+                    seen |= run_instance(
+                        inst,
+                        &plans[pi..=pi],
+                        features,
+                        targets,
+                        &released,
+                        &min_weight,
+                        false,
+                        None,
+                        &front_cuts,
+                        &places,
+                    );
+                }
+                if seen {
+                    insts.iter_mut().for_each(Instance::reset);
+                    fired.push(pi);
+                }
+            }
+        } else if insts.len() > 1 {
+            use rayon::prelude::*;
+            // Only reached when instances are independent, which (given
+            // `coupled` above) means `drift_action` is not "reset".
+            let run = |inst: &mut Instance| {
+                run_instance(
+                    inst,
+                    &plans,
+                    features,
+                    targets,
+                    &released,
+                    &min_weight,
+                    false,
+                    None,
+                    &front_cuts,
+                    &places,
+                );
+            };
+            if crate::pool::inline() {
+                insts.iter_mut().for_each(run);
+            } else {
+                insts.par_iter_mut().for_each(run);
+            }
+        } else if let Some(inst) = insts.first_mut() {
+            // One instance: a drift reset has nothing to coordinate with, so
+            // it resets itself inline at the row that fired.
+            run_instance(
+                inst,
+                &plans,
+                features,
+                targets,
+                &released,
+                &min_weight,
+                drift_resets,
+                Some(&mut fired),
+                &front_cuts,
+                &places,
+            );
+        }
+        drop(built);
+        self.min_weight = min_weight;
+
+        // ---- the clocks a row shows (docs/PLAN.md task 152) ----
+        // Its own, and the newest row the models had learned from, at a
+        // positive weight, when it was scored; in plan order, so a row
+        // released just before this one counts, and a reset clears it: a
+        // clock reset at its own row, a drift reset after the row that
+        // fired, which only the instances above know -- so this runs after
+        // them. The rebuilt model has learned from nothing, so the next row
+        // shows none, as a fresh bank's first row does (task 278). The
+        // instances above recorded the plans that fired, in order, so the
+        // test is one comparison a row; a row released after the one that
+        // fired, at the same output row, was learned by the rebuilt model
+        // and shows (review round 10, S7-2 and S7-8: the flags of every
+        // slot at the output row were read for each plan, and nulled the
+        // rows released after the one that fired too).
+        let mut fired = fired.into_iter().peekable();
+        for (pi, plan) in plans.iter().enumerate() {
+            if plan.reset {
+                self.persisted.last_learned = None;
+            }
+            if spec.emit_clocks && plan.emit && plan.accept {
+                out.scored_clock[plan.ri] = plan.clock;
+                out.learned_clock[plan.ri] = self.persisted.last_learned;
+            }
+            let restarted_here = fired.next_if_eq(&pi).is_some();
+            if plan.accept && plan.learn && plan.w > 0.0 {
+                self.persisted.last_learned = if restarted_here {
+                    None
+                } else if plan.direct() {
+                    plan.clock
+                } else {
+                    released[plan.pending].clock
+                };
+            }
+        }
+        keep_plans(plans);
+        Ok(())
+    }
+
+    /// Score this stream's rows of one chunk against the state as it stands
+    /// (docs/ENHANCEMENTS.md E31): every output [`Self::process_chunk`]
+    /// would write for the row as the stream's next accepted row, and no
+    /// update -- not to the models, the clock, the diagnostics or
+    /// `rows_seen`. Row order is immaterial, since every row is scored from
+    /// the same state; the clock distance each prediction extrapolates over
+    /// is the row's own distance from the last learned row, with the cap,
+    /// the pending time of skipped rows and the session policy applied as
+    /// the learning path would apply them.
+    ///
+    /// The session policy holds too, because it is part of what "the next
+    /// row" means: a row that would start a fresh stream (`session_gap =
+    /// "reset"`) is scored by a fresh one -- null throughout, as it would be
+    /// -- and a row that would blend toward the long run (`session_shrink`)
+    /// is scored by a blended copy. A row before the last learned clock is
+    /// scored against the state as it stands, a step of 0, whatever
+    /// `restart_after_step_back` says: scoring learns nothing, so it neither refuses nor
+    /// starts over (task 120). The scoring for each of the three is the one
+    /// `run_instance`, with its updates switched off.
+    ///
+    /// Per field: `pred` and `lam_selected` as the model would report;
+    /// `resid` where the row carries a usable target; `sigma`, `zscore`,
+    /// the residual quantiles, autocorrelation and metrics from the
+    /// diagnostics as they stand; `n_eff` frozen; `coef` on the last
+    /// accepted row of the chunk (the same coefficients score every row);
+    /// `drift` never fires. A weight column is not read, so a row
+    /// `fit_predict` would skip for an unusable weight is scored anyway.
+    /// `&self`, so a stream can be scored from several threads at once.
+    #[allow(clippy::too_many_arguments)]
+    pub fn predict_chunk(
+        &self,
+        spec: &Spec,
+        cfg: &rheon_core::ClockCfg,
+        features: &FeatureRows,
+        targets: &[Vec<f64>],
+        clock: Option<&ClockCol>,
+        session: Option<&[u64]>,
+        rows: &[usize],
+        base: usize,
+        out: &mut ChunkOut,
+    ) {
+        let n_rows = rows.len();
+        out.rows.extend_from_slice(rows);
+        // Three classes of row, by what the clock says the row would do to
+        // the state it is scored against: nothing, reset it, or blend it.
+        let mut classes: [Vec<RowPlan>; 3] = Default::default();
+        let [as_is, fresh, blended] = [0, 1, 2];
+        // (class, position in it) of the last accepted row, which carries
+        // the coefficients for the chunk.
+        let mut last_accepted: Option<(usize, usize)> = None;
+        // Scoring learns nothing, so nothing that guards what the bank
+        // *learns* applies: a fresh frame scored against the bank as it
+        // stands may well sit before the last learned clock, and such a row
+        // is scored against the state as it stands -- a step of 0 -- under
+        // either policy, never refused and never a reset (task 120). A
+        // session change still takes its rule.
+        for ri in 0..rows.len() {
+            let i = base + ri;
+            let accept = all_usable(features.row(i));
+            // Every row is the first after the last learned one.
+            let adv = self.persisted.clock.clone().advance_scoring(
+                cfg,
+                clock.map(|c| c.at(i)),
+                session.map(|s| s[i]),
+            );
+            if accept {
+                out.processed[ri] = true;
+            }
+            let plan = RowPlan {
+                ri,
+                i,
+                pending: usize::MAX,
+                d_clock: adv.d_clock,
+                // The step from the last learned row as a restarted
+                // instance's fresh bank reads it: none, or the clock since
+                // the first row skipped after the last accepted one.
+                d_fresh: self.persisted.restart_fold.as_ref().map_or(0.0, |f| {
+                    f.clone()
+                        .advance_scoring(cfg, clock.map(|c| c.at(i)), session.map(|s| s[i]))
+                        .d_clock
+                }),
+                elapsed_step: adv.d_clock,
+                // Scored, never learned: no window moves, no row is held.
+                stamp: None,
+                // Without a clock column, the row's index in its group: the
+                // rows learned, then this call's rows in order, as
+                // `fit_predict` counts them (task 159, B2: every scored row
+                // showed the count of rows fed).
+                clock: clock.map(|c| c.at(i)).or(Some(ClockValue::F64(
+                    (self.persisted.fed + ri as u64) as f64,
+                ))),
+                reset: false,
+                blend: false,
+                session_changed: false,
+                backwards: false,
+                // Scoring moves nothing, the lag ring included: the classes
+                // below give the row a *copy* of the model in the state a
+                // learning stream would have reached, and a copy that
+                // cleared its lags would answer for a stream that had
+                // learned the row. `predict` never mutates.
+                capped: false,
+                accept,
+                want_coef: false,
+                emit: true,
+                drift_ri: ri,
+                learn: false,
+                buffered: false,
+                parks: false,
+                w: 1.0,
+            };
+            // Scored against the state as it stands, so the learned clock is
+            // the fit's last learned row on every row (task 152).
+            if spec.emit_clocks && accept {
+                out.scored_clock[ri] = plan.clock;
+                out.learned_clock[ri] = self.persisted.last_learned;
+            }
+            // A new session's row under `group_close = "session"` is a fresh
+            // stream's first row, as `fit_predict` restarts the stream at the
+            // change; it was scored by the closed session's fit (review
+            // 2026-09-12, C19).
+            let class = if adv.reset || (adv.session_changed && spec.closes_on_session()) {
+                fresh
+            } else if adv.session_changed {
+                blended
+            } else {
+                as_is
+            };
+            classes[class].push(plan);
+            if accept {
+                last_accepted = Some((class, classes[class].len() - 1));
+            }
+        }
+        if let Some((class, at)) = last_accepted {
+            classes[class][at].want_coef = true;
+        }
+
+        self.score(
+            spec,
+            &classes[as_is],
+            &self.models,
+            features,
+            targets,
+            out,
+            n_rows,
+        );
+        if !classes[fresh].is_empty() {
+            let stream = Stream::new(spec).expect("spec was already validated");
+            stream.score(
+                spec,
+                &classes[fresh],
+                &stream.models,
+                features,
+                targets,
+                out,
+                n_rows,
+            );
+        }
+        if !classes[blended].is_empty() {
+            let mut models = self.models.clone();
+            models
+                .iter_mut()
+                .for_each(|(_, m)| m.blend_toward_long_run());
+            self.score(
+                spec,
+                &classes[blended],
+                &models,
+                features,
+                targets,
+                out,
+                n_rows,
+            );
+        }
+    }
+
+    /// Run these plans through every instance with `learn = false`, scoring
+    /// with `models` (this stream's own, or a variant of them) against this
+    /// stream's diagnostics.
+    #[allow(clippy::too_many_arguments)]
+    fn score(
+        &self,
+        spec: &Spec,
+        plans: &[RowPlan],
+        models: &[(String, AnyModel)],
+        features: &FeatureRows,
+        targets: &[Vec<f64>],
+        out: &mut ChunkOut,
+        n_rows: usize,
+    ) {
+        if plans.is_empty() {
+            return;
+        }
+        // The diagnostics are read, never written, on this path; a copy is
+        // how a `&self` stream lends them to the same `run_instance` that
+        // updates them when learning. They are per-slot summaries, so the
+        // copy is a few hundred bytes per slot, and a quantile sketch's
+        // buckets, a few kilobytes.
+        let n = self.models.len();
+        let (mut resid_var, mut resid_w) = (
+            self.persisted.resid_var.clone(),
+            self.persisted.resid_w.clone(),
+        );
+        let (mut drift, mut resid_q) =
+            (self.persisted.drift.clone(), self.persisted.resid_q.clone());
+        let (mut autocorr, mut metrics) = (
+            self.persisted.autocorr.clone(),
+            self.persisted.metrics.clone(),
+        );
+        let mut conformal = self.persisted.conformal.clone();
+        let mut checks = self.persisted.checks.clone();
+        let mut scratch: Vec<Scratch> = (0..n).map(|_| Scratch::default()).collect();
+        // Scoring buffers nothing and replays nothing, so its queues stay empty.
+        let mut score_pred: Vec<std::collections::VecDeque<Vec<f64>>> =
+            (0..n).map(|_| std::collections::VecDeque::new()).collect();
+        // Scoring learns nothing, so the decay time does not move and no
+        // notice a scoring row might raise is kept.
+        let mut decay_time = self.persisted.decay_time.clone();
+        let mut restarted = self.persisted.restarted.clone();
+        let mut pending_clock = self.persisted.pending_clock.clone();
+        let mut notified = self.persisted.notified.clone();
+        let diag = Diagnostics {
+            resid_var: &mut resid_var,
+            resid_w: &mut resid_w,
+            drift: &mut drift,
+            resid_q: &mut resid_q,
+            autocorr: &mut autocorr,
+            metrics: &mut metrics,
+            conformal: &mut conformal,
+            checks: &mut checks,
+            scratch: &mut scratch,
+            score_pred: &mut score_pred,
+            decay_time: &mut decay_time,
+            restarted: &mut restarted,
+            pending_clock: &mut pending_clock,
+            notified: &mut notified,
+            refit_over_budget: self.persisted.refit_over_budget,
+            ungated_spread: self.persisted.ungated_spread,
+            weighted_autocorr: self.persisted.weighted_autocorr,
+            ungated_drift: self.persisted.ungated_drift,
+        };
+        // Every row scored sits after every row held now.
+        let front_cuts: Vec<Option<f64>> = if self.embargo.is_some() && self.resets_on_drift(spec) {
+            vec![self.front_cut(); n_rows]
+        } else {
+            Vec::new()
+        };
+        let models = models.iter().map(|(_, m)| ModelRef::Score(m));
+        let rings = self
+            .persisted
+            .resid_win
+            .iter()
+            .map(|r| r.as_ref().map(SpreadRef::Score));
+        let mut built = build_instances(
+            spec,
+            models,
+            rings,
+            &self.decays,
+            &self.check_cfgs,
+            diag,
+            out,
+            n_rows,
+            self.persisted.rows_seen,
+        );
+        let insts = built.as_mut_slice();
+        // Scoring holds no row.
+        let places: [(u32, u32); 0] = [];
+        if insts.len() > 1 {
+            use rayon::prelude::*;
+            let run = |inst: &mut Instance| {
+                run_instance(
+                    inst,
+                    plans,
+                    features,
+                    targets,
+                    &[],
+                    &self.min_weight,
+                    false,
+                    None,
+                    &front_cuts,
+                    &places,
+                );
+            };
+            if crate::pool::inline() {
+                insts.iter_mut().for_each(run);
+            } else {
+                insts.par_iter_mut().for_each(run);
+            }
+        } else if let Some(inst) = insts.first_mut() {
+            run_instance(
+                inst,
+                plans,
+                features,
+                targets,
+                &[],
+                &self.min_weight,
+                false,
+                None,
+                &front_cuts,
+                &places,
+            );
+        }
+    }
+}
+
+/// How an instance reaches its model: exclusively, to learn, or shared, to
+/// score. [`Stream::predict_chunk`] runs on `&Stream`, so it can only hand
+/// out the latter -- which is what lets a bank be scored from several
+/// threads at once.
+enum ModelRef<'a> {
+    Learn(&'a mut AnyModel),
+    Score(&'a AnyModel),
+}
+
+impl ModelRef<'_> {
+    fn get(&self) -> &AnyModel {
+        match self {
+            ModelRef::Learn(m) => m,
+            ModelRef::Score(m) => m,
+        }
+    }
+
+    /// Only a learning instance is ever stepped, blended or reset; the
+    /// scoring plans never ask for any of the three.
+    fn get_mut(&mut self) -> &mut AnyModel {
+        match self {
+            ModelRef::Learn(m) => m,
+            ModelRef::Score(_) => unreachable!("a scoring instance never updates its model"),
+        }
+    }
+
+    /// The model, where the instance learns: what a read that sets the
+    /// model's floor aside for a moment needs
+    /// ([`AnyModel::predict_with_floor`]). A scoring instance folds
+    /// nothing and keeps nothing, so it never reads past a floor.
+    fn learning(&mut self) -> Option<&mut AnyModel> {
+        match self {
+            ModelRef::Learn(m) => Some(m),
+            ModelRef::Score(_) => None,
+        }
+    }
+}
+
+/// How an instance reaches its spread's ring (S1): exclusively, to learn,
+/// or shared, to score, as [`ModelRef`] reaches the model.
+enum SpreadRef<'a> {
+    Learn(&'a mut ResidWindow),
+    Score(&'a ResidWindow),
+}
+
+impl SpreadRef<'_> {
+    fn get(&self) -> &ResidWindow {
+        match self {
+            SpreadRef::Learn(r) => r,
+            SpreadRef::Score(r) => r,
+        }
+    }
+
+    fn get_mut(&mut self) -> &mut ResidWindow {
+        match self {
+            SpreadRef::Learn(r) => r,
+            SpreadRef::Score(_) => unreachable!("a scoring instance never updates its spread"),
+        }
+    }
+}
+
+/// Everything an instance touches besides its model and its output slice,
+/// split per instance below. `process_chunk` lends the stream's own;
+/// `predict_chunk` lends a copy it drops afterwards.
+struct Diagnostics<'a> {
+    resid_var: &'a mut [Vec<f64>],
+    resid_w: &'a mut [Vec<f64>],
+    drift: &'a mut [Vec<PageHinkley>],
+    resid_q: &'a mut [Vec<EwQuantile>],
+    autocorr: &'a mut [Vec<EwAutoCorr>],
+    metrics: &'a mut [Vec<SlotMetrics>],
+    conformal: &'a mut [Vec<Conformal>],
+    checks: &'a mut [Checks],
+    scratch: &'a mut [Scratch],
+    score_pred: &'a mut [std::collections::VecDeque<Vec<f64>>],
+    decay_time: &'a mut [f64],
+    restarted: &'a mut [bool],
+    pending_clock: &'a mut [f64],
+    notified: &'a mut [Notified],
+    refit_over_budget: bool,
+    /// [`Persisted::ungated_spread`], [`Persisted::weighted_autocorr`] and
+    /// [`Persisted::ungated_drift`].
+    ungated_spread: bool,
+    weighted_autocorr: bool,
+    ungated_drift: bool,
+}
+
+/// The ranges of features a `marginal` splits its pair work into
+/// (docs/PLAN.md task 126): its spec's `shards` count as given, or under
+/// `"auto"` as many as the model's width keeps busy on the pool the caller
+/// is in ([`rheon_core::MarginalCfg::auto_shards`]); one for any other
+/// model. Read afresh for each run, so a bank loaded on another machine
+/// sizes itself to that machine's pool.
+pub fn marginal_shards(spec: &Spec, model: &AnyModel) -> usize {
+    match (&spec.model, model) {
+        (
+            ModelKind::Marginal {
+                shards: Some(ShardSpec::Count(n)),
+                ..
+            },
+            _,
+        ) => *n,
+        (
+            ModelKind::Marginal {
+                shards: Some(ShardSpec::Auto),
+                ..
+            },
+            AnyModel::Marginal(m),
+        ) => m.cfg().auto_shards(rayon::current_num_threads()),
+        _ => 1,
+    }
+}
+
+/// What pass 1 ([`Stream::schedule`]) leaves: the stream's clock and counts
+/// after the rows, for the caller to commit, and the plan of each row.
+struct Scheduled {
+    clock: ClockState,
+    rows_seen: u64,
+    fed: u64,
+    coef_cadence: CoefCadence,
+    plans: Vec<RowPlan>,
+    /// Each row's place on the elapsed clock, by its position, where the
+    /// `embargo` buffer reads it; empty elsewhere.
+    elapsed: Vec<Option<Stamp>>,
+}
+
+/// What pass 1 decided about one row, so pass 2 can replay it per instance
+/// without touching the clock again.
+struct RowPlan {
+    /// Position within the stream's run (index into the output buffers).
+    ri: usize,
+    /// Position in the input columns: the run's base plus `ri`, since the
+    /// columns are laid out group after group. [`usize::MAX`] for a row
+    /// replayed out of the `embargo` buffer, whose values are in
+    /// `pending` instead (E47).
+    i: usize,
+    /// Index into the released-rows slice for a replayed row; [`usize::MAX`]
+    /// for a row read from the columns.
+    pending: usize,
+    d_clock: f64,
+    /// The step this row reads as the first accepted row of a stream begun
+    /// right after the previous accepted row: 0 where that row was the one
+    /// before it; after skipped rows, the step from the first of them, the
+    /// clock a fresh stream keeps over its skipped first rows
+    /// ([`Persisted::restart_fold`]). What an instance a drift reset
+    /// restarted reads in place of `d_clock`, since a fresh bank fed the
+    /// rows after the one that fired starts there ([`Persisted::restarted`]).
+    /// Computed only under `drift_action = "reset"`; 0 elsewhere, where
+    /// only a clock reset restarts an instance, at a row whose step is 0.
+    d_fresh: f64,
+    /// The time that passed since the previous accepted row, uncapped
+    /// ([`rheon_core::ClockAdvance::elapsed`]): what an `audit` counts a
+    /// step as (review 6, C-5), where every model decays by `d_clock`, the
+    /// step after `gap_cap`. `d_clock` for a replayed or a scored row,
+    /// which no audit reads.
+    elapsed_step: f64,
+    /// The row's place on the decayed clock, held exactly, which a window
+    /// decides its edge from ([`rheon_core::Stamp`], docs/PLAN.md task
+    /// 175): `None` for a skipped row and a row only scored.
+    stamp: Option<Stamp>,
+    // The row's place on the elapsed clock, from which the `embargo` buffer
+    // measures each held row's wait (tasks 153, 176), is kept beside the
+    // plans, in `Scheduled::elapsed`, where that buffer reads it (task 250).
+    /// The row's clock as the clock fields show it (task 152): the column's
+    /// value, or the group's row index with no column.
+    clock: Option<ClockValue>,
+    reset: bool,
+    blend: bool,
+    /// The session id differed from the previous row's.
+    session_changed: bool,
+    /// The clock fell below the previous row's within a session.
+    backwards: bool,
+    /// The clock jumped further than `gap_cap`, so the delta the models
+    /// see is the ceiling. Anything lagged by *rows* is stale
+    /// (`OnlineModel::clear_lags`, docs/PLAN.md task 47).
+    capped: bool,
+    accept: bool,
+    want_coef: bool,
+    /// Write this row's outputs at `ri`. False for a replayed row: it is a
+    /// lesson, not a row of the frame.
+    emit: bool,
+    /// The output row a drift detection at this row is flagged on: `ri`
+    /// for a row learned where it sits; for a row replayed out of the
+    /// `embargo` buffer, the row whose clock released it, the one being
+    /// output as the release happens -- the replayed row's own is out
+    /// already. A detection on a replay set no flag, so under an embargo
+    /// `drift_<t>` was never true, and `drift_action = "reset"` restarted
+    /// the model unannounced (task 160, PB1).
+    drift_ri: usize,
+    /// Step the models and fold the diagnostics. False for a row whose label
+    /// has not matured: it is scored here and learned from later.
+    learn: bool,
+    /// Pushed into the `embargo` buffer as it was scored: its prediction
+    /// is kept for the diagnostics to fold when it matures (C21).
+    buffered: bool,
+    /// Under `label_clock`, a row only scored and never held -- its weight
+    /// 0, or its label time null -- whose step still joins the held rows'
+    /// clock, as a held row's does.
+    parks: bool,
+    w: f64,
+}
+
+impl RowPlan {
+    /// A row of the chunk, read from the columns, learned from where it sits.
+    #[inline]
+    fn direct(&self) -> bool {
+        self.pending == usize::MAX
+    }
+}
+
+/// Per-row scratch, one set per model instance so instances can run
+/// concurrently without sharing buffers.
+#[derive(Default)]
+pub struct Scratch {
+    ys: Vec<Option<f64>>,
+    r: Vec<f64>,
+    sig: Vec<f64>,
+    zs: Vec<f64>,
+    /// Each target's own weight before the row, when the model keeps one
+    /// (review 2026-09-12, S2).
+    tn: Vec<f64>,
+    /// The noise gate's statistic per slot before the row, when the model
+    /// has one, and the row's own (docs/WARMUP-AND-CONVERGENCE.md §2.1).
+    infl: Vec<f64>,
+    row_infl: Vec<f64>,
+    /// Each slot's recursive residual, `resid / error_inflation`, under
+    /// `emit_breaks` (docs/PLAN.md task 221 (b)).
+    z: Vec<f64>,
+    /// The row's step, kept so the model, which writes it in place
+    /// ([`OnlineModel::step_into`]), allocates no `pred` a row (task 270,
+    /// M-4; every model since task 285). Taken for the row and put back
+    /// after it.
+    step: rheon_core::Step,
+    /// Each slot's own prediction before a readiness gate withheld it,
+    /// and its residual, which the spread folds
+    /// ([`Persisted::ungated_spread`]); filled only on a row a gate
+    /// withholds something on.
+    ungated: Vec<f64>,
+    r_spread: Vec<f64>,
+}
+
+/// One model instance's state and its disjoint slice of the chunk output.
+struct Instance<'a> {
+    /// The stream's accepted rows so far, this chunk's included up to the
+    /// row being read: what [`settled_weight`] bounds a weight's rounding
+    /// by (task 273). The global count, so no chunking moves it.
+    steps: u64,
+    /// For rebuilding this instance on a reset: the spec is the only
+    /// description of a pristine model, and `decay` says which of its
+    /// instances this is.
+    spec: &'a Spec,
+    model: ModelRef<'a>,
+    /// The ring that cuts this instance's spread at the fit's window
+    /// boundary (S1); `None` without a window, or when nothing reads it.
+    resid_win: Option<SpreadRef<'a>>,
+    decay: Decay,
+    /// False for a model that predicts no target (`ModelKind::
+    /// predicts_no_target`): no residual is formed, tracked or written for
+    /// it, and `ChunkOut` gives it no `resid` buffer.
+    residuals: bool,
+    resid_var: &'a mut Vec<f64>,
+    resid_w: &'a mut Vec<f64>,
+    drift: Option<&'a mut Vec<PageHinkley>>,
+    resid_q: Option<&'a mut Vec<EwQuantile>>,
+    autocorr: Option<&'a mut Vec<EwAutoCorr>>,
+    metrics: Option<&'a mut Vec<SlotMetrics>>,
+    conformal: Option<&'a mut Vec<Conformal>>,
+    /// Task 221's accumulators, and what they decay by: `None` when the
+    /// spec switches none on.
+    checks: Option<&'a mut Checks>,
+    check_cfg: &'a CheckCfg,
+    scratch: &'a mut Scratch,
+    /// This instance's score-time predictions for the rows still waiting
+    /// under `embargo`, oldest first (C21).
+    score_pred: &'a mut std::collections::VecDeque<Vec<f64>>,
+    n_slots: usize,
+    n_rows: usize,
+    o_pred: &'a mut [f64],
+    o_resid: &'a mut [f64],
+    o_sigma: &'a mut [f64],
+    o_resid_z: &'a mut [f64],
+    o_autocorr: &'a mut [f64],
+    o_metrics: &'a mut [f64],
+    o_conformal: &'a mut [f64],
+    o_checks: &'a mut [f64],
+    o_health: &'a mut [f64],
+    o_resid_q: &'a mut [f64],
+    o_drift: &'a mut [bool],
+    o_n_eff: &'a mut [f64],
+    o_lam: &'a mut [f64],
+    o_coef: &'a mut Vec<Option<Vec<f64>>>,
+    o_settled: &'a mut [f64],
+    o_reason: &'a mut [u8],
+    o_inflation: &'a mut [f64],
+    o_support_coef: &'a mut Vec<Option<Vec<f64>>>,
+    o_se_coef: &'a mut Vec<Option<Vec<f64>>>,
+    o_se_hc0: &'a mut Vec<Option<Vec<f64>>>,
+    o_se_hac: &'a mut Vec<Option<Vec<f64>>>,
+    /// The decay time this instance has seen (docs/WARMUP-AND-CONVERGENCE.md
+    /// §2), read before each row and advanced by the rows it learns from.
+    decay_time: &'a mut f64,
+    /// Whether this instance was restarted and has learned no row since
+    /// ([`Persisted::restarted`]).
+    restarted: &'a mut bool,
+    /// Ranges of features a `marginal` splits its pair work into
+    /// ([`marginal_shards`]); one for every other model.
+    shards: usize,
+    /// The readiness notices this instance has raised, and the ones pending.
+    notified: &'a mut Notified,
+    /// Whether the group's refits were given up past the spec's
+    /// `refit_budget` ([`Persisted::refit_over_budget`]).
+    refit_over_budget: bool,
+    /// [`Persisted::ungated_spread`], [`Persisted::weighted_autocorr`] and
+    /// [`Persisted::ungated_drift`]: the rules this stream's spread,
+    /// autocorrelation and drift detector learn by.
+    ungated_spread: bool,
+    weighted_autocorr: bool,
+    ungated_drift: bool,
+    /// Clock the rows held under `embargo` have covered and the models
+    /// have not yet decayed by: added as a row is buffered, taken back as it
+    /// is released. `settled_frac` counts it, so a scored row reads what the
+    /// doubled stream (E47's oracle) reads for it, where every held row has
+    /// already decayed the model as a weight-0 row (§8). The stream keeps
+    /// it across chunks ([`Persisted::pending_clock`]), and keeps none
+    /// without an embargo, where no row is ever held.
+    pending_clock: Option<&'a mut f64>,
+}
+
+/// The steps a weight an instance reads may have been carried through,
+/// which [`settled_weight`] bounds its rounding by: the stream's accepted
+/// rows `steps`, or the rows learned since a restart.
+fn rounding_steps(steps: u64, notified: &Notified) -> f64 {
+    notified.learned_since_restart.unwrap_or(steps) as f64
+}
+
+impl Instance<'_> {
+    /// Restart this instance: the same thing a clock reset or a drift break
+    /// does, applied to one instance rather than the whole stream.
+    fn reset(&mut self) {
+        let spec = self.spec;
+        // An audit is a record of what the stream held, not a fit: a
+        // restart breaks its runs and its clock steps and keeps the rest
+        // (docs/PLAN.md task 223 (b)).
+        if let AnyModel::Audit(m) = self.model.get_mut() {
+            m.restart();
+            return;
+        }
+        // This instance alone, at its own decay: `build_models` built every
+        // instance of the grid to keep one (review 2026-09-12, P2).
+        *self.model.get_mut() = build_one(spec, self.decay).expect("spec was already validated");
+        // The bank reserved no refit buffers for a group it gave them up
+        // for, and a rebuilt model must not hold one (docs/PLAN.md task 277).
+        if self.refit_over_budget {
+            self.model.get_mut().refit_give_up();
+        }
+        self.resid_var.iter_mut().for_each(|v| *v = 0.0);
+        self.resid_w.iter_mut().for_each(|v| *v = 0.0);
+        // A rebuilt model has seen no decay: it settles from here. The
+        // clock of the rows held under `embargo` is the held rows' own: a
+        // drift reset keeps them, and each teaches the rebuilt model as it
+        // is released, its delta moving from the held clock to the decay
+        // time as any held row's does, so the held clock stays as it stands
+        // -- the kept rows' summed `d_clock`. Zeroed here, each release took
+        // back a delta the reset had never added, and `settled_frac` left
+        // the held rows out for the rest of the stream (review round 4,
+        // PB1). A clock reset drops the rows, and the held clock with them
+        // (`run_instance`).
+        //
+        // The restart is marked ([`Persisted::restarted`]): the next row the
+        // instance learns reads the step a fresh stream begun after the row
+        // that fired reads there ([`RowPlan::d_fresh`]) -- 0, as a fresh
+        // stream's first row, unless rows were skipped in between -- and
+        // its learning clears the mark (`run_instance`). Under an `embargo`
+        // that row is the first held one, whose own step from the row that
+        // fired the held clock goes on counting until it is released; a row
+        // scored meanwhile reads the held clock without it
+        // ([`Stream::front_cut`]). Unmarked under an `embargo`, the first
+        // held row decayed the rebuilt model by that step, and `rls` after
+        // a slope break predicted up to 1.1e-2 away from a fresh bank
+        // (review round 10, S7-1). The mark is state, so it crosses a chunk
+        // boundary and a save with the rebuilt model.
+        *self.decay_time = 0.0;
+        *self.restarted = true;
+        // The rows the rebuilt model has learned, which bound its rounding
+        // from here ([`Notified::learned_since_restart`]).
+        self.notified.learned_since_restart = Some(0);
+        self.notified.restart_waits();
+        if let Some(ring) = self.resid_win.as_mut() {
+            *ring.get_mut() = resid_window(spec)
+                .expect("spec was already validated")
+                .expect("the spec that built the ring keeps one");
+        }
+        if let Some(d) = self.drift.as_deref_mut() {
+            d.iter_mut().for_each(PageHinkley::reset);
+        }
+        // Residual diagnostics restart with the model they describe.
+        if let Some(q) = self.resid_q.as_deref_mut() {
+            q.iter_mut().for_each(EwQuantile::reset);
+        }
+        if let Some(a) = self.autocorr.as_deref_mut() {
+            let lag = spec.resid_autocorr_lag_or_default();
+            a.iter_mut()
+                .for_each(|e| *e = EwAutoCorr::new(lag).expect("validated"));
+        }
+        if let Some(m) = self.metrics.as_deref_mut() {
+            m.iter_mut().for_each(|s| *s = SlotMetrics::new());
+        }
+        if let (Some(c), Some(level)) = (self.conformal.as_deref_mut(), spec.conformal) {
+            let rate = spec.conformal_rate_or_default();
+            c.iter_mut()
+                .for_each(|e| *e = Conformal::new(level, rate).expect("validated"));
+        }
+        if let Some(c) = self.checks.as_deref_mut() {
+            *c = Checks::new(spec, self.n_slots);
+        }
+    }
+}
+
+/// Run one model instance over a run of rows. Returns whether any drift
+/// detector fired, which is all the caller needs to decide about a reset.
+///
+/// This is the whole per-row arithmetic, and the only copy of it: the parallel
+/// path calls it once per instance with every row, the drift-coupled path once
+/// per instance per row, and [`Stream::predict_chunk`] with `learn = false`,
+/// which reads every state the row would be scored against and writes none
+/// of them back. Scoring is the learning path with its updates switched off
+/// rather than a second loop, so the two cannot drift apart
+/// (docs/ENHANCEMENTS.md E31).
+#[allow(clippy::too_many_arguments)]
+fn run_instance(
+    inst: &mut Instance<'_>,
+    plans: &[RowPlan],
+    features: &FeatureRows,
+    targets: &[Vec<f64>],
+    // Rows released from the `embargo` buffer, indexed by
+    // `RowPlan::pending`; empty for every spec without a delay (E47).
+    released: &[PendingRow],
+    min_weight: &[f64],
+    // `drift_action = "reset"` with nothing else to coordinate with: restart
+    // *at the row that fired*, not at the end of the chunk, or the rest of the
+    // chunk keeps learning from the regime the detector just rejected.
+    reset_on_drift: bool,
+    // Where a reset at the row that fired is recorded, by the plan's
+    // position in `plans`: the rows learned after it in the same output row
+    // were learned by the rebuilt model (`Stream::process_chunk`).
+    mut fired: Option<&mut Vec<usize>>,
+    // For each row only scored under an `embargo`, by its `ri`, the
+    // `Stream::front_cut` of the rows held when it was scored: what a
+    // restarted instance takes out of the held clock. Kept only where a
+    // drift detection restarts the models, and empty elsewhere, where only
+    // a clock reset restarts an instance: it drops every held row, and its
+    // own row and every row after it step as a fresh bank's would.
+    front_cuts: &[Option<f64>],
+    // Under `label_clock`, for each row held, by its `ri`, where it went
+    // into the buffer and the row a full buffer dropped after it
+    // ([`u32::MAX`] for none); empty elsewhere.
+    places: &[(u32, u32)],
+) -> bool {
+    // The models' frames below at one place in a cache line (`StackLine`).
+    let line = stack_line::StackLine::new();
+    let mut drift_seen = false;
+    // No clock column: the clock is the row count.
+    let row_clock = inst.spec.clock.is_none();
+    let n_rows = inst.n_rows;
+    let block = inst.n_slots * n_rows;
+    // Whether `pred` is a probability against a 0/1 label rather than a
+    // signed regression target -- the model's *declared* loss, not
+    // something read off a row's value, so a slot's metrics mean the same
+    // thing whatever data a chunk happens to carry (docs/PLAN.md task 76).
+    // One flag per instance: `loss` is one setting for the whole model, not
+    // per target.
+    let binary_loss = match &inst.spec.model {
+        ModelKind::Sgd { loss, .. } => loss.as_deref() == Some("logistic"),
+        ModelKind::Ftrl { loss, .. } => loss.as_deref().unwrap_or("logistic") == "logistic",
+        _ => false,
+    };
+    // A Poisson fit has no sign to hit: a rate is positive and a count is
+    // never negative, so the sign test about zero agreed on every row and
+    // `hit_rate` read 1.0 whatever the fit. It is null, as `po.eval` nulls a
+    // metric that is not defined (review round 4, CC5; docs/PLAN.md task
+    // 195, S5). Every other target's test is about zero: task 201 removed
+    // the ratio target, whose test was about 1.
+    let poisson = matches!(&inst.spec.model, ModelKind::Sgd { loss, .. }
+        if loss.as_deref() == Some("poisson"));
+    let hit_test = if poisson {
+        HitTest::Undefined
+    } else if binary_loss {
+        HitTest::Threshold
+    } else {
+        HitTest::Sign
+    };
+    // The cap a scored row's step is held to under an `embargo`, read once:
+    // the step from the last learned row that the held rows' clock spans
+    // (below) is a gap like any other.
+    let held_cap = inst.pending_clock.is_some().then(|| {
+        inst.spec
+            .clock_cfg()
+            .expect("spec was already validated")
+            .gap_cap
+    });
+    for (pi, plan) in plans.iter().enumerate() {
+        if plan.reset {
+            inst.reset();
+            // The stream dropped its waiting rows at this row, skipped or
+            // not (C5); the record of what they were scored with goes too,
+            // and so does the clock they covered (E47).
+            inst.score_pred.clear();
+            if let Some(c) = inst.pending_clock.as_deref_mut() {
+                *c = 0.0;
+            }
+            // A clock reset restarts the clock's own fold at its row, so a
+            // skipped one leaves the next accepted row stepping from it, as
+            // a fresh stream's skipped first row does: nothing left for the
+            // mark to take out (review round 10, S7-3).
+            if !plan.accept {
+                *inst.restarted = false;
+            }
+        } else {
+            if plan.blend {
+                // A gentler alternative to resetting: revert partway toward
+                // the long-run relationship (ENHANCEMENTS E6).
+                inst.model.get_mut().blend_toward_long_run();
+            }
+            // The rows behind this one are no longer adjacent to it: drop
+            // whatever is indexed by rows back, and nothing else
+            // (docs/PLAN.md task 47). Before the `accept` test, because a
+            // skipped row's gap breaks adjacency just as much; not under a
+            // reset, which rebuilds the model whole.
+            if plan.session_changed || plan.capped {
+                inst.model.get_mut().clear_lags();
+                // The residual autocorrelation pairs rows back too
+                // (docs/PLAN.md task 146).
+                if let Some(a) = inst.autocorr.as_deref_mut() {
+                    a.iter_mut().for_each(EwAutoCorr::clear_lags);
+                }
+                // And Newey and West's lags (task 221 (c)).
+                if let Some(c) = inst.checks.as_deref_mut() {
+                    c.clear_lags();
+                }
+            }
+        }
+        if !plan.accept {
+            continue;
+        }
+        // The stream's accepted rows up to this one, which bounds the decay
+        // steps any weight here has been carried through; a row replayed
+        // out of the `embargo` buffer was counted where it arrived.
+        if plan.direct() {
+            inst.steps = inst.steps.saturating_add(1);
+        }
+        let (i, ri, w) = (plan.i, plan.ri, plan.w);
+        let (emit, learn) = (plan.emit, plan.learn);
+        if learn && let Some(n) = inst.notified.learned_since_restart.as_mut() {
+            *n = n.saturating_add(1);
+        }
+        // The first row a restarted instance learns is a fresh stream's
+        // first accepted row: a step of 0, so nothing the rebuilt instance
+        // holds decays on it -- `rls`'s prior `delta I`, `kalman`'s `P0` and
+        // its process noise, a cadence's start, the settled clock -- or,
+        // after skipped rows, the step from the first of them
+        // ([`RowPlan::d_fresh`]). The step from the row that fired belonged
+        // to the history the restart dropped. A clock reset's row has a step
+        // of 0 already; a drift reset's next row did not, and `rls` after
+        // one predicted up to 0.017 away from a fresh bank (task 278). Under
+        // an `embargo` the held rows' clock is read as that fresh bank's too
+        // ([`Stream::held_clock`]): the first held row's step from the row
+        // that fired is taken out of it, and while no row is held the row
+        // scored is the first. Every use of the step below reads this one.
+        let restarted = *inst.restarted;
+        let held_raw = inst.pending_clock.as_deref().copied().unwrap_or(0.0);
+        let (d_clock, held) = match (restarted, held_cap.is_some(), learn) {
+            (false, ..) => (plan.d_clock, held_raw),
+            (true, false, _) => (plan.d_fresh, held_raw),
+            (true, true, true) => (plan.d_fresh, held_raw - (plan.d_clock - plan.d_fresh)),
+            (true, true, false) => match front_cuts.get(ri) {
+                Some(Some(cut)) => (plan.d_clock, held_raw - cut),
+                Some(None) => (plan.d_fresh, 0.0),
+                None => (plan.d_clock, held_raw),
+            },
+        };
+        let sc = &mut *inst.scratch;
+        sc.ys.clear();
+        // The features go to the model as the chunk holds them: one
+        // contiguous row, not a gather (PERFORMANCE-LOG §20).
+        let xs: &[f64] = if plan.direct() {
+            sc.ys
+                .extend(targets.iter().map(|t| Some(t[i]).filter(|f| usable(*f))));
+            features.row(i)
+        } else {
+            // A row released from the `embargo` buffer: the same values,
+            // stepped now instead of where they arrived (E47).
+            let row = &released[plan.pending];
+            sc.ys.extend_from_slice(&row.ys);
+            &row.xs
+        };
+        let m_targets = sc.ys.len();
+        // Each target's own weight, read before the step: the rows it was
+        // present on, as `n_eff` is the rows the model saw (review 2026-09-12,
+        // S2). `false` for a model that keeps only the shared one.
+        let own_weights = inst.model.get().target_n_eff_into(&mut sc.tn);
+        // The readiness statistics, read before the row like everything
+        // else a row is gated on (docs/WARMUP-AND-CONVERGENCE.md §2): how
+        // settled the instance is, and the noise gate's ratio per slot where
+        // the model has one -- plus the row's own, when the field is asked
+        // for. The gate and its warning read only which side of
+        // `max_error_inflation` a slot is on, and the largest ratio when one
+        // is at or above it, so a model may put a bound below the limit in
+        // place of a ratio that costs it an `O(k³)` read (docs/PLAN.md task
+        // 140); `summary` reads the exact one. A gate that is off -- every
+        // model's but `ewridge`'s unless set (task 116) -- reads nothing:
+        // `kalman`'s is `O(k²)` a row, paid only where it is used.
+        let settled = settled_frac(inst.decay, *inst.decay_time + held);
+        // The step a row is scored over: the clock since the last row the
+        // model learned, as a bank fed only the matured rows scores it. A
+        // row learned where it sits, or released from the `embargo` buffer,
+        // steps from the row before it. A row only scored -- held under an
+        // `embargo`, or scored by `predict` against a bank holding rows --
+        // sits after every held row the model has not learned yet, so its
+        // step is theirs and its own, capped as the gap they span would be
+        // (`min(a + b, cap)` is the cap of the raw sum, since a step that was
+        // capped alone is the cap already). Scored over its own step, a held
+        // row read as if it sat one step after the last learned row: `holt`
+        // forecast one step ahead where the row was several, `hmm` aged its
+        // transitions by one step, `kalman` added one step's drift to the
+        // row's variance (task 278, D11).
+        let score_d = match held_cap {
+            Some(cap) if !learn => (held + d_clock).min(cap),
+            _ => d_clock,
+        };
+        // The two "not met" notices below read the learned rows'
+        // clock alone, as `Stream::readiness` does: the weight they
+        // project a ceiling from has neither decayed by nor accumulated
+        // the held rows, so paired with the row's fraction it read as
+        // settled before anything was learned, and the ceiling came out
+        // negative -- a floor the stream then met, after a notice that it
+        // never would (review round 5, C1). The gate and the row's field
+        // keep the fraction above, the held rows' clock counted (§8).
+        let learned = settled_frac(inst.decay, *inst.decay_time);
+        let max_infl = inst.spec.max_error_inflation_or_default();
+        let has_infl = max_infl.is_finite()
+            && inst
+                .model
+                .get()
+                .error_inflation_gate_into(xs, score_d, &mut sc.infl, max_infl);
+        // The row's own error inflation: its field, and the breaks'
+        // studentized residual, read it (task 221 (b)).
+        let has_row_infl = inst.spec.reads_row_inflation()
+            && inst
+                .model
+                .get()
+                .row_error_inflation_into(xs, score_d, &mut sc.row_infl);
+        // Whether the instance is ready for task 221's diagnostics to fold
+        // its residuals (task 232 (1); review round 6, F-1), read before the
+        // step as the gates are: the model past its own warm-up, and the
+        // stream 95% settled on the longest finite memory the model keeps
+        // (task 234: `holt`'s trend, `kalman`'s longest) where it forgets.
+        // That is a second clock (review round 7, E-1): the readiness
+        // notices, `settled_frac` and its gate read the instance's own decay
+        // above, since the weight's ceiling `1/(1-lam^d)` and the noise
+        // gate's ratio they project settle on it; a diagnostic waits for
+        // every memory the fit keeps, else the long memory's warm-up bias
+        // reads as a break (`holt` at 50: the notice at row 268, the first
+        // `cusum` at 878). Under a window with no decay the notices never
+        // judge and this reads the window's Kish half-life. Each gate's withholding
+        // already keeps a row out, since a row with no prediction has no
+        // residual. A stream that forgets nothing never settles and waits
+        // on the gates alone.
+        let diag_ready = inst.checks.is_some() && {
+            let fit = settled_frac(inst.check_cfg.ready(), *inst.decay_time);
+            !inst.model.get().scaler_warming() && (fit.is_nan() || settled_enough(fit))
+        };
+        // Read before the step, which may seed the model on this row: the
+        // row itself was still read by the unseeded model, and reports
+        // nothing.
+        let seeding = inst.model.get().seeding();
+        // So, for the same reason, is whether the fit this row is predicted
+        // from was withheld as too ill-conditioned to carry a digit: the
+        // step may solve again on this row, and the reason names the fit
+        // the prediction came from (task 278, D4).
+        let ill = inst.model.get().ill_conditioned();
+        // And which targets' rates were past their stability bound, read
+        // from the state before the step, as the model's own gate reads it
+        // (task 278, D8).
+        let unstable = inst.model.get().unstable_targets();
+
+        // The residual spread folds each slot's own prediction, whether or
+        // not a readiness gate withholds it from the output
+        // ([`Persisted::ungated_spread`]; task 278, batch 17): a gate
+        // withholds output only, and the spread ranks the slots for
+        // `emit_selected` and `emit_averaged` and scales `sigma`, `zscore`
+        // and the drift detector. The bank's own gates fill the step's
+        // prediction after it, so it is kept as the step gave it
+        // ([`keep_ungated`]); the model's `min_weight` floor withholds
+        // inside the model, so on a row it may withhold the model is first
+        // read below it, before the step, as the same model with no
+        // `min_weight` predicts ([`AnyModel::predict_with_floor`] at
+        // [`read_floor`]). That is a second read only while the weight --
+        // each target's own, where the model keeps one, else the shared --
+        // is short of the highest floor: the warm-up and the rows after a
+        // long gap. A row released from the `embargo` buffer folds what its
+        // score kept instead. The drift detector folds the same residuals
+        // ([`Persisted::ungated_drift`]).
+        let keep = (inst.ungated_spread || inst.ungated_drift)
+            && inst.residuals
+            && plan.direct()
+            && (learn || plan.buffered);
+        let mut kept = false;
+        if keep {
+            let top = min_weight.iter().copied().fold(0.0, f64::max);
+            if top > 0.0 {
+                let short = if own_weights {
+                    sc.tn.iter().any(|&w| w < top)
+                } else {
+                    inst.model.get().n_eff() < top
+                };
+                if short {
+                    let floor = read_floor(inst.spec, min_weight);
+                    if let Some(m) = inst.model.learning() {
+                        let d = if learn { d_clock } else { score_d };
+                        let past = m.predict_with_floor(xs, &sc.ys, d, floor);
+                        sc.ungated.clear();
+                        sc.ungated.extend_from_slice(&past.pred);
+                        kept = true;
+                    }
+                }
+            }
+        }
+
+        // The instance's kept step, its buffers reused (task 270, M-4).
+        let step = &mut sc.step;
+        if learn {
+            // The row's stamp, for a window to key its snapshot by and
+            // decide its edge from (task 175); decay reads `d_clock`.
+            // On the row clock, the model's start is a row before its
+            // first, as `coef_every`'s (`coef_origin`; task 278, D13).
+            if let Some(stamp) = plan.stamp {
+                if row_clock {
+                    inst.model.get_mut().stamp_next_on_rows(stamp);
+                } else {
+                    inst.model.get_mut().stamp_next(stamp);
+                }
+            }
+            // An audit counts the step as it elapsed, which no decay reads
+            // (review 6, C-5: its largest step read `gap_cap`).
+            let step_d = if matches!(inst.model.get(), AnyModel::Audit(_)) {
+                plan.elapsed_step
+            } else {
+                d_clock
+            };
+            inst.model
+                .get_mut()
+                .step_sharded_into(xs, &sc.ys, step_d, w, inst.shards, step);
+        } else {
+            inst.model.get().predict_into(xs, &sc.ys, score_d, step);
+        }
+        let n_slots = step.pred.len();
+        // `ew_cov` has no targets; its slots are statistics, so every one
+        // maps to "target 0" for the warmup check. Slot `s` belongs to target
+        // `s / nc`; the passes below walk the slots in groups of `nc` rather
+        // than dividing per slot -- two integer divisions a slot were most of
+        // a 230-slot `ew_cov` row (PERFORMANCE-LOG §13).
+        let nc = n_slots.checked_div(m_targets).unwrap_or(1).max(1);
+
+        // The readiness gates (docs/WARMUP-AND-CONVERGENCE.md §2), each
+        // withholding a prediction before it can reach the residual, sigma,
+        // zscore, drift or selection, and each gating output, not learning
+        // -- the model has already updated from this row. In precedence: the
+        // settled fraction, for the whole instance; the per-target
+        // `min_weight` (ENHANCEMENTS E7; the model itself predicts once the
+        // *smallest* threshold is met), by each target's own weight where the
+        // model keeps one, else the shared `n_eff` (review 2026-09-12, S2),
+        // which is the user's explicit floor and so is named before the
+        // noise gate, per slot, whose ratio is infinite until the model has
+        // solved. The reason recorded is the first gate that withheld
+        // anything.
+        let mut reason = 0u8;
+        let min_settled = inst.spec.min_settled_frac_or_default();
+        if min_settled > 0.0 && settled.is_finite() && settled < min_settled {
+            keep_ungated(keep, &mut kept, &mut sc.ungated, &step.pred);
+            step.pred.fill(f64::NAN);
+            reason = REASON_SETTLED;
+        }
+        // Whether a "not met" notice may judge the stream yet, and the wait
+        // each asks for: a half-life of the learned rows' clock during which
+        // its gate withholds every row, past 95% settled ([`withheld_for`]).
+        let now = *inst.decay_time;
+        let judged = !inst.notified.unreachable && settled_enough(learned);
+        let half = if judged {
+            half_life_of(inst.decay)
+        } else {
+            f64::NAN
+        };
+        // Whether a target's floor has withheld every row for that long: each
+        // such target's notice is raised in the loop below, from what it
+        // projects ([`Projection`]), and the waits restart after it. No list
+        // of them is formed: a `Vec` on every row cost the bank's cheapest
+        // case 2.5% of its instructions (task 353), for a notice said once.
+        let mut unmet_floor = false;
+        if keep && !kept {
+            let below = (0..step.pred.len().div_ceil(nc)).any(|tj| {
+                let weight = match sc.tn.get(tj) {
+                    Some(&w) if own_weights => w,
+                    _ => step.n_eff,
+                };
+                step_n_eff_below(weight, min_weight, tj)
+            });
+            if below {
+                keep_ungated(keep, &mut kept, &mut sc.ungated, &step.pred);
+            }
+        }
+        for (tj, group) in step.pred.chunks_mut(nc).enumerate() {
+            let weight = match sc.tn.get(tj) {
+                Some(&w) if own_weights => w,
+                _ => step.n_eff,
+            };
+            let below = step_n_eff_below(weight, min_weight, tj);
+            if below {
+                group.fill(f64::NAN);
+                if reason == 0 {
+                    reason = REASON_MIN_PERIODS;
+                }
+            }
+            if !inst.notified.unreachable
+                && inst.notified.floor_withheld_for(tj, below, judged, now) >= half
+            {
+                let steps = rounding_steps(inst.steps, inst.notified);
+                let ceiling = settled_weight(weight, w, learned, steps);
+                if ceiling < min_weight[tj] {
+                    // The shared weight is what the target would read had
+                    // every row the model learned carried it.
+                    let shared = own_weights.then_some(step.n_eff);
+                    unmet_floor = true;
+                    inst.notified.raise(unmet_floor_notice(
+                        inst.spec,
+                        inst.decay,
+                        tj,
+                        min_weight[tj],
+                        Projection::read(ceiling, weight, shared, w, learned, steps),
+                    ));
+                }
+            }
+        }
+        // The floor has not been met: the stream has all but settled, the
+        // floor has withheld every row for a further half-life, and the
+        // weight the target reads tops out below it at the rows' spacing and
+        // weight so far -- the ceiling `1/(1 − λ^d)`
+        // (docs/WARMUP-AND-CONVERGENCE.md §5.1), which with a clock column
+        // no spec can say in advance, and which rows that come faster than
+        // so far can still pass: the notice projects, it does not promise
+        // (review round 5, F3). Said once per instance, as the noise gate's
+        // is, with the way out (docs/PLAN.md task 198, D8). A weight of 0
+        // has no rate to project: no row has given the target a value with a
+        // positive weight -- a target never present, or a stream whose every
+        // row weighs 0 -- and `(0 − w₁(1 − s))/s` read a negative ceiling, or
+        // 0, with advice to lower the floor below it (task 208's worker). So
+        // that notice says what the stream lacks, with no figure. A target
+        // that rows stopped carrying decays toward 0 and has no ceiling, and
+        // `unmet_floor_notice` tells it from one the rows carry by its weight
+        // against the shared one (task 350).
+        // Every target unmet on this row is named, each in its own notice
+        // with its own figure (WRITING §11: report every problem).
+        if unmet_floor {
+            inst.notified.unreachable = true;
+            inst.notified.restart_waits();
+        }
+        // At or above the ratio: at equality the estimation variance is the
+        // noise, and one observation's mean -- `edf = n_kish = 1`, exactly
+        // `sqrt(2)` -- must not pass. A clean design opens where `k + 1`
+        // did, the ridge keeping `edf` a hair under it.
+        // `inf` is off: an infinite ratio -- the model unsolved -- is then
+        // the model's own null, not this gate's.
+        let mut gate_withheld = false;
+        if has_infl && max_infl.is_finite() {
+            if keep && !kept && sc.infl.iter().take(step.pred.len()).any(|&r| r >= max_infl) {
+                keep_ungated(keep, &mut kept, &mut sc.ungated, &step.pred);
+            }
+            for (slot, p) in step.pred.iter_mut().enumerate() {
+                if sc.infl.get(slot).is_some_and(|&r| r >= max_infl) {
+                    *p = f64::NAN;
+                    gate_withheld = true;
+                    if reason == 0 {
+                        reason = REASON_INFLATION;
+                    }
+                }
+            }
+        }
+        // The model's own warm-up: the rows it holds to seed itself from
+        // report nothing, and say so, where no gate above has (no model
+        // with a noise gate seeds itself). It is a count of learned rows,
+        // not of weight, so it is not `min_weight`'s: a decayed weight can
+        // sit above the floor for every row of it.
+        if reason == 0 && seeding {
+            reason = REASON_WARM_ROWS;
+        }
+        // A fit withheld because its system was past the condition at which
+        // a solve keeps a digit, where no gate above has withheld the row.
+        // The noise gate reads such a slot as not a number, so it does not
+        // claim it; the model's own null is then named for what it is.
+        if reason == 0 && ill {
+            reason = REASON_ILL_CONDITIONED;
+        }
+        // A target withheld because its learning rate is past its stability
+        // bound, where no gate above has withheld the row; said once an
+        // instance, with the way out.
+        if let Some(tj) = unstable.iter().position(|u| *u) {
+            if reason == 0 {
+                reason = REASON_UNSTABLE_RATE;
+            }
+            if !inst.notified.unstable {
+                inst.notified.unstable = true;
+                let target = inst.spec.targets.get(tj).map_or("", String::as_str);
+                inst.notified.raise(unstable_rate_notice(inst.spec, target));
+            }
+        }
+        // The noise gate has not been met: the stream has all but settled,
+        // the gate has withheld every row for a further half-life, and the
+        // ratio's projection to steady state at the rows' spacing so far is
+        // still above the threshold -- a projection that rows coming faster
+        // can still beat (review round 5, F3). Said once per instance, with
+        // the way out (§3). Not for
+        // `kalman`, whose gate reads each row's own value: its `P` settles
+        // on `coef_half_life`'s clock, not the spec's decay, and a row
+        // nearer the design's centre reads below the average, so one
+        // withheld row, settled or not, says nothing of the rows after it
+        // and the projection to steady state here is Kish's, which `P`
+        // does not follow (docs/PLAN.md task 116).
+        let per_row_gate = matches!(inst.spec.model, ModelKind::Kalman { .. });
+        let waited = if per_row_gate || inst.notified.unreachable {
+            f64::NAN
+        } else {
+            withheld_for(&mut inst.notified.gate_since, gate_withheld, judged, now)
+        };
+        let unmet =
+            (reason == REASON_INFLATION && !inst.notified.unreachable && judged && waited >= half)
+                .then(|| Unmet {
+                    worst: sc.infl.iter().cloned().fold(0.0, f64::max),
+                    max: max_infl,
+                    settled: learned,
+                    weight: step.n_eff,
+                    row_weight: w,
+                    steps: rounding_steps(inst.steps, inst.notified),
+                })
+                .filter(|u| u.stays_shut(inst.spec));
+        if let Some(unmet) = unmet {
+            let worst = unmet.worst;
+            inst.notified.unreachable = true;
+            inst.notified.restart_waits();
+            inst.notified.raise(if worst.is_finite() {
+                inflation_notice(inst.spec, inst.decay, &unmet)
+            } else {
+                // Infinite: the model has not solved, its weight short of the
+                // floor its first solve needs, which no ratio can loosen.
+                unsolved_notice(inst.spec, inst.decay, &unmet)
+            });
+        }
+
+        // Under `embargo` the residual diagnostics fold the prediction a
+        // row was *scored* with, not the one the model gives it at the
+        // replay: by then the model has learned every row released before
+        // this one, so its prediction has seen the labels the delay says were
+        // not yet available, and `sigma`, `zscore`, the quantiles, the
+        // metrics, the conformal interval and the drift detector all
+        // described a prediction nobody was shown (review 2026-09-12, C21).
+        // The score keeps its prediction; the replay takes it back. The
+        // model's own update above stands.
+        //
+        // With a conformal interval the record also keeps the radius each
+        // slot's interval was shown with, after the predictions, so the
+        // release scores the interval the row was shown rather than the one
+        // the radius has reached since (C21's other half; docs/PLAN.md task
+        // 112).
+        //
+        // Where a diagnostic reads the row's own error inflation -- the
+        // breaks' and the tails' recursive residual, the influence -- the
+        // record keeps that too, last, as the fit that scored the row gave
+        // it: the scored residual over the release-time fit's inflation, a
+        // fit that has learned the rows released since, read the residuals
+        // too small, and the CUSUM of squares sat at −0.70 on iid labels
+        // under an embargo of 50 (review round 6, A-6; schema 57).
+        let mut shown_radius: Option<Vec<f64>> = None;
+        if plan.buffered {
+            // The record is sized once, for every part it will hold, so a
+            // held row allocates once rather than growing by a reallocation
+            // per part (P34; the VM measured about 430 instructions a held
+            // row on x86 in the growth, R-V41).
+            let len = step.pred.len()
+                + inst.conformal.as_deref().map_or(0, |cs| cs.len())
+                + if has_row_infl { sc.row_infl.len() } else { 0 }
+                + if kept { sc.ungated.len() } else { 0 };
+            let mut record = Vec::with_capacity(len);
+            record.extend_from_slice(&step.pred);
+            if let Some(cs) = inst.conformal.as_deref() {
+                let ring = inst.resid_win.as_ref().map(SpreadRef::get);
+                let spread = inst
+                    .residuals
+                    .then_some((&inst.resid_w[..], &inst.resid_var[..]));
+                conformal_rows::shown_radii(&mut record, cs, ring, inst.decay, spread);
+            }
+            if has_row_infl {
+                record.extend_from_slice(&sc.row_infl);
+            }
+            // And, where a gate withheld the score, each slot's own
+            // prediction, last, which the spread folds at the release
+            // ([`Persisted::ungated_spread`]): a record a gate withheld
+            // nothing from is the length it always was.
+            if kept {
+                record.extend_from_slice(&sc.ungated);
+            }
+            // Under `label_clock` the buffer is ordered by label time, and
+            // the records keep its order (task 341).
+            // `places`, by the row, says where (task 341): kept beside the
+            // plans, as `front_cuts` is, so no other spec's plan grows.
+            match places.get(ri) {
+                Some(&(at, drop)) => {
+                    inst.score_pred.insert(at as usize, record);
+                    if drop != u32::MAX {
+                        inst.score_pred.remove(drop as usize);
+                    }
+                }
+                None => inst.score_pred.push_back(record),
+            }
+        } else if !plan.direct() {
+            let n = step.pred.len();
+            let conformal = inst.conformal.is_some();
+            let parts = 1 + usize::from(conformal) + usize::from(has_row_infl);
+            match inst.score_pred.pop_front() {
+                Some(p)
+                    if p.len() == parts * n
+                        || ((inst.ungated_spread || inst.ungated_drift)
+                            && p.len() == (parts + 1) * n) =>
+                {
+                    step.pred.copy_from_slice(&p[..n]);
+                    if conformal {
+                        shown_radius = Some(p[n..2 * n].to_vec());
+                    }
+                    if has_row_infl {
+                        sc.row_infl.clear();
+                        sc.row_infl
+                            .extend_from_slice(&p[(parts - 1) * n..parts * n]);
+                    }
+                    if p.len() > parts * n {
+                        sc.ungated.clear();
+                        sc.ungated.extend_from_slice(&p[parts * n..]);
+                        kept = true;
+                    }
+                }
+                // No record of the score: fold nothing rather than the
+                // prediction that peeks.
+                _ => step.pred.fill(f64::NAN),
+            }
+        }
+
+        // A model that predicts no target has no residual: its slots are
+        // statistics, and `validate` refuses every residual-based option for
+        // it, so `r`, `sig` and `zs` stay empty and every loop over them
+        // below is a no-op. Tracking a residual for such a model was a
+        // division per slot per row, and filling the three buffers a
+        // `memset` per row, that no field ever read (PERFORMANCE-LOG §13).
+        sc.r.clear();
+        sc.sig.clear();
+        sc.zs.clear();
+        let lam = inst.decay.factor(d_clock);
+        if inst.residuals {
+            sc.sig.resize(n_slots, f64::NAN);
+            sc.zs.resize(n_slots, f64::NAN);
+            for (tj, group) in step.pred.chunks(nc).enumerate() {
+                let yj = sc.ys.get(tj).copied().flatten();
+                sc.r.extend(group.iter().map(|p| match yj {
+                    Some(yj) if p.is_finite() => yj - p,
+                    _ => f64::NAN,
+                }));
+            }
+            // `sigma` as the row finds it, beside each residual.
+            let ring = inst.resid_win.as_ref().map(SpreadRef::get);
+            for (slot, &rv) in sc.r.iter().enumerate() {
+                if inst.resid_w[slot] <= 0.0 {
+                    continue;
+                }
+                let sd = pre_row_sigma(ring, inst.decay, (inst.resid_w, inst.resid_var), slot);
+                sc.sig[slot] = sd;
+                if rv.is_finite() && sd > 0.0 {
+                    sc.zs[slot] = rv / sd;
+                }
+            }
+            if learn {
+                // The spread as the row finds it, before its own residual,
+                // keyed by the stamp the model's window was (task 175).
+                // Each slot's own residual where a gate withheld the
+                // prediction ([`Persisted::ungated_spread`]), the reported
+                // one where none did.
+                if kept {
+                    sc.r_spread.clear();
+                    for (tj, group) in sc.ungated.chunks(nc).enumerate() {
+                        let yj = sc.ys.get(tj).copied().flatten();
+                        sc.r_spread.extend(group.iter().map(|p| match yj {
+                            Some(yj) if p.is_finite() => yj - p,
+                            _ => f64::NAN,
+                        }));
+                    }
+                }
+                let spread_r = if kept && inst.ungated_spread {
+                    &sc.r_spread
+                } else {
+                    &sc.r
+                };
+                if let Some(ring) = inst.resid_win.as_mut() {
+                    // And counts the slots whose residual the row folds at
+                    // a positive weight (task 217).
+                    ring.get_mut().learn(
+                        d_clock,
+                        plan.stamp,
+                        lam,
+                        (inst.resid_w.as_slice(), inst.resid_var.as_slice()),
+                        (spread_r.as_slice(), w),
+                    );
+                }
+                for (slot, &rv) in spread_r.iter().enumerate() {
+                    if rv.is_finite() {
+                        let w_new = lam * inst.resid_w[slot] + w;
+                        if w_new > 0.0 {
+                            inst.resid_var[slot] =
+                                (lam * inst.resid_w[slot] * inst.resid_var[slot] + w * rv * rv)
+                                    / w_new;
+                            inst.resid_w[slot] = w_new;
+                        }
+                    } else {
+                        inst.resid_w[slot] *= lam;
+                    }
+                }
+            }
+        }
+
+        if emit {
+            // Slot `s` at `s·n_rows + ri`, through a slice taken once, which
+            // holds the column's pointer and length in registers: indexing
+            // the instance's vector reloaded both from it on every slot once
+            // other code in this function took the registers (task 273 (c2)
+            // gave the copy an instruction more a slot, 1.1% of a
+            // 230-statistic `ew_cov` bank's count; task 275 (b)).
+            let out = &mut inst.o_pred[..];
+            for (slot, &p) in step.pred.iter().enumerate() {
+                out[slot * n_rows + ri] = p;
+            }
+            if inst.residuals {
+                let out = &mut inst.o_resid[..];
+                for (slot, &rv) in sc.r.iter().enumerate() {
+                    out[slot * n_rows + ri] = rv;
+                }
+            }
+            if !inst.o_sigma.is_empty() {
+                for (slot, (&s, &z)) in sc.sig.iter().zip(sc.zs.iter()).enumerate() {
+                    let at = slot * n_rows + ri;
+                    inst.o_sigma[at] = s;
+                    inst.o_resid_z[at] = z;
+                }
+            }
+            // A step that reports fewer slots than the buffers hold leaves
+            // the rest null: the buffers are not filled with NaN before a
+            // run that writes them in full ([`ChunkOut::renew_run`]).
+            for slot in step.pred.len()..inst.n_slots {
+                inst.o_pred[slot * n_rows + ri] = f64::NAN;
+            }
+            if inst.residuals {
+                for slot in sc.r.len()..inst.n_slots {
+                    inst.o_resid[slot * n_rows + ri] = f64::NAN;
+                }
+            }
+            if !inst.o_sigma.is_empty() {
+                for slot in sc.sig.len()..inst.n_slots {
+                    let at = slot * n_rows + ri;
+                    inst.o_sigma[at] = f64::NAN;
+                    inst.o_resid_z[at] = f64::NAN;
+                }
+            }
+        }
+
+        // Drift is monitored on |resid| scaled by the slot's own EW residual
+        // std, so `drift_delta` means the same thing whatever the target's
+        // units, and integrated over the row's clock (docs/PLAN.md task 146).
+        // Rows with no residual are not scored, not treated as zero error.
+        // Nor is a zero-weight row: the user weighted it out, `sigma` already
+        // treats it as unseen, and a row that fired the detector could restart
+        // the model under `drift_action = "reset"` (review 2026-09-12, S28).
+        // Either still ages the detector's mean: it is clock.
+        //
+        // Each slot's own residual where a gate withheld the prediction, as
+        // the spread folds it ([`Persisted::ungated_drift`]; task 278): a
+        // gate withholds output only, and under `drift_action = "reset"` a
+        // detection restarts the model, so a gate that hid the residuals
+        // after a restart hid the next break and moved the fit. A detection
+        // on a withheld row is flagged on it like any other.
+        let mut row_drift = false;
+        if let (true, Some(dets)) = (learn, inst.drift.as_deref_mut()) {
+            let drift_r = if kept && inst.ungated_drift {
+                &sc.r_spread
+            } else {
+                &sc.r
+            };
+            for (slot, &rv) in drift_r.iter().enumerate() {
+                let scale = sc.sig[slot];
+                if w > 0.0 && rv.is_finite() && scale.is_finite() && scale > 0.0 {
+                    let flag = dets[slot].update(rv.abs() / scale, d_clock, lam);
+                    // On the row being output: this one, or under an
+                    // embargo the row releasing this one (task 160, PB1).
+                    // Set, never cleared: one row may release several.
+                    if flag && plan.drift_ri != usize::MAX {
+                        inst.o_drift[slot * n_rows + plan.drift_ri] = true;
+                    }
+                    row_drift |= flag;
+                } else {
+                    dets[slot].age(lam);
+                }
+            }
+            drift_seen |= row_drift;
+        }
+
+        // Residual diagnostics (ENHANCEMENTS E23), all read before the row's
+        // own residual is folded in, like sigma.
+        // The quantiles weigh each |resid| by the row's weight, as `sigma`
+        // does, and decay on the clock at the model's rate (task 146).
+        if let Some(ests) = inst.resid_q.as_deref_mut() {
+            for (slot, est) in ests.iter_mut().enumerate() {
+                if emit {
+                    for li in 0..est.levels().len() {
+                        inst.o_resid_q[li * block + slot * n_rows + ri] =
+                            est.get(li).unwrap_or(f64::NAN);
+                    }
+                }
+                if learn {
+                    est.age(lam);
+                    // A zero-weight row's residual stays out, as it does of
+                    // `sigma` (S28).
+                    if w > 0.0 && sc.r[slot].is_finite() {
+                        est.add(sc.r[slot].abs(), w);
+                    }
+                }
+            }
+        }
+        if let Some(ests) = inst.autocorr.as_deref_mut() {
+            for (slot, est) in ests.iter_mut().enumerate() {
+                if emit {
+                    inst.o_autocorr[slot * n_rows + ri] = est.get().unwrap_or(f64::NAN);
+                }
+                // Likewise the autocorrelation (S28); a row it does not take
+                // still ages it (task 146).
+                if learn {
+                    if w > 0.0 && sc.r[slot].is_finite() {
+                        // At the row's weight, as `sigma` and the
+                        // quantiles take it; at 1 in a file written before
+                        // schema 64 ([`Persisted::weighted_autocorr`]).
+                        if inst.weighted_autocorr {
+                            est.update_weighted(sc.r[slot], w, lam);
+                        } else {
+                            est.update(sc.r[slot], lam);
+                        }
+                    } else {
+                        est.age(lam);
+                    }
+                }
+            }
+        }
+
+        // Metrics are read before this row is scored, like every other
+        // diagnostic here, so they never include the row they describe.
+        if let Some(ms) = inst.metrics.as_deref_mut() {
+            for (slot, met) in ms.iter_mut().enumerate() {
+                if emit {
+                    let at = slot * n_rows + ri;
+                    inst.o_metrics[at] = met.ic().unwrap_or(f64::NAN);
+                    inst.o_metrics[block + at] = met.r2().unwrap_or(f64::NAN);
+                    inst.o_metrics[2 * block + at] = met.hit_rate().unwrap_or(f64::NAN);
+                }
+                if learn {
+                    let yj = sc.ys.get(slot / nc).copied().flatten().unwrap_or(f64::NAN);
+                    met.update_with(step.pred[slot], yj, lam, w, hit_test);
+                }
+            }
+        }
+
+        // The conformal interval is `pred ± q`, `q = m·sigma` read before the
+        // row, then the row's own score moves `m` (ENHANCEMENTS E36; the
+        // multiplier, task 368). `sigma` is the pre-row value, the one the
+        // row's `sigma` field shows.
+        // Under `conformal_rate = "auto"` the step reads the rows waiting,
+        // the released one's record already off the front (task 342b).
+        if let Some(cs) = inst.conformal.as_deref_mut() {
+            let held = if inst.spec.conformal_rate_auto() {
+                inst.score_pred.len()
+            } else {
+                0
+            };
+            conformal_rows::step_conformal(
+                cs,
+                inst.o_conformal,
+                conformal_rows::At { ri, n_rows, block },
+                (&step.pred, &sc.r, &sc.sig),
+                (emit, learn),
+                shown_radius.as_deref(),
+                (lam, w),
+                held,
+            );
+        }
+
+        // Task 221's diagnostics, each at its own memory: read before the
+        // row, the row folded only when learned, with the prediction it was
+        // scored with under an embargo (C21).
+        if let Some(c) = inst.checks.as_deref_mut() {
+            let row = RowView {
+                preds: &step.pred,
+                resid: &sc.r,
+                inflation: has_row_infl.then_some(sc.row_infl.as_slice()),
+                ys: &sc.ys,
+                xs,
+                nc,
+            };
+            c.recursive(&row, &mut sc.z);
+            if emit {
+                c.read(
+                    inst.check_cfg,
+                    &row,
+                    &sc.z,
+                    inst.n_slots,
+                    n_rows,
+                    ri,
+                    inst.o_checks,
+                );
+                c.read_health(xs.len(), n_rows, ri, inst.o_health);
+            }
+            if learn {
+                c.learn(inst.check_cfg, d_clock, &row, &sc.z, w, diag_ready);
+            }
+        }
+
+        if emit {
+            inst.o_n_eff[ri] = step.n_eff;
+            inst.o_settled[ri] = settled;
+            inst.o_reason[ri] = reason;
+            if has_row_infl && inst.spec.emit_error_inflation {
+                for (slot, r) in sc.row_infl.iter().enumerate().take(n_slots) {
+                    inst.o_inflation[slot * n_rows + ri] = *r;
+                }
+            }
+            match &step.extra {
+                Some(rheon_core::Extra::Lasso { lam_selected: v })
+                | Some(rheon_core::Extra::Huber { scale: v }) => {
+                    for (t_i, l) in v.iter().enumerate() {
+                        inst.o_lam[t_i * n_rows + ri] = *l;
+                    }
+                }
+                _ => {}
+            }
+        }
+        // The decay time advances with the rows the model learns from, by
+        // the delta it decayed by: a capped gap counts as the cap (§8). A
+        // row held under `embargo` parks its delta until its release
+        // replays it.
+        // A restart zeroed it, so a restarted instance's first row leaves it
+        // at that row's fresh step.
+        if learn {
+            *inst.decay_time += d_clock;
+            *inst.restarted = false;
+        }
+        if let Some(c) = inst.pending_clock.as_deref_mut() {
+            if plan.buffered || plan.parks {
+                *c += plan.d_clock;
+            } else if !plan.direct() {
+                *c -= plan.d_clock;
+            }
+        }
+        if plan.want_coef {
+            // A model that has not solved yet has nothing to report, and
+            // `null` is how every other output spells that. This used to be
+            // an empty list, so `coef.list.get(i)` -- the documented way to
+            // read one coefficient -- raised "index out of bounds" on the
+            // warmup rows instead of returning null (IMPROVEMENTS U7).
+            inst.o_coef[ri] = inst.model.get().coefficients().map(joined);
+            // Each coefficient's data share rides on the same cadence
+            // (§2.2), and a coefficient more ridge than data is named once
+            // per instance, here, where the shares are read anyway -- but
+            // only on a row the model predicted and the gates let through
+            // (`reason == 0`) of a stream settled enough to judge
+            // ([`settled_enough`]), the rule the other two notices keep. The
+            // first solve of any spec is under-determined by construction,
+            // one row against `k` slopes, and the warning cannot be
+            // retracted; judging a fit the model is itself withholding as
+            // noise made the message false by the row after it. Found
+            // verifying the shipped 0.9.0 wheel: an ordinary two-feature fit
+            // warned at `n_eff = 1.00` and read `support_coef = 1.00` from
+            // the next row to the end of the stream. And the gates open long
+            // before the shares settle: two correlated features under a
+            // mean-form ridge, standardized, read below 0.5 at the first row
+            // the gates let through in 8 seeds of 12, from the first rows'
+            // noisy feature variances, and settled at 0.51-0.53 (task 116,
+            // G). Below `ewridge`'s own floor no gate names a row, and its
+            // fit is the last solved, not the latest due (task 311).
+            let mut support = Vec::new();
+            let has_support = inst.model.get().support_coef_into(&mut support);
+            if let (true, false, 0, true, true) = (
+                has_support,
+                inst.notified.support,
+                reason,
+                settled_enough(learned),
+                step.pred.iter().any(|p| p.is_finite()),
+            ) {
+                let k_total = inst.spec.k() + usize::from(inst.spec.fit_intercept);
+                let worst = support
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, v)| v.is_finite())
+                    .min_by(|a, b| a.1.total_cmp(b.1));
+                if let Some((i, &share)) = worst
+                    && share < 0.5
+                {
+                    let feature = inst
+                        .spec
+                        .features
+                        .get(i % k_total - usize::from(inst.spec.fit_intercept))
+                        .map_or("?", String::as_str);
+                    inst.notified.support = true;
+                    // Under `standardize` the ridge competes with a
+                    // standardized feature's variance, 1; otherwise with the
+                    // feature's own.
+                    let below = if standardizes(inst.spec) {
+                        "1, a standardized feature's variance"
+                    } else {
+                        "the feature's variance"
+                    };
+                    // Three figures (WRITING §11): two decimals read a share of
+                    // 0.004 as "0.00 data and 1.00 ridge".
+                    let (data, ridge) = {
+                        use crate::figures::{Round, three_figures};
+                        (
+                            three_figures(share, Round::Down),
+                            three_figures(1.0 - share, Round::Up),
+                        )
+                    };
+                    inst.notified.raise(format!(
+                        "the coefficient of {feature:?} is {data} data and {ridge} ridge, so \
+                         its support_coef is below 0.5 and the rows do not determine it. Where \
+                         the column duplicates another or is constant, predictions are \
+                         unaffected but the coefficient's split among such columns is arbitrary, \
+                         and where the ridge is as large as {below}, the ridge shrinks the \
+                         coefficient toward 0. Remove the duplicated or constant column, or \
+                         lower ridge below {below}."
+                    ));
+                }
+            }
+            inst.o_support_coef[ri] = has_support.then_some(support);
+            // Each coefficient's standard error on the same cadence, in
+            // `coef`'s units (docs/PLAN.md task 116, F): a variance over the
+            // noise times the slot's `sigma` as the row read it -- the EW
+            // out-of-sample residual spread, larger than the noise by
+            // `sqrt(1 + h)` while estimation error is in it, so the error
+            // errs large in warm-up -- or `kalman`'s own, which carries the
+            // noise.
+            // The robust standard errors of the fit after the row, as
+            // `se_coef`'s (task 221 (c)).
+            if let Some(c) = inst.checks.as_deref() {
+                if let Some(hc0) = c.robust_se(inst.check_cfg, false) {
+                    inst.o_se_hc0[ri] = Some(hc0);
+                }
+                if inst.check_cfg.hac() {
+                    inst.o_se_hac[ri] = c.robust_se(inst.check_cfg, true);
+                }
+            }
+            if inst.spec.emit_se_coef {
+                inst.o_se_coef[ri] = inst.model.get().coef_variance().map(|v| {
+                    let (per, over_noise) = match v {
+                        CoefVariance::PerNoise(per) => (per, true),
+                        CoefVariance::Absolute(per) => (per, false),
+                    };
+                    per.iter()
+                        .enumerate()
+                        .flat_map(|(slot, vars)| {
+                            let sigma = if over_noise {
+                                sc.sig.get(slot).copied().unwrap_or(f64::NAN)
+                            } else {
+                                1.0
+                            };
+                            vars.iter().map(move |&var| {
+                                if var.is_nan() {
+                                    f64::NAN
+                                } else {
+                                    var.max(0.0).sqrt() * sigma
+                                }
+                            })
+                        })
+                        .collect()
+                });
+            }
+        }
+        if reset_on_drift && row_drift {
+            inst.reset();
+            if let Some(f) = fired.as_deref_mut() {
+                f.push(pi);
+            }
+        }
+    }
+    // Rows a sharded `marginal` held are learned before the run ends:
+    // nothing outside a run reads a model with rows held.
+    if matches!(inst.model, ModelRef::Learn(_)) {
+        inst.model.get_mut().flush(inst.shards);
+    }
+    line.keep();
+    drift_seen
+}
+
+#[cfg(test)]
+mod clock_check_tests;
+
+#[cfg(test)]
+mod projected_figure_tests;

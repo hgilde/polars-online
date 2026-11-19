@@ -169,13 +169,13 @@ def data(tmp_path_factory):
 
 
 @pytest.fixture(scope="module")
-def first_run(online_cli, data):
+def first_run(rheon_cli, data):
     """`examples/bank.toml` run once over the input, saving its state: what
     the output test checks and the resume test continues from. A fixture, so
     each of them runs alone; the resume test used to read the files the
     test before it wrote (review 2026-10-05, TA6)."""
     res = _run([
-        str(online_cli),
+        str(rheon_cli),
         "--config", str(EXAMPLES / "bank.toml"),
         "--input", str(data / "in.parquet"),
         "--output", str(data / "out.parquet"),
@@ -190,8 +190,8 @@ class TestBankToml:
     docs; nothing until now ran it."""
 
     @pytest.fixture(autouse=True)
-    def _exe(self, online_cli):
-        self.exe = online_cli
+    def _exe(self, rheon_cli):
+        self.exe = rheon_cli
 
     def _cli(self, *args):
         return _run([str(self.exe), *args])

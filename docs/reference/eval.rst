@@ -1,12 +1,12 @@
-``polars_online.eval``
+``rheon.eval``
 ======================
 
-.. automodule:: polars_online.eval
+.. automodule:: rheon.eval
    :no-members:
 
-.. autodata:: polars_online.eval.SUM_FIELDS
+.. autodata:: rheon.eval.SUM_FIELDS
 
-.. autodata:: polars_online.eval.RESERVED
+.. autodata:: rheon.eval.RESERVED
 
 Scores
 ------

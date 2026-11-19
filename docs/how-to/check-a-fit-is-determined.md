@@ -51,7 +51,7 @@ The recipe has five independent features and a sixth, `x5`, that is
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # Five features, and a sixth that is nearly the sum of two of them: x5 = x1 + x2 + a little noise.
 rng = np.random.default_rng(11)
@@ -106,5 +106,5 @@ columns you keep. What else you may see, and what to do:
 | what you see | what it means | what to do |
 |---|---|---|
 | one index above 30, with two or more columns' shares above 0.5 | those columns are nearly dependent, and only their combined effect is fixed | drop one of them, combine them into one column with Polars' `with_columns` in the query before the bank ([Data quality](../DATA-QUALITY.md#collinear)), or fit with a ridge, `po.gram.solve(g, ridge=..., standardize=True)` ([Fit a ridge from a Gram](fit-a-ridge-from-a-gram.md)) |
-| a VIF past 1e10 | an exact dependency, which rounding left finite ([`vif`'s reference](https://hgilde.github.io/polars-online/gram.html#polars_online.gram.vif)) | drop a column of the dependency |
+| a VIF past 1e10 | an exact dependency, which rounding left finite ([`vif`'s reference](https://hgilde.github.io/polars-online/gram.html#rheon.gram.vif)) | drop a column of the dependency |
 | the intercept's share above 0.5 in a component with a large index | a column's level is far above its spread, so it depends on the intercept | read the columns that share the component with it, as in the first row |

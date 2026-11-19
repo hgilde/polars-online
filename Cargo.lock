@@ -2099,93 +2099,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 
 [[package]]
-name = "online-bench"
-version = "1.6.0"
-dependencies = [
- "faer",
- "gungraun",
- "libc",
- "online-polars",
- "polars",
- "rayon",
- "rmp-serde",
- "serde_json",
- "toml",
-]
-
-[[package]]
-name = "online-cli"
-version = "1.6.0"
-dependencies = [
- "clap",
- "mimalloc",
- "online-polars",
- "polars",
- "serde",
- "tikv-jemallocator",
- "toml",
-]
-
-[[package]]
-name = "online-core"
-version = "1.6.0"
-dependencies = [
- "dashu-float",
- "faer",
- "faer-traits",
- "libm",
- "nano-gemm",
- "private-gemm-x86",
- "proptest",
- "pulp",
- "rayon",
- "rmp-serde",
- "rmpv",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "online-polars"
-version = "1.6.0"
-dependencies = [
- "equivalent",
- "indexmap",
- "libloading",
- "online-core",
- "polars",
- "polars-arrow",
- "polars-core",
- "polars-parquet",
- "polars-utils",
- "proptest",
- "rayon",
- "rmp-serde",
- "rmpv",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "toml",
-]
-
-[[package]]
-name = "online-py"
-version = "1.6.0"
-dependencies = [
- "online-core",
- "online-polars",
- "polars",
- "polars-utils",
- "pyo3",
- "pyo3-polars",
- "rayon",
- "serde",
- "serde_json",
- "serde_path_to_error",
-]
-
-[[package]]
 name = "openssl-probe"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3496,6 +3409,93 @@ dependencies = [
  "wasm-bindgen-futures",
  "wasm-streams",
  "web-sys",
+]
+
+[[package]]
+name = "rheon-bench"
+version = "1.6.0"
+dependencies = [
+ "faer",
+ "gungraun",
+ "libc",
+ "polars",
+ "rayon",
+ "rheon-polars",
+ "rmp-serde",
+ "serde_json",
+ "toml",
+]
+
+[[package]]
+name = "rheon-cli"
+version = "1.6.0"
+dependencies = [
+ "clap",
+ "mimalloc",
+ "polars",
+ "rheon-polars",
+ "serde",
+ "tikv-jemallocator",
+ "toml",
+]
+
+[[package]]
+name = "rheon-core"
+version = "1.6.0"
+dependencies = [
+ "dashu-float",
+ "faer",
+ "faer-traits",
+ "libm",
+ "nano-gemm",
+ "private-gemm-x86",
+ "proptest",
+ "pulp",
+ "rayon",
+ "rmp-serde",
+ "rmpv",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+]
+
+[[package]]
+name = "rheon-polars"
+version = "1.6.0"
+dependencies = [
+ "equivalent",
+ "indexmap",
+ "libloading",
+ "polars",
+ "polars-arrow",
+ "polars-core",
+ "polars-parquet",
+ "polars-utils",
+ "proptest",
+ "rayon",
+ "rheon-core",
+ "rmp-serde",
+ "rmpv",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "toml",
+]
+
+[[package]]
+name = "rheon-py"
+version = "1.6.0"
+dependencies = [
+ "polars",
+ "polars-utils",
+ "pyo3",
+ "pyo3-polars",
+ "rayon",
+ "rheon-core",
+ "rheon-polars",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
 ]
 
 [[package]]

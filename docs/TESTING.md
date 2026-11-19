@@ -8,7 +8,7 @@ guarantees for a user deciding whether to trust the numbers.
 
 **The suite has 2,653 Rust tests and 7,211 pytest cases, counted on
 2026-10-24.** The Rust count is the lines ending in `: test` that
-`cargo test --workspace --exclude online-py -- --list` prints, the
+`cargo test --workspace --exclude rheon-py -- --list` prints, the
 extended tests and the doctests included; the pytest count is what
 `pytest --collect-only -q` reports collected, the soak tests aside. Each
 model is held to a reference it cannot share a bug with. The bank is held
@@ -56,7 +56,7 @@ spec and clock:
 | the window operators | exponentially weighted means, variances, sums, rates and quantiles of a column along the clock, with or without a hard window, which `po.stream.with_windows` runs over a stream: `po.ewm_mean`, `po.ewm_sum`, `po.ewm_rate`, `po.ewm_quantile`, `po.ewm_var` and `po.ewm_std` look back, and the first four look ahead under `reverse=True` |
 | a formula target | a spec's target written as an expression over a window operator that looks ahead, such as `po.ewm_mean("mid", ...) - pl.col("mid")`, which the bank resolves once the window has closed |
 | the column form | the same window expression written as a column by `with_windows(like=spec)` and fed back as a plain target under the same `embargo`: what a formula target is held to |
-| the brute force | `brute()` in `crates/online-polars/src/windows.rs`, which computes each row's window from the definition by scanning every row of its stretch, with no running sums |
+| the brute force | `brute()` in `crates/rheon-polars/src/windows.rs`, which computes each row's window from the definition by scanning every row of its stretch, with no running sums |
 | the time-reversal identity | a forward window over a stream is a backward one over the same stream reversed in time, with the row itself left out, so a forward `closed="right"` is a backward `"left"` |
 | the mean form | running sums kept as weighted means, such as `S = Σ w zz' / W`, rather than weighted sums, so a factor common to every weight cancels |
 | the slow twin | `ewridge`'s second set of running sums, at `long_half_life`, which `session_shrink` blends toward on a session change |
@@ -91,10 +91,10 @@ must have:
 | 4. Clock semantics | cap, a step back (refused, or a reset past `restart_after_step_back`), session gap and reset, first row, row-count clock, skipped-row decay folding, per-group independence |
 | 5. Null policy & warm-up | feature/target/weight nulls and `min_weight`, for all ten regression models |
 | 6. Arrow ≡ Polars output, retired and replaced | the Arrow path, after the table |
-| 6b. `predict` ≡ `fit_predict` of the next row | `tests/test_predict.py`; `crates/online-core/tests/model_contract.rs` |
-| 6c. Runner ≡ bank, every source and format | `crates/online-polars/tests/runner.rs`; `run_online` in `tests/conftest.py`; `tests/test_bank_ergonomics.py` |
-| 7. Cross-platform state | the macOS→Windows/Linux artifact hand-off in `release.yml`, run at every release since 0.1.0 and at no push: a bank of every kind, with a `Datetime` clock, a window, an embargo, a closed group and a formula target beside them, and a `refresh_time` and a `with_windows` state, each loaded, continued and re-saved to its own bytes (`crates/online-polars/tests/state_portability.rs`). At every push `ci.yml` saves and loads states on each of the three OSes, each reading its own |
-| 7a. Frozen states | one state of every `ModelState` variant mid-stream, with what it keeps (a window, lags, bins, a warm-up buffer, far rows, the clusterers' held start), and a bank file, a `with_windows` state and a `refresh_time` state, embedded as bytes with the rows that follow and what they reported; each loads, goes on to the bit on the platform that wrote it (to the golden tolerance elsewhere, libm's last bit) and saves its bytes again (`crates/online-core/tests/state_fixtures.rs`, `crates/online-polars/tests/state_fixtures.rs`). Every schema from the minimum to `SCHEMA_VERSION` must have its set, so a layout change cannot land without one; `PRINT_STATE_FIXTURES=1` regenerates them |
+| 6b. `predict` ≡ `fit_predict` of the next row | `tests/test_predict.py`; `crates/rheon-core/tests/model_contract.rs` |
+| 6c. Runner ≡ bank, every source and format | `crates/rheon-polars/tests/runner.rs`; `run_online` in `tests/conftest.py`; `tests/test_bank_ergonomics.py` |
+| 7. Cross-platform state | the macOS→Windows/Linux artifact hand-off in `release.yml`, run at every release since 0.1.0 and at no push: a bank of every kind, with a `Datetime` clock, a window, an embargo, a closed group and a formula target beside them, and a `refresh_time` and a `with_windows` state, each loaded, continued and re-saved to its own bytes (`crates/rheon-polars/tests/state_portability.rs`). At every push `ci.yml` saves and loads states on each of the three OSes, each reading its own |
+| 7a. Frozen states | one state of every `ModelState` variant mid-stream, with what it keeps (a window, lags, bins, a warm-up buffer, far rows, the clusterers' held start), and a bank file, a `with_windows` state and a `refresh_time` state, embedded as bytes with the rows that follow and what they reported; each loads, goes on to the bit on the platform that wrote it (to the golden tolerance elsewhere, libm's last bit) and saves its bytes again (`crates/rheon-core/tests/state_fixtures.rs`, `crates/rheon-polars/tests/state_fixtures.rs`). Every schema from the minimum to `SCHEMA_VERSION` must have its set, so a layout change cannot land without one; `PRINT_STATE_FIXTURES=1` regenerates them |
 | 8. Benchmark | `scripts/benchmark.py`, numbers in README; `benchmark.yml` reports them on every push to `main` that can move them, never gating |
 
 **6. Arrow ≡ Polars output: retired, and replaced.** The class compared a
@@ -102,7 +102,7 @@ form of the library that no longer exists, so the Arrow path holds its
 place. `tests/test_arrow_capsule.py` holds
 `fit_predict_arrow`'s struct to `fit_predict`'s output column, field for
 field and null for null. The nested `coef` list is included, and nulls are
-compared rather than skipped. `crates/online-polars/tests/arrow_chunk.rs`
+compared rather than skipped. `crates/rheon-polars/tests/arrow_chunk.rs`
 feeds a chunk built by hand from Arrow arrays, with no frame anywhere, and
 holds it to the same output.
 
@@ -110,11 +110,11 @@ holds it to the same output.
 `tests/test_predict.py` holds row `i` of `predict(df)` to row 0 of
 `fit_predict(df.slice(i, 1))` on a fresh clone, field for field. It does so
 for all ten regression models with every diagnostic on, and across every
-session and clock policy. `crates/online-core/tests/model_contract.rs` holds
+session and clock policy. `crates/rheon-core/tests/model_contract.rs` holds
 each model's `predict` to its `step`, row by row.
 
 **6c. Runner ≡ bank, every source and format.**
-`crates/online-polars/tests/runner.rs` holds every input format (parquet,
+`crates/rheon-polars/tests/runner.rs` holds every input format (parquet,
 ipc, csv, ndjson), every output format, `Input::Batches` ≡ a query, and the
 failure paths to the numbers `ModelBank` gives on the same rows. CSV's
 flattened columns and JSON-text `coef` decode bit-exact. The `polars-online` command
@@ -239,7 +239,7 @@ from the paper, such as the normal equations a fit must solve.
 
 | where the test is | library oracles | example |
 |---|---|---|
-| Rust, which `cargo mutants` runs | `faer`, already an `online-core` dependency, through `crates/online-core/src/oracle.rs`: its LU and eigensolver, never the model's own Cholesky in `solve.rs` | `every_solve_is_its_closed_form_across_targets_and_ridges` solves the normal equations with `oracle::solve`, `faer`'s LU |
+| Rust, which `cargo mutants` runs | `faer`, already an `rheon-core` dependency, through `crates/rheon-core/src/oracle.rs`: its LU and eigensolver, never the model's own Cholesky in `solve.rs` | `every_solve_is_its_closed_form_across_targets_and_ridges` solves the normal equations with `oracle::solve`, `faer`'s LU |
 | Python | scikit-learn, scipy, statsmodels, pandas, numpy | `TestEwRidgeIsSklearnsRidge` holds every `ewridge` solve to `sklearn.linear_model.Ridge`, 20 cases to 1e-8 |
 
 **A mutant can be killed only from Rust**, because `cargo mutants` runs
@@ -367,7 +367,7 @@ at the command line:
 | the paths agree | runner ≡ bank for every input source and format; the Arrow output ≡ the Polars one, field for field and null for null ([classes 6 and 6c](#the-eight-test-classes)) |
 | `predict` ≡ `fit_predict` | of the next row, field for field, with every diagnostic on ([class 6b](#the-eight-test-classes)) |
 | stream semantics | the null policy, warm-up, and the clock ([classes 4 and 5](#the-eight-test-classes)) |
-| `weight_sum` | the same recursion in every model (`crates/online-core/tests/model_contract.rs`) |
+| `weight_sum` | the same recursion in every model (`crates/rheon-core/tests/model_contract.rs`) |
 | a window run resumed | a chain of runs saved under a slice and resumed gives one run's output, at chunks of 1, 7 and 100,000 rows, and another input is refused ([Resuming a run](#resuming-a-run)) |
 
 **Generated streams.** In the Rust tests, `proptest` drives generated
@@ -381,7 +381,7 @@ pure-noise targets checks the same thing from the other side
 `tests/test_properties.py`.
 
 **Fixed numbers.** Each model has one golden stream in the Rust core
-(`crates/online-core/tests/golden.rs`). The whole pipeline, from reading the columns through the models and
+(`crates/rheon-core/tests/golden.rs`). The whole pipeline, from reading the columns through the models and
 the diagnostics to assembling each spec's output, is pinned to fixed output
 and compared on every operating system (`tests/test_golden_pipeline.py`). So a divergence in Polars'
 vectorized paths on another CPU would show.
@@ -449,7 +449,7 @@ never rides on the essentials, whatever they said.
 | every push to `main` and every pull request | `budgets.yml`, on Linux | the instruction counts, against `budgets.toml` ([Budgets that only tighten](#budgets-that-only-tighten)) |
 | every push to `main`, weekly, and on dispatch | `oracles.yml`, sharded across parallel jobs on Linux | the oracle grids (`-m oracle_grid`), each case held to the oracle ledger ([The oracle ledger](#the-oracle-ledger)) |
 | before a release | `release.yml`, which runs `ci.yml` and `budgets.yml` | as those two |
-| on their schedules | `polars-canary.yml`; `mutants.yml`'s weekly pass | every test but the soak tests, the oracle grids and the `pins` tests; every Rust test, the ignored ones included, against each mutant of all of `online-core` |
+| on their schedules | `polars-canary.yml`; `mutants.yml`'s weekly pass | every test but the soak tests, the oracle grids and the `pins` tests; every Rust test, the ignored ones included, against each mutant of all of `rheon-core` |
 
 **A test is in the essentials unless it is slow, reaches the network or
 sweeps.** The essentials
@@ -511,13 +511,13 @@ missing or extended:
 | hard rule | essentials tests |
 |---|---|
 | 1, no data files | `tests/test_repo_hygiene.py::test_no_data_files_are_tracked` |
-| 2, out-of-sample | `tests/test_bank.py::TestOutOfSample::test_noise_target_has_no_ic`, `tests/test_properties.py::TestUniversalProperties::test_prediction_never_depends_on_the_current_target`, `crates/online-core/tests/model_contract.rs::ewridge_predict_is_the_step` and each model's beside it |
-| 3, chunk invariance | `tests/test_bank.py::TestChunkInvariance::test_chunked_equals_single`, `tests/test_semantics_all_models.py::TestUniversalInvariants::test_chunk_invariance`, `crates/online-polars/tests/bank.rs::chunk_invariance`, `crates/online-polars/tests/summary.rs::chunking_cannot_move_a_bit` |
-| 5, frozen fixtures | `crates/online-core/tests/state_fixtures.rs::every_fixture_goes_on_to_the_bit`, `crates/online-core/tests/state_fixtures.rs::every_fixture_saves_its_bytes_again`, `crates/online-polars/tests/state_fixtures.rs::every_fixture_loads_goes_on_to_the_bit_and_saves_its_bytes_again` |
-| 8, `weight_sum` | `crates/online-core/tests/model_contract.rs::ewridge` and each model's probe beside it, which hold the accessor and the reported weight to the one recursion; `tests/test_semantics_all_models.py::TestWarmup::test_n_eff_is_reported_before_the_update` |
-| 9, a zero weight | `crates/online-core/tests/model_contract.rs::ewridge` and each model's probe beside it, which run `zero_weight_rows_only_advance_the_clock`; `tests/test_edge_cases.py::TestWeights::test_zero_weight_is_a_pure_decay_row` |
+| 2, out-of-sample | `tests/test_bank.py::TestOutOfSample::test_noise_target_has_no_ic`, `tests/test_properties.py::TestUniversalProperties::test_prediction_never_depends_on_the_current_target`, `crates/rheon-core/tests/model_contract.rs::ewridge_predict_is_the_step` and each model's beside it |
+| 3, chunk invariance | `tests/test_bank.py::TestChunkInvariance::test_chunked_equals_single`, `tests/test_semantics_all_models.py::TestUniversalInvariants::test_chunk_invariance`, `crates/rheon-polars/tests/bank.rs::chunk_invariance`, `crates/rheon-polars/tests/summary.rs::chunking_cannot_move_a_bit` |
+| 5, frozen fixtures | `crates/rheon-core/tests/state_fixtures.rs::every_fixture_goes_on_to_the_bit`, `crates/rheon-core/tests/state_fixtures.rs::every_fixture_saves_its_bytes_again`, `crates/rheon-polars/tests/state_fixtures.rs::every_fixture_loads_goes_on_to_the_bit_and_saves_its_bytes_again` |
+| 8, `weight_sum` | `crates/rheon-core/tests/model_contract.rs::ewridge` and each model's probe beside it, which hold the accessor and the reported weight to the one recursion; `tests/test_semantics_all_models.py::TestWarmup::test_n_eff_is_reported_before_the_update` |
+| 9, a zero weight | `crates/rheon-core/tests/model_contract.rs::ewridge` and each model's probe beside it, which run `zero_weight_rows_only_advance_the_clock`; `tests/test_edge_cases.py::TestWeights::test_zero_weight_is_a_pure_decay_row` |
 
-The build holds rule 4 and rule 6's ban on `unsafe`: `online-core`'s manifest has no Polars
+The build holds rule 4 and rule 6's ban on `unsafe`: `rheon-core`'s manifest has no Polars
 dependency and forbids `unsafe_code`. Rule 7 is a practice.
 
 **The budget is time, so the test gate prints it rather than a test checking
@@ -548,14 +548,14 @@ these figures come from has 14 cores, shared with another user's jobs.
 **`scripts/quick.sh` runs the tests that cover the paths a branch changed,
 and nothing else.** It reads the paths from `git diff` against the
 merge-base with `main`, with uncommitted edits and new files included. A
-source change in a crate the extension links (`online-core`,
-`online-polars`, `online-py`) rebuilds the extension before pytest, which
+source change in a crate the extension links (`rheon-core`,
+`rheon-polars`, `rheon-py`) rebuilds the extension before pytest, which
 would otherwise test the old binary. A change in a crate with Rust tests
-(`online-core`, `online-polars`, `online-cli`, `online-bench`) runs that
-crate's `cargo test`. Any source change in `online-core` also runs
-`online-polars`' state fixture and portability tests. A bank's frozen
+(`rheon-core`, `rheon-polars`, `rheon-cli`, `rheon-bench`) runs that
+crate's `cargo test`. Any source change in `rheon-core` also runs
+`rheon-polars`' state fixture and portability tests. A bank's frozen
 fixture holds every model's state, and it moves with a model's arithmetic
-while every `online-core` test passes. A Python module runs the test files
+while every `rheon-core` test passes. A Python module runs the test files
 named after it, and any path runs the test files that name it. A model's
 source and a test file that registers oracle groups also run [the oracle
 ledger](#the-oracle-ledger)'s hash guard for the groups they can move,
@@ -567,7 +567,7 @@ which takes seconds after an edit where `release` takes minutes.** The
 profile is `release` with incremental compilation and 256 codegen units,
 and without thin LTO, so a rebuild redoes only what changed. `quick.sh`
 builds with it, and so can `uv run maturin develop --profile dev-wheel -m
-crates/online-py/Cargo.toml`.
+crates/rheon-py/Cargo.toml`.
 
 | the extension's build | `release` | `dev-wheel` |
 |---|---|---|
@@ -714,12 +714,12 @@ own schedule:
 | each commit while a task is in progress, working alone, and once on each wave of two or more merged branches | `./scripts/gate.sh` | `cargo fmt`, `clippy -D warnings`, the Rust tests' essentials (under cargo-nextest where it is installed), `uv lock --check`, `ruff`, `mypy`, the extension's build, `pytest`'s essentials in parallel, and Sphinx with `-W` |
 | before every push, always | `./scripts/gate.sh --extended` | the same checks with every test but the soak tests and the oracle grids |
 | every push to `main` and pull request | `ci.yml` | the suite on Linux at Python 3.12, 3.13 and 3.14, on macOS at 3.12 and 3.14, and on two Windows builds, Server 2025 and Server 2022, at 3.12 and 3.14, each leg first printing the machine it ran on ([The machines and the CPU paths](#the-machines-and-the-cpu-paths)); on Linux, the format, lint, type and documentation checks (`cargo fmt`, `clippy`, `ruff`, `mypy` and Sphinx); the release comparison's outputs against the newest release's, bit for bit, as a report; the Python coverage, as a report |
-| every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `online-core` and `online-polars/src/span.rs`, in a shard for every thirty mutants the change lists, with one report. The report fails on a mutant no test catches, unless `scripts/mutants_equivalent.toml` lists it |
+| every push to `main` and pull request | `mutants.yml` | mutation testing of the lines the change touched in `rheon-core` and `rheon-polars/src/span.rs`, in a shard for every thirty mutants the change lists, with one report. The report fails on a mutant no test catches, unless `scripts/mutants_equivalent.toml` lists it |
 | every push to `main`, weekly, and by hand | `oracles.yml` | the oracle grids (`-m oracle_grid`): the convergence, learning-rate, truth-recovery and long-run grids against third-party batch fits and downloaded datasets, in twelve shards dealt round-robin over the tests (`--oracle-shard`), on Linux; no local run takes them ([Two tiers](#two-tiers)). A last job holds every case each shard recorded to the oracle ledger; the weekly run downloads the datasets afresh ([The oracle ledger](#the-oracle-ledger)) |
 | every push to `main` and pull request, and by hand | `budgets.yml` | the instruction counts under Callgrind, against `budgets.toml` ([Budgets that only tighten](#budgets-that-only-tighten)) |
 | every push to `main` but a docs-only one | `benchmark.yml` | throughput, into the job summary and an artifact, never gating |
 | every release | `release.yml` | the whole of `ci.yml` and of `budgets.yml`; a state written on macOS and continued on Windows and Linux; the suite on the newest Polars the range admits, on the floor of the range and on the newest NumPy, all blocking; the suite on the next Polars major and on NumPy's next release candidate, both advisory |
-| weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml`, `msrv.yml`, `advisories.yml`, `cpu-paths.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check across the boundary with Polars, on Linux and macOS, its control included, and the soak tests; throughput; mutation testing of all of `online-core`, as a report; `cargo check` of the workspace on the Rust its `rust-version` declares; both lock files against OSV's published advisories (`scripts/advisories.py`), failing on a vulnerability in a crate the wheel or the command line links and reporting the rest; on Windows, the numeric tests down each CPU path in turn, under Intel SDE and with OpenBLAS's and NumPy's paths pinned ([The machines and the CPU paths](#the-machines-and-the-cpu-paths)) |
+| weekly | `ci.yml`, `polars-canary.yml`, `leakcheck.yml`, `benchmark.yml`, `mutants.yml`, `msrv.yml`, `advisories.yml`, `cpu-paths.yml` | the suite again; the suite on the newest py-polars, release candidates included, and on NumPy's next release candidate; the leak check across the boundary with Polars, on Linux and macOS, its control included, and the soak tests; throughput; mutation testing of all of `rheon-core`, as a report; `cargo check` of the workspace on the Rust its `rust-version` declares; both lock files against OSV's published advisories (`scripts/advisories.py`), failing on a vulnerability in a crate the wheel or the command line links and reporting the rest; on Windows, the numeric tests down each CPU path in turn, under Intel SDE and with OpenBLAS's and NumPy's paths pinned ([The machines and the CPU paths](#the-machines-and-the-cpu-paths)) |
 | monthly | `polars-canary.yml` | the suite on the floor of the Polars range, the version `pyproject.toml` declares |
 
 **The canary and the release's Polars and NumPy legs leave out the tests
@@ -746,7 +746,7 @@ thirteen classes, counted on 2026-11-08:
 | `TestDocOnlyPushesAreFree` | CI has no paths filter on a push or a pull request; the benchmark, which reports and never gates, skips doc-only pushes |
 | `TestPythonVersions` | every Python the package declares runs on Linux, and the floor and the newest on every OS; the release comparison reports once and never gates; the API reference is built and published once |
 | `TestMutationTesting` | the mutation run over changed lines gates every push and pull request, with one report, in as many shards as its mutants need. A first job lists the mutants, with the scope, the diff and the pinned cargo-mutants the shards use. It takes a shard for every thirty, at most four-fifths of the slowest shard measured. Each shard stops at 300 minutes, three times the slowest shard measured (98). Every run sits inside a memory scope whose cgroup the kernel holds to 12 GiB, so a runaway mutant is killed alone and cannot shut the runner down (a job proves it on every run). Each mutant is tested under cargo-nextest with the extended tier, and the report expects that many. Each push's pass has a concurrency group of its own, so no later push cancels or replaces it. A pull request's newer commit cancels its older. The weekly pass runs only while public or by hand, and reports its survivors. Every run skips the doctests, stops a mutant at ten times the baseline, stops itself inside its job, and lists the mutants it was given. Its report fails on a run that tested fewer, or on a shard that sent nothing |
-| `TestTheRustTestsLinkNoPython` | every workflow and the local test gate leave `online-py` out of `cargo test`, so no test binary links libpython |
+| `TestTheRustTestsLinkNoPython` | every workflow and the local test gate leave `rheon-py` out of `cargo test`, so no test binary links libpython |
 | `TestTheLinuxPrepIsOneAction` | the step that frees the disk and swaps in `lld` is one composite action, called after the checkout and on Linux alone |
 | `TestActionsArePinnedToCommits` | every external action is pinned to a commit, with the version it names in a comment |
 | `TestTheDeclaredRustVersionBuildsTheLock` | the workspace's `rust-version` covers every locked dependency's own |
@@ -852,10 +852,10 @@ So CI does three things about them.
 for is the one in effect, and fails if not. Without that check, a green run
 could be the runner's own path passing under another name.
 
-**online-core under Intel SDE.** Intel's Software Development Emulator runs
+**rheon-core under Intel SDE.** Intel's Software Development Emulator runs
 a program as if on another chip: it answers the CPUID instruction as that
 chip would and executes, or refuses, the instructions that chip has. Each
-leg runs online-core's unit tests in every module whose tests run faer's
+leg runs rheon-core's unit tests in every module whose tests run faer's
 products and factorizations or compare against `crate::oracle`, the list in
 the job's `SDE_TESTS`. `tests/test_cpu_paths.py` fails when a module that
 does either is missing from it. The tests are a release build with the
@@ -959,7 +959,7 @@ when.
 **No test takes a blanket tolerance for the platform: each kind of test
 treats the math library's last bits its own way.** `exp`, `ln`, `exp2` and
 `powf` differ in their last bits between Apple's library, glibc and each
-Windows build's `ucrtbase.dll`. online-core calls the platform's own. A
+Windows build's `ucrtbase.dll`. rheon-core calls the platform's own. A
 pure-Rust copy, the `libm` crate, would give the same bits everywhere, but
 measured 1.4 times as slow for `exp` and `exp2` and 3.5 to 4.5 times for
 `powf`, and was declined. So a test is one of three kinds:
@@ -971,7 +971,7 @@ measured 1.4 times as slow for `exp` and `exp2` and 3.5 to 4.5 times for
 | this library against an oracle | another library, or a definition computed another way | a bound derived from both computations' rounding: a few ulps for each call to one of those functions, times the formula's amplification, measured on all three platforms and written beside the test |
 
 **A Rust oracle comparison is held to a derived bound, from the helpers in
-`crates/online-core/src/oracle.rs`.** A fixed tolerance such as `1e-9` is
+`crates/rheon-core/src/oracle.rs`.** A fixed tolerance such as `1e-9` is
 too tight for an ill-conditioned case, or far too loose for a
 well-conditioned one, where a kernel a hundred times past its rounding
 still passes. The helpers are the standard results from Higham's
@@ -1226,7 +1226,7 @@ against the last. There are three kinds:
 
 | kind | what is measured | where it runs | tolerance |
 |---|---|---|---|
-| `instructions` | the instructions one block of 1,000 rows executes, after 2,000 rows of warm-up, counted by Callgrind. The cases are the lists in `crates/online-bench/src/lib.rs`: a step of each of the 22 models at a standard width, and beside them the costlier options (`ewridge` at 200 features, `ewridge` at 50 features with 10 targets folded into a 64-row block's merge, the refit of the first rows of `huber`, `sgd`'s Huber loss and `quantile`, `huber`'s feature sets and `ridge_scale="sum"`, `sgd`'s Huber loss, `bocpd`'s full run, `ew_cov`'s lags, `marginal`'s Huber bins, and `corrchange`'s monitor and window); the clock's step on a float and on a nanosecond clock; `Bank::fit_predict` around `seqtest` and around `ewridge`, as one stream and as 1,000 groups of one row each, and around a window target that holds 1,000 rows back; five window cases through `WindowsRun::feed` (a mean, a sum and two quantiles, one within a window and one running, and a sum over 10,000 groups); and `Bank::fit_predict` of 8,192 rows of `ew_cov`'s 230 statistics on a pool of one thread | `.github/workflows/budgets.yml`, on Linux | 2% |
+| `instructions` | the instructions one block of 1,000 rows executes, after 2,000 rows of warm-up, counted by Callgrind. The cases are the lists in `crates/rheon-bench/src/lib.rs`: a step of each of the 22 models at a standard width, and beside them the costlier options (`ewridge` at 200 features, `ewridge` at 50 features with 10 targets folded into a 64-row block's merge, the refit of the first rows of `huber`, `sgd`'s Huber loss and `quantile`, `huber`'s feature sets and `ridge_scale="sum"`, `sgd`'s Huber loss, `bocpd`'s full run, `ew_cov`'s lags, `marginal`'s Huber bins, and `corrchange`'s monitor and window); the clock's step on a float and on a nanosecond clock; `Bank::fit_predict` around `seqtest` and around `ewridge`, as one stream and as 1,000 groups of one row each, and around a window target that holds 1,000 rows back; five window cases through `WindowsRun::feed` (a mean, a sum and two quantiles, one within a window and one running, and a sum over 10,000 groups); and `Bank::fit_predict` of 8,192 rows of `ew_cov`'s 230 statistics on a pool of one thread | `.github/workflows/budgets.yml`, on Linux | 2% |
 | `memory` | the bytes per row of every output field of every model with every output it has switched on, over 20,000 rows, from `estimated_size()` | `tests/test_budgets_memory.py`, on every CI leg | 2% |
 | `rss` | the peak resident memory a standard run adds over its process's baseline, per platform, in MiB, for six runs: `ewridge` with ten targets over 200,000 rows; `ew_cov`'s 230 moments a row over 200,000; an eager `predict` of 1,000 features over 20,000 rows; a windowed `ewridge` (`window_size` 20,000) over 200,000; `bocpd` holding up to 200 runs over 50,000; and five million rows streamed from one parquet file to another. The streamed run has Polars reading one row group ahead on four threads, and the allocator giving freed pages back at once (`_RJEM_MALLOC_CONF=dirty_decay_ms:0,muzzy_decay_ms:0`, `MIMALLOC_PURGE_DELAY=0`), so its peak is the live memory. A control reads the same rows whole before the plan, and must exceed the streamed run's budget | the same file, in the extended tier: held on CI at each OS's floor Python, on Windows on `windows-latest` alone, and reported everywhere else. The interpreter alone moved macOS's peak 18-20% between 3.12 and 3.14, and the machine moved the streaming run's 23%. Windows Server 2022 and Server 2025 read the six runs up to 8% apart on one build, so the two images would each tighten the budget below the other | 30% over: two runs of one build on one CI runner read 14-18% apart; tightened at 7.5% under |
 
@@ -1292,16 +1292,16 @@ names all three in `[meta]`. Changing one re-measures every case.
   `gh release download --pattern budgets-baseline.json` left it in.
 
 **Valgrind does not run on macOS on Apple silicon, so the counts come from
-CI.** `cargo test -p online-bench` runs every case natively on any platform
+CI.** `cargo test -p rheon-bench` runs every case natively on any platform
 and checks that each reaches the path it is named for. On Linux, `cargo
 install gungraun-runner --version 0.20.0` (the version `Cargo.lock` holds)
-and then `cargo bench -p online-bench --bench instructions` prints the
+and then `cargo bench -p rheon-bench --bench instructions` prints the
 counts. Elsewhere, a Linux container with Valgrind installed runs the same
 two commands. The workflow keeps each run's counts as an artifact.
 
 **The counts are of the baseline x86-64 build, not of the `polars-online`
 wheel that runs on an x86-64 CPU with AVX2.** Valgrind counts the
-`online-bench` cases built with no `target-feature` flag, which is the build
+`rheon-bench` cases built with no `target-feature` flag, which is the build
 `polars-online-compat` and every build from source are. The x86-64 wheels of
 `polars-online` are built for AVX2 and FMA, and execute fewer instructions (a
 median 4.3% fewer, [What the x86-64 wheels
@@ -1324,14 +1324,14 @@ Each thin spot, why it is thin, and where it stands:
 |---|---|---|
 | case-insensitive file names on Windows | no test covers it; file locking on a state's rewrite and long paths (`\\?\`) are tested | open since 2026-09-25 |
 | a network share path, `\\server\share\...` | out of a CI runner's reach | untested; drive letters, the `\\?\` extended-length form and paths with spaces pass on both Windows legs |
-| `windows.rs`, `windows_frame.rs`, `formula.rs`, `resolvers.rs` and `targets.rs`, the newest code in `crates/online-polars/src/` | outside the mutation scope, which is `online-core` and `span.rs`, as the rest of `online-polars` is; the first four postdate the coverage run of 2026-09-27 | held by the oracles and resume tests of [The window operators and formula targets](#the-window-operators-and-formula-targets), each test's docstring stating the case it holds |
-| the weekly mutation pass over all of `online-core` | a pass at too short a time limit counts most survivors as timeouts, so its count is a floor | the limit is ten times the baseline's test run; [Mutation survivors](#mutation-survivors) has the passes counted since |
+| `windows.rs`, `windows_frame.rs`, `formula.rs`, `resolvers.rs` and `targets.rs`, the newest code in `crates/rheon-polars/src/` | outside the mutation scope, which is `rheon-core` and `span.rs`, as the rest of `rheon-polars` is; the first four postdate the coverage run of 2026-09-27 | held by the oracles and resume tests of [The window operators and formula targets](#the-window-operators-and-formula-targets), each test's docstring stating the case it holds |
+| the weekly mutation pass over all of `rheon-core` | a pass at too short a time limit counts most survivors as timeouts, so its count is a floor | the limit is ten times the baseline's test run; [Mutation survivors](#mutation-survivors) has the passes counted since |
 
 Two runs are worth doing outside the test gate:
 
 | run | when | what to watch for |
 |---|---|---|
-| **`./scripts/mutants.sh --in-diff <(git diff main...)`** | on a fix to a survivor, over that fix's diff alone, holding `.claude/coord/mutants.lock`; the pass over all of `online-core` is `mutants.yml`'s weekly run ([Mutation survivors](#mutation-survivors)) | a cluster of survivors in one function, which almost always means its only oracle lives in the Python suite. |
+| **`./scripts/mutants.sh --in-diff <(git diff main...)`** | on a fix to a survivor, over that fix's diff alone, holding `.claude/coord/mutants.lock`; the pass over all of `rheon-core` is `mutants.yml`'s weekly run ([Mutation survivors](#mutation-survivors)) | a cluster of survivors in one function, which almost always means its only oracle lives in the Python suite. |
 | **`./scripts/coverage.sh`** | periodically | reported and never gating |
 
 ### Measured coverage
@@ -1340,27 +1340,27 @@ Measured with `./scripts/coverage.sh` on 2026-09-27: **96% of the Python
 package** (2,139 statements, 83 missed), and **93.9% region / 92.6% line**
 of the Rust workspace. It
 is reported, never gating, and Rust's figure is not in CI. It sees
-`cargo test` alone, so it would read `online-py` at 0%, and it would add an
+`cargo test` alone, so it would read `rheon-py` at 0%, and it would add an
 instrumented build to every run. The mutation jobs, on every push to `main`,
 every pull request and weekly, are the sharper measure of the same thing.
 
 **The Rust figure understates reality.** `cargo llvm-cov` only sees what
-`cargo test` runs. `online-py` (0%) and much of `online-polars` are exercised
+`cargo test` runs. `rheon-py` (0%) and much of `rheon-polars` are exercised
 by the pytest suite through the compiled extension, which is invisible to the
 Rust instrumentation. The thin spot it does reveal is
-`online-cli/src/main.rs`, argument plumbing covered instead by the command line's
-integration tests through `run_config`. `online-core/src/robust.rs` is at 98%.
+`rheon-cli/src/main.rs`, argument plumbing covered instead by the command line's
+integration tests through `run_config`. `rheon-core/src/robust.rs` is at 98%.
 
 ### Mutation survivors
 
 **The lines each change touches have been held to no unlisted survivor since
 2026-09-24.** `mutants.yml` runs `cargo mutants` over the changed lines of
-`online-core` and `online-polars/src/span.rs`, on every push to `main` and
+`rheon-core` and `rheon-polars/src/span.rs`, on every push to `main` and
 every pull request. It fails on a survivor that
 `scripts/mutants_equivalent.toml` does not list. That file holds 389
 entries (2026-11-18), each an equivalent mutant -- a few
 name two that share a line -- with the reason no input can tell it from
-the original. The weekly pass over all of `online-core`, 11,138 mutants on
+the original. The weekly pass over all of `rheon-core`, 11,138 mutants on
 2026-10-03, reports its survivors without failing on them.
 
 **A survivor a test could tell apart only by a difference no caller can act

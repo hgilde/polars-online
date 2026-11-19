@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 import statsmodels.api as sm
 
-import polars_online as po
+import rheon as po
 from data import synthetic
 from reference import compute_dclock, rls_ref
 

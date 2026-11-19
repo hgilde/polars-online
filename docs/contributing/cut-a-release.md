@@ -18,8 +18,8 @@ A release needs these before step 1:
 - A clean checkout of `main`, with every change of the release merged and
   its entries under the CHANGELOG's `[Unreleased]`.
 - This checkout's build installed in its environment, with
-  `uv run maturin develop --release -m crates/online-py/Cargo.toml`: the
-  comparison and the benchmarks import whichever `polars_online` the
+  `uv run maturin develop --release -m crates/rheon-py/Cargo.toml`: the
+  comparison and the benchmarks import whichever `rheon` the
   environment holds.
 - The `gh` command line, signed in with the right to dispatch a workflow.
 - The approval of the `Pypi` environment's required reviewer, the owner,
@@ -79,7 +79,7 @@ Nothing leaves your checkout before step 13.
       `numpy` extra brings.
    2. Build the release here: `git worktree add <tag-dir> v<last>`, then,
       inside it, `uv sync` and `uv run maturin develop --release -m
-      crates/online-py/Cargo.toml`. Its environment is `<tag-dir>/.venv`.
+      crates/rheon-py/Cargo.toml`. Its environment is `<tag-dir>/.venv`.
    3. Run this build with `uv run python scripts/benchmark.py`, and each
       of the others with its own interpreter, as `<env>/bin/python
       scripts/benchmark.py` (`<env>\Scripts\python` on Windows). Run
@@ -114,7 +114,7 @@ Nothing leaves your checkout before step 13.
    case's `key` as the report names it, this release's `version` and a
    `reason`.
 5. **Set the version in its six places:** `pyproject.toml`, `Cargo.toml`
-   three times, `python/polars_online/__init__.py`, and
+   three times, `python/rheon/__init__.py`, and
    `docs/VALIDATION.md`, regenerated with
    `uv run python scripts/validate.py > docs/VALIDATION.md`.
 6. **Refresh the two locks** with `cargo update --workspace` and
@@ -157,7 +157,7 @@ Nothing leaves your checkout before step 13.
     4. Run `uv sync --upgrade-package "polars==<floor>" --upgrade-package
        "polars-runtime-32==<floor>"`.
     5. Run `uv run maturin develop --release -m
-       crates/online-py/Cargo.toml`.
+       crates/rheon-py/Cargo.toml`.
     6. Run `uv run pytest -q -m "not soak and not pins and not
        oracle_grid"`. It passes, or shows first what the release would
        fail on.

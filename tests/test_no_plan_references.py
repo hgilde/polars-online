@@ -29,7 +29,7 @@ from pathlib import Path
 
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -290,7 +290,7 @@ _DIRECTIVE = re.compile(r"^\.\. auto(module|class|function):: (\S+)\n((?:[ \t]+:
 
 
 def _resolve(dotted: str) -> object:
-    """``polars_online.ModelBank`` or ``polars_online._frame.X`` as an object."""
+    """``rheon.ModelBank`` or ``rheon._frame.X`` as an object."""
     parts = dotted.split(".")
     for cut in range(len(parts), 0, -1):
         try:
@@ -321,7 +321,7 @@ def documented() -> Iterator[tuple[str, object]]:
             return
         seen.add(id(obj))
         yield where, obj
-        if inspect.isclass(obj) and (obj.__module__ or "").startswith("polars_online"):
+        if inspect.isclass(obj) and (obj.__module__ or "").startswith("rheon"):
             for name, member in _members(obj):
                 yield from visit(f"{where}.{name}", member)
 
@@ -343,7 +343,7 @@ def documented() -> Iterator[tuple[str, object]]:
 
     for name in (n for f in families.FAMILIES for n in f.entries):
         yield from visit(name, _resolve(name))
-    modules = [po] + [importlib.import_module(f"polars_online.{m}") for m in _helper_modules()]
+    modules = [po] + [importlib.import_module(f"rheon.{m}") for m in _helper_modules()]
     for module in modules:
         yield from visit(module.__name__, module)
         for name in getattr(module, "__all__", ()):
@@ -477,12 +477,12 @@ def python_strings(src: str) -> Iterator[tuple[int, str]]:
 
 
 def shipped_strings() -> Iterator[tuple[str, int, str]]:
-    for path in sorted((REPO / "crates").glob("online-*/src/**/*.rs")):
+    for path in sorted((REPO / "crates").glob("rheon-*/src/**/*.rs")):
         if path.name == "oracle.rs":  # compiled for tests only
             continue
         for line, text in rust_strings(path.read_text(encoding="utf-8")):
             yield str(path.relative_to(REPO)), line, text
-    for path in sorted((REPO / "python" / "polars_online").rglob("*.py")):
+    for path in sorted((REPO / "python" / "rheon").rglob("*.py")):
         for line, text in python_strings(path.read_text(encoding="utf-8")):
             yield str(path.relative_to(REPO)), line, text
 
@@ -512,7 +512,7 @@ def test_the_messages_were_found():
     the CLI's and the bindings' among them, when this was written."""
     found = list(shipped_strings())
     assert len(found) > 1000, len(found)
-    assert {"online-cli", "online-py", "online-core", "online-polars", "polars_online"} <= {
+    assert {"rheon-cli", "rheon-py", "rheon-core", "rheon-polars", "rheon"} <= {
         part for where, _, _ in found for part in Path(where).parts
     }
 
@@ -526,7 +526,7 @@ def test_no_message_cites_the_plan_a_task_a_review_or_a_record():
     assert not found, "\n".join(found)
 
 
-def test_the_command_lines_help_cites_nothing(online_cli):
+def test_the_command_lines_help_cites_nothing(rheon_cli):
     """`--help` is read as a guide is, by someone at a terminal with no copy
     of the plan, and clap builds it from doc comments, which the string
     scan above never reads: `--no-output` and `--closed-groups` cited two
@@ -534,12 +534,12 @@ def test_the_command_lines_help_cites_nothing(online_cli):
     and the hidden flags' doc comments beside it, since `--help` leaves
     those out."""
     text = subprocess.run(
-        [str(online_cli), "--help"], capture_output=True, text=True, encoding="utf-8", check=True
+        [str(rheon_cli), "--help"], capture_output=True, text=True, encoding="utf-8", check=True
     ).stdout
     assert "--no-output" in text and "--closed-groups" in text, text
     found = citations(text)
     assert not found, "\n".join(found)
-    source = (REPO / "crates" / "online-cli" / "src" / "main.rs").read_text(encoding="utf-8")
+    source = (REPO / "crates" / "rheon-cli" / "src" / "main.rs").read_text(encoding="utf-8")
     start = source.index("struct Cli {")
     docs = [
         line.strip().removeprefix("///")

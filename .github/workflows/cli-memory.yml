@@ -104,7 +104,7 @@ jobs:
 
       - name: build the command line (release)
         shell: bash
-        run: cargo build --release --locked -p online-cli
+        run: cargo build --release --locked -p rheon-cli
 
       - name: measure
         shell: bash
@@ -112,7 +112,7 @@ jobs:
           ROWS: ${{ inputs.rows }}
           REPEATS: ${{ inputs.repeats }}
           VARIANTS: ${{ runner.os == 'Windows' && inputs.windows_variants || inputs.linux_variants }}
-          EXE: ${{ runner.os == 'Windows' && 'target/release/polars-online.exe' || 'target/release/polars-online' }}
+          EXE: ${{ runner.os == 'Windows' && 'target/release/rheon.exe' || 'target/release/rheon' }}
           DATA: ${{ runner.temp }}/memory
         run: |
           args=()

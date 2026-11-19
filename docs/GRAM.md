@@ -19,7 +19,7 @@ weeks. The module `po.gram` does each of these.
 
 `bank.gram()` and `po.gram` need numpy, an optional extra, which
 `pip install "polars-online[numpy]"` adds. The reference of
-[`ModelBank.gram`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.gram)
+[`ModelBank.gram`](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank.gram)
 states each array and the identities between them.
 
 Each task on a set of Grams has a call in `po.gram` or the bank, and a
@@ -65,7 +65,7 @@ weighted means `m`, and `comoments` the columns' centered co-moments `C`,
 a `k × k` matrix. For each target, `cross_centered` holds the centered
 cross-moments `c` a fit is solved from, and `target_vars` its variance
 `V`. The reference of
-[`ModelBank.gram`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.gram)
+[`ModelBank.gram`](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank.gram)
 lists every key. `po.gram.merge(..., within=True)` adds two,
 `within_parts` and `target_within_parts`: the number of parts with weight,
 and per target the number with weight for it.
@@ -328,7 +328,7 @@ diagonal of the inverse correlation matrix. A coefficient's standard
 error is `√VIF_j` times what it would be if its column were uncorrelated
 with the rest, so a VIF of 10 makes it 3.2 times as wide. Read a VIF past
 1e10 as an exact dependency: rounding can leave it finite, as
-[`vif`'s reference](https://hgilde.github.io/polars-online/gram.html#polars_online.gram.vif)
+[`vif`'s reference](https://hgilde.github.io/polars-online/gram.html#rheon.gram.vif)
 explains.
 
 **Belsley's condition indexes say which columns are involved.**
@@ -385,7 +385,7 @@ two, with the penalties, gives the same path scaled, to the bit. On a poorly
 conditioned Gram the rule says little about the distance from the
 solution: at a condition number of 1e8, a descent at `tol=1e-14` stopped
 with its intercept 0.48 from the knot's ([`lars_path`'s
-reference](https://hgilde.github.io/polars-online/gram.html#polars_online.gram.lars_path)). The
+reference](https://hgilde.github.io/polars-online/gram.html#rheon.gram.lars_path)). The
 descent follows Friedman, Hastie and Tibshirani (2010).
 
 **A penalty whose descent runs out of sweeps is named in a warning.** Its

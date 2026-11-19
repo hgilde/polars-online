@@ -47,7 +47,7 @@ import polars as pl
 import pytest
 from polars.testing import assert_frame_equal
 
-import polars_online as po
+import rheon as po
 
 TIER = "mixed"
 

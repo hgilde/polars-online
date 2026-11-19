@@ -17,7 +17,7 @@ import polars as pl
 import pytest
 
 import ledger
-import polars_online as po
+import rheon as po
 
 TIER = "mixed"
 
@@ -377,8 +377,8 @@ def test_robust_se_lags_default_to_twice_the_embargo_without_a_clock():
     fields = po.spec.output_fields(_robust_spec(robust_se_lags=None, embargo=5.0))
     assert "se_coef_hac" in fields
     assert "se_coef_hac" not in po.spec.output_fields(_robust_spec(robust_se_lags=None))
-    from polars_online import _polars_online as native
-    from polars_online import _spec
+    from rheon import _rheon as native
+    from rheon import _spec
 
     resolved = native.resolved_defaults(_spec._json(_robust_spec(robust_se_lags=None, embargo=5.0)))
     assert '"robust_se_half_life":60.0' in resolved.replace(" ", "")
@@ -429,8 +429,8 @@ def test_the_calibrations_memory_defaults_to_four_half_lives():
     import json
     import math
 
-    from polars_online import _polars_online as native
-    from polars_online import _spec
+    from rheon import _rheon as native
+    from rheon import _spec
 
     def stream(**kw):
         spec = po.spec.ewridge("m", targets=["y"], features=["x0"], **kw)
@@ -773,7 +773,7 @@ def test_holts_cusum_waits_for_its_trend():
 
 def test_a_standardizing_fit_folds_once_its_scaler_has_warmed_up():
     """`sgd` and `pa` under `standardize` run another fit while their
-    scaler warms up (22 rows of Kish's size, `online_core::WARMUP_ROWS`):
+    scaler warms up (22 rows of Kish's size, `rheon_core::WARMUP_ROWS`):
     a diagnostic folds from the row after the switch, not from the first
     prediction (task 232 (1))."""
     df = _frame().with_columns(pl.lit(1.0).alias("w"))
@@ -800,8 +800,8 @@ def test_a_standardizing_fit_folds_once_its_scaler_has_warmed_up():
 def _resolved(spec) -> dict:
     import json
 
-    from polars_online import _polars_online as native
-    from polars_online import _spec
+    from rheon import _rheon as native
+    from rheon import _spec
 
     return json.loads(native.resolved_defaults(_spec._json(spec)))["stream"]
 
@@ -1460,7 +1460,7 @@ def test_each_memory_moves_its_own_fields_and_nothing_else(model):
     memory but the calibration's is the fit's own, so two memories wired to
     each other's accumulators would pass every test that leaves them out.
     The Rust twin, which `cargo mutants` sees, is
-    `crates/online-polars/tests/diagnostic_memories.rs`."""
+    `crates/rheon-polars/tests/diagnostic_memories.rs`."""
     memories = {k: DISTINCT[k] for k in TAKES[model]}
     base = _every_switch(model, **memories)
     for key in TAKES[model]:

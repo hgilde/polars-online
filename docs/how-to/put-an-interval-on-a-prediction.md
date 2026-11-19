@@ -49,7 +49,7 @@ scaled to the same standard deviation:
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # The same relation twice, once with Gaussian noise and once with Student's t at 3 degrees of
 # freedom scaled to the same standard deviation.

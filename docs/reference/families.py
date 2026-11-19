@@ -1,12 +1,12 @@
 """The API reference's families: every public object, placed once.
 
-Each module page of the reference (``polars_online.html``, ``spec.html``,
+Each module page of the reference (``rheon.html``, ``spec.html``,
 ``eval.html`` and the rest) keeps its address and its module docstring, and
 lists its objects grouped by family, each with a link to a page of its own.
 Those pages are generated at build time (``conf.py``) from the lists here.
 
 A module page once documented its objects in place, so a link such as
-``spec.html#polars_online.spec.ewridge`` pointed into it. The README of every
+``spec.html#rheon.spec.ewridge`` pointed into it. The README of every
 release already on PyPI carries those links, so each module page keeps an
 anchor with every old id beside the link to the object's new page
 (``tests/test_reference_pages.py`` holds them). The build fails if a public
@@ -31,14 +31,14 @@ class Family:
     paged: frozenset[str] = field(default_factory=frozenset)
 
 
-_PO = "polars_online"
-_SPEC = "polars_online.spec"
-_FRAME = "polars_online._frame"
+_PO = "rheon"
+_SPEC = "rheon.spec"
+_FRAME = "rheon._frame"
 
 FAMILIES: tuple[Family, ...] = (
     Family(
         "bank",
-        "polars_online",
+        "rheon",
         (
             f"{_PO}.ModelBank",
             f"{_PO}.fit_predict",
@@ -56,7 +56,7 @@ FAMILIES: tuple[Family, ...] = (
     ),
     Family(
         "errors",
-        "polars_online",
+        "rheon",
         (
             f"{_PO}.ColumnNotFoundError",
             f"{_PO}.OutputColumnNotFoundError",
@@ -66,7 +66,7 @@ FAMILIES: tuple[Family, ...] = (
     ),
     Family(
         "warnings",
-        "polars_online",
+        "rheon",
         (
             f"{_PO}.PolarsOnlineWarning",
             f"{_PO}.ReadinessWarning",
@@ -212,7 +212,7 @@ FAMILIES: tuple[Family, ...] = (
 #: The module pages, in the reader's order, each the old address of the
 #: objects its families list.
 PAGES: tuple[str, ...] = (
-    "polars_online",
+    "rheon",
     "spec",
     "namespaces",
     "stream",
@@ -239,8 +239,8 @@ def title(name: str) -> str:
 
 def page_name(name: str, kind: str) -> str:
     """The file an entry's page is written to, which is its URL. Two names
-    that differ only in case, such as ``polars_online.Target`` and
-    ``polars_online.target``, would be one file on macOS and Windows, so a
+    that differ only in case, such as ``rheon.Target`` and
+    ``rheon.target``, would be one file on macOS and Windows, so a
     class whose name has a twin of another case takes ``-class`` after it."""
     lowered = [n.lower() for f in FAMILIES for n in f.entries]
     if kind == "class" and lowered.count(name.lower()) > 1:

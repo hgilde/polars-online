@@ -99,15 +99,15 @@ The defects were elsewhere:
 
 Fix, two layers:
 
-1. **Bounded input at the boundary.** `online-polars` treats any feature,
-   target or weight with `|v| > online_core::INPUT_BOUND` (= `1e100`) as
+1. **Bounded input at the boundary.** `rheon-polars` treats any feature,
+   target or weight with `|v| > rheon_core::INPUT_BOUND` (= `1e100`) as
    missing, exactly like a null: a feature or weight skips the row, a
    target makes it predict-only. Products of two such values (`x²`, `x·y`,
    `w·x²`) then stay below `1e300`, so no accumulator can overflow from the
    input side, and the state stays finite for every row the stream accepts.
    `1e100` is far outside any measured quantity and inside the sentinel
    range that actually shows up in data (`f64::MAX`, `1e300`, `1e308`). The
-   constant lives in `online-core` next to the `OnlineModel` trait because
+   constant lives in `rheon-core` next to the `OnlineModel` trait because
    it is part of the model contract: every model must survive any row inside
    it.
 2. **Guards where a bounded input still overflows a derived quantity.**
@@ -117,7 +117,7 @@ Fix, two layers:
    Rule 9 in CLAUDE.md already says "an unguarded division poisons the state
    with a NaN that never washes out"; this extends it to overflow.
 
-`crates/online-core/tests/model_contract.rs` holds the property (T4): two
+`crates/rheon-core/tests/model_contract.rs` holds the property (T4): two
 copies of every model, one fed a script that puts the bound in every
 position and sign (`x`, `y`, `w`, all at once, then a run at scale `1e-100`
 and the bound again), the other only the well-behaved rows; over the last
@@ -242,7 +242,7 @@ buffer". Both errors are clean — the C2 hardening holds — but the state is
 gone, and for the `--resume` loop the CLI documents, that is the stream
 starting over. A crashed process is the *reason* the file exists.
 
-Fixed in `crates/online-polars/src/atomic.rs`: write a temporary sibling,
+Fixed in `crates/rheon-polars/src/atomic.rs`: write a temporary sibling,
 `sync_all`, rename over the destination. Rust's `fs::rename` is documented to
 replace an existing destination on both target platforms (`rename` on Unix,
 `MoveFileExW` on Windows), and a rename either happens or does not, so a
@@ -296,7 +296,7 @@ which rechunks only when the chunks disagree and is a no-op otherwise; no
 measurable cost on the aligned path, and the misaligned path was a crash.
 
 Tests: `row_groups_need_not_align_with_chunk_rows` in
-`crates/online-cli/tests/run.rs`, which fails with the alignment removed: the
+`crates/rheon-cli/tests/run.rs`, which fails with the alignment removed: the
 debug assertion fires instead of the arrow panic. Its Python twin, a
 reproduction through `po.run`, went with task 83.
 
@@ -370,8 +370,8 @@ than made:
    influence). JeMalloc and Mimalloc ... show a significant performance gain
    in runtime as well as memory usage", `polars/src/lib.rs`), and what
    py-polars does (jemalloc on unix, mimalloc on Windows). One
-   `#[global_allocator]` line in `online-cli/src/main.rs`, no change to
-   `online-core` or `online-polars`. It is a C library statically linked
+   `#[global_allocator]` line in `rheon-cli/src/main.rs`, no change to
+   `rheon-core` or `rheon-polars`. It is a C library statically linked
    through a `-sys` crate (`mimalloc` is the one that builds on both
    targets), which is exactly what rule 12 says to raise first. It would
    also have closed the 15% bank gap between the CLI and `po.run` measured
@@ -441,7 +441,7 @@ README cites. Every `ewridge` case was 14–62% *faster* than the table claimed
 `rls` was **48% slower** — 3.13M rows/s published, 1.63M measured.
 
 `rls` is C5's bill, and it is now attributed rather than assumed:
-`crates/online-core/examples/rls_bench.rs` times `Rls::step` alone and
+`crates/rheon-core/examples/rls_bench.rs` times `Rls::step` alone and
 compiles unchanged against `50c1a38^`, the commit before the square-root
 rewrite, so the A/B isolates the model arithmetic — 4.39M vs 1.70M rows/s at
 k=20, 0.39×, and 0.52×/0.49× at k=5/k=50. Both forms are O(k²); the QR form
@@ -495,7 +495,7 @@ Collected from the probes, before and after:
 What was done, and where each message comes from:
 
 - **Builders check their own annotations.** `_checked` (in
-  `python/polars_online/_spec.py`) wraps every `po.spec.*` builder and
+  `python/rheon/_spec.py`) wraps every `po.spec.*` builder and
   compares each keyword with the function's type hints (and `_common`'s for
   the shared parameters): shape, sign for the count parameters, and
   finiteness for everything the Rust side parses as a plain `f64`. The hints
@@ -516,7 +516,7 @@ What was done, and where each message comes from:
   three of which are self-describing. `session_gap = "inf"` (never) is now
   accepted, since the visitor reads the same words as `Num`.
 - **Column lookups carry the spec and the role** (`column`, `f64_column`,
-  `key_column` in `crates/online-polars/src/bank.rs`), and `f64_column`
+  `key_column` in `crates/rheon-polars/src/bank.rs`), and `f64_column`
   accepts only numeric, Boolean and Null dtypes: anything else was cast
   non-strictly, and a String column of anything became all-null predictions
   with no error.
@@ -535,7 +535,7 @@ bank's memory grew with every group ever seen.
 
 | | before | after |
 |---|---|---|
-| `repr(bank)` | `<polars_online._bank.ModelBank object at 0x...>` | `ModelBank(['m', 'r'], groups=3, rows_seen=60)` |
+| `repr(bank)` | `<rheon._bank.ModelBank object at 0x...>` | `ModelBank(['m', 'r'], groups=3, rows_seen=60)` |
 | `ModelBank.load(path).specs` | `[]` | the builders' dicts, `==` the originals |
 | which groups are held | — | `bank.groups()` → frame of `spec, group, rows_processed, last_clock` |
 | forgetting a group | — | `bank.drop_groups(keys, spec=None)` → number of streams dropped |
@@ -571,7 +571,7 @@ took its shared parameters as `**common: Any` -- so for `halflife`, `clock`,
 `session_gap` and the other twenty-odd parameters most calls are made of, an
 editor showed nothing and a typo was a runtime error. Now:
 
-- **`python/polars_online/_kwargs.py`** holds one PEP 692 `TypedDict` per
+- **`python/rheon/_kwargs.py`** holds one PEP 692 `TypedDict` per
   model plus `CommonKwargs` / `ExprKwargs` (the shared parameters with and
   without `group`). The builders take `**common: Unpack[CommonKwargs]`; the
   namespace methods take `**kwargs: Unpack[EwridgeKwargs]` and so on, with
@@ -589,7 +589,7 @@ editor showed nothing and a typo was a runtime error. Now:
 - **`group=` on the expression form is refused** with `use .over(...)`.
   The Rust side set `spec.group = None`, so it had been silently ignored.
   (The expression form went with the plugin in task 85.)
-- **The pyo3 stub was stale** (`_polars_online.pyi` had no `gram` and no
+- **The pyo3 stub was stale** (`_rheon.pyi` had no `gram` and no
   `spec_output_index`), which mypy found the moment it ran; it is now
   complete and a test compares it with what the built module exports.
 - **mypy is in the gate and the lint job** (`uv run mypy`, package only,
@@ -716,7 +716,7 @@ and a model left out of one was simply never swept.
 `docs/EXTENDING.md` is the list, in order, with the check that fails on each
 omission. The check is a registry: `ModelKind::KINDS` (held to the enum by a
 unit test that reads serde's own "expected one of" error, the one place the
-variant list exists outside the enum), exposed as `_polars_online
+variant list exists outside the enum), exposed as `_rheon
 .model_kinds()`, and `tests/test_model_registry.py` holds the builders, the
 namespace, the four sweeps, the golden bank, the API snapshot's output-field
 blocks and the README headings to it. `model_contract.rs` does the same for
@@ -749,7 +749,7 @@ failed on its own list.
 
 ### T1 — eight `cargo run` calls cost half the suite — *done*
 
-`cargo run -q -p online-cli` took 2.9 s per call with nothing to build, and
+`cargo run -q -p rheon-cli` took 2.9 s per call with nothing to build, and
 the eight CLI tests took 33 s of a 64 s suite. The proposal blamed cargo's
 freshness check; measuring it showed that is 0.15 s. The rest is the launch:
 on macOS cargo re-clones the binary into `target/debug` on every fresh
@@ -759,8 +759,8 @@ kernel validating the linker's ad-hoc code signature, 101k page hashes;
 it scales with size (1.5 s for the stripped 208 MB) and the second exec of
 the same file takes 10 ms. So `cargo run` paid it on every call.
 
-`tests/conftest.py` now has a session-scoped `online_cli` fixture: one
-`cargo build -q -p online-cli`, the executable's path taken from cargo's
+`tests/conftest.py` now has a session-scoped `rheon_cli` fixture: one
+`cargo build -q -p rheon-cli`, the executable's path taken from cargo's
 `--message-format=json` artifact message (so `CARGO_TARGET_DIR` and the
 `.exe` suffix are cargo's problem), and the two CLI test classes run it
 directly. The eleven CLI tests went from 33.1 s to 3.6 s, of which 2.7 s is
@@ -772,7 +772,7 @@ the one launch the session still pays; the whole suite from 64 s to 31 s.
 the first thing a Rust reader of that item sees and each asserting the
 property the prose claims:
 
-- **`online_core`** (crate root): `EwRidge` on `y = 1 + 2x` -- `pred` is
+- **`rheon_core`** (crate root): `EwRidge` on `y = 1 + 2x` -- `pred` is
   NaN exactly while `Step::n_eff < min_periods`, converges to the line, and
   `restore(&model.state())` produces a model whose next `Step` equals the
   original's.
@@ -782,7 +782,7 @@ property the prose claims:
 - **`ClockState::advance`**: the first row's delta is 0, a skipped row's
   delta is carried into the next accepted row, and a gap is capped at
   `max_dclock`.
-- **`online_polars`** (crate root): a `Spec` from JSON, `Bank::fit_predict`
+- **`rheon_polars`** (crate root): a `Spec` from JSON, `Bank::fit_predict`
   with `pred_y` null until `min_periods` and correct after, and a bank
   loaded from `save_bytes` giving output identical to the one it was saved
   from.

@@ -10,7 +10,7 @@ one of those or calls ``numpy.linalg``, so the mark cannot fall behind the
 tests, and ``.github/workflows/cpu-paths.yml`` runs ``-m oracle`` with
 OpenBLAS's kernels and NumPy's loops pinned one way and another.
 
-A test that runs the command line (the ``online_cli`` fixture) is left
+A test that runs the command line (the ``rheon_cli`` fixture) is left
 unmarked: it compares the binary with the bank, not with an oracle, and
 building the binary would take a CPU-paths leg most of its time.
 """
@@ -37,7 +37,7 @@ ORACLE_MODULES = frozenset(
 )
 
 #: The fixture of the tests that run the command line.
-CLI_FIXTURE = "online_cli"
+CLI_FIXTURE = "rheon_cli"
 
 
 def _numpy_linalg(node: ast.AST) -> bool:

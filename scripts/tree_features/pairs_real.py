@@ -18,7 +18,7 @@ import polars as pl  # noqa: E402
 import xgboost as xgb  # noqa: E402
 from pairs import anova, binned, edges_of, tables  # noqa: E402
 
-import polars_online as po  # noqa: E402
+import rheon as po  # noqa: E402
 
 
 def resid_additive(x, y, e, B, clock, hl):

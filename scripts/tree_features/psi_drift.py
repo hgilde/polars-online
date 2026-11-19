@@ -21,7 +21,7 @@ import common as C  # noqa: E402
 import numpy as np  # noqa: E402
 import polars as pl  # noqa: E402
 
-import polars_online as po  # noqa: E402
+import rheon as po  # noqa: E402
 
 
 def cuts_of(frame, label, features):

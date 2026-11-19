@@ -58,7 +58,7 @@ directions at each lag, read before the last row:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # follow repeats lead three rows later, with noise: the truth is 0.8 at a lag of 3.
 rng = np.random.default_rng(9)
@@ -109,4 +109,4 @@ other direction. Each column's correlation with its own past is in the
 | a `ValueError` naming `lags` and `window_size` | lagged moments run over a history a [hard window](../GLOSSARY.md#fitting-a-model) does not cut | drop `window_size` |
 
 The fields, under `lags`, and every parameter are defined in `ew_cov`'s
-[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_cov).
+[docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.ew_cov).

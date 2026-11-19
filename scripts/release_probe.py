@@ -35,7 +35,10 @@ import warnings
 import numpy as np
 import polars as pl
 
-import polars_online as po
+try:  # this build is `rheon`; a release before 2.0 is `polars_online`
+    import rheon as po
+except ImportError:
+    import polars_online as po
 
 INF = float("inf")
 

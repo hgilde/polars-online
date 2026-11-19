@@ -18,7 +18,7 @@ import polars as pl
 import pytest
 from scipy.signal import lfilter
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 

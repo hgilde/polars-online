@@ -14,8 +14,8 @@ import re
 import sys
 from pathlib import Path
 
-import polars_online as po
-from polars_online import _polars_online as _native
+import rheon as po
+from rheon import _rheon as _native
 
 TIER = "essential"
 

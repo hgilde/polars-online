@@ -29,7 +29,7 @@ deviation, at the feature's spread as it stands on that row.
 
 1. **Make each z-score a column with `po.ewm_mean` and `po.ewm_std` in
    the query's `.online.with_windows`
-   ([`po.stream.with_windows`](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.with_windows)),
+   ([`po.stream.with_windows`](https://hgilde.github.io/polars-online/stream.html#rheon.stream.with_windows)),
    chained in the query before the
    [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads).** The
    z-score is `(x − po.ewm_mean(x)) / po.ewm_std(x)`. Give both
@@ -104,7 +104,7 @@ moments.
 
 **For `ftrl`, give it features near 0, z-scored or standardized in the
 query before the bank.** `ftrl` does not center a feature. The docstring
-of [`po.spec.ftrl`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ftrl)
+of [`po.spec.ftrl`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.ftrl)
 measures, in its Notes under *Features at a level*, how far a feature's
 level carries a coefficient's error into the prediction, and says why the
 model has no `standardize`.

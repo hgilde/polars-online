@@ -462,8 +462,8 @@ slower than re-running a parquet query (§5).
 `lightgbm.Dataset`, so `xgb.train` and `lgb.train` run unchanged.** The user
 decided the shape on 2026-10-10 ("Build it before the docs"): the binned
 object handed to the library's own Python class, shape (b) of §6, prototyped
-first. Rust builds the native handle in `crates/online-polars/src/gbdt/`,
-and `crates/online-py/src/gbdt.rs` and `python/polars_online/gbdt.py` put it
+first. Rust builds the native handle in `crates/rheon-polars/src/gbdt/`,
+and `crates/rheon-py/src/gbdt.rs` and `python/rheon/gbdt.py` put it
 in front of Python. Each library is loaded from the user's own installed
 package by the path that package loaded it from (`libloading`), so nothing
 is linked and the package still depends on Polars alone.

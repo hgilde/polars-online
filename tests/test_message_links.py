@@ -37,7 +37,7 @@ LINK = re.compile(
 
 def _sources() -> list[Path]:
     rust = sorted((REPO / "crates").glob("*/src/**/*.rs"))
-    python = sorted((REPO / "python" / "polars_online").rglob("*.py"))
+    python = sorted((REPO / "python" / "rheon").rglob("*.py"))
     return rust + python
 
 

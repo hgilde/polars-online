@@ -42,7 +42,7 @@ import polars as pl
 import pytest
 
 import child
-import polars_online as po
+import rheon as po
 from polars_version import needs_polars
 
 TIER = "mixed"
@@ -394,7 +394,7 @@ PLATFORM = {"linux": "linux", "darwin": "darwin", "win32": "windows"}[sys.platfo
 CHILD = textwrap.dedent(
     """
     import gc, json, sys, threading, time
-    import polars as pl, polars_online as po, psutil
+    import polars as pl, rheon as po, psutil
 
     proc = psutil.Process()
     case, src, dst, spec = sys.argv[1], sys.argv[2], sys.argv[3], json.loads(sys.argv[4])
@@ -610,7 +610,7 @@ def test_the_peak_memory_of_the_standard_runs_within_its_budget(tmp_path):
 CHAIN_CHILD = textwrap.dedent(
     """
     import gc, json, sys, threading, time
-    import polars as pl, polars_online as po, psutil
+    import polars as pl, rheon as po, psutil
 
     proc = psutil.Process()
     src = sys.argv[1]

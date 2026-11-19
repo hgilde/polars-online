@@ -5,7 +5,7 @@ This how-to is for anyone who runs a model bank inside a Polars query and
 wants to choose the chunk size, write the output to a file, filter it, or
 catch a misnamed column early.
 
-[`lf.online.fit_predict(specs)`](https://hgilde.github.io/polars-online/namespaces.html#polars_online._frame.LazyFrameOnlineNamespace.fit_predict)
+[`lf.online.fit_predict(specs)`](https://hgilde.github.io/polars-online/namespaces.html#rheon._frame.LazyFrameOnlineNamespace.fit_predict)
 adds a [model bank](../GLOSSARY.md#the-model-bank-and-what-it-reads) to a
 Polars [query](../GLOSSARY.md#the-model-bank-and-what-it-reads), which
 feeds the bank its rows `chunk_size` at a time (100,000 by default) when
@@ -169,8 +169,8 @@ spec "ridge": feature column "x9" is not in the input, whose columns are ["t", "
 ## Call the functions a type checker sees
 
 **With a type checker, call `po.fit_predict`,
-[`po.predict`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.predict)
-and [`po.unnest`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.unnest)
+[`po.predict`](https://hgilde.github.io/polars-online/rheon.html#rheon.predict)
+and [`po.unnest`](https://hgilde.github.io/polars-online/rheon.html#rheon.unnest)
 in place of the `.online` methods.** The package adds those methods to
 Polars' frames when it is imported, so a type checker cannot see them.
 

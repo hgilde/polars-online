@@ -56,7 +56,7 @@ This code chooses a half-life for a stream whose coefficient wanders:
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # y = b x0 + 0.5 x1 + noise, where b wanders as a slow random walk.
 rng = np.random.default_rng(9)
@@ -100,7 +100,7 @@ optimistic](explanation/grids-and-instances.md#why-the-best-error-over-a-grid-is
 `po.eval.grid_search` cuts the rows into spans as scikit-learn's
 `TimeSeriesSplit(n_splits)` does, and scores every grid point on the same
 rows. Its
-[docstring](https://hgilde.github.io/polars-online/eval.html#polars_online.eval.grid_search)
+[docstring](https://hgilde.github.io/polars-online/eval.html#rheon.eval.grid_search)
 gives the cut, every keyword and every column of the table it returns.
 The `kind` column says what each row of the table is:
 
@@ -185,7 +185,7 @@ recipe that searches them, and sets each from what it means instead.
 `kmeans`' `n_clusters`, `hmm`'s `n_components` and `huber_delta` have no
 out-of-sample score this pattern can choose them by: the Notes of
 [`po.eval.grid_search`'s
-docstring](https://hgilde.github.io/polars-online/eval.html#polars_online.eval.grid_search)
+docstring](https://hgilde.github.io/polars-online/eval.html#rheon.eval.grid_search)
 give the reason for each, and what to do instead.
 
 ## Check that it worked

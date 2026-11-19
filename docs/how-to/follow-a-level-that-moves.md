@@ -76,7 +76,7 @@ which every row stays within 3 of its target:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # y falls from 1,000 to -1,000 at 0.5 a row, with noise 0.3; the column level holds the level itself.
 rng = np.random.default_rng(17)
@@ -124,7 +124,7 @@ differenced     -0.73      -0.05  12
 At the default `c` the fit is still 1,789 past its target at row 800,
 and stays within 3 only from row 2,795. The differenced run follows the
 level from row 12. The [`pa`
-docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.pa)'s
+docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.pa)'s
 Notes, under *On a level that moves, give a larger c or difference the
 target*, give these runs and more.
 
@@ -163,7 +163,7 @@ the one shown, to within 0.06. This code builds its own data:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # y = 2x plus noise, with a shift of +20 at row 10,000; one row a unit of t.
 rng = np.random.default_rng(1)

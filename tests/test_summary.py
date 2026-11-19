@@ -13,8 +13,8 @@ import math
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online import _spec
+import rheon as po
+from rheon import _spec
 from test_golden_pipeline import specs, stream
 
 TIER = "essential"

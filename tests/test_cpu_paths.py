@@ -3,7 +3,7 @@
 and the CPU paths"; task 273 (b)).
 
 The workflow forces the CPU paths the numeric tests take, weekly, instead of
-sampling GitHub's runner pool: online-core's numeric tests under Intel SDE
+sampling GitHub's runner pool: rheon-core's numeric tests under Intel SDE
 posing as chips with and without AVX2 and AVX-512 and with a resized L3, and
 the Python oracle tests with OpenBLAS's kernels and NumPy's loops pinned.
 None of it can run here, so these hold its parts: the script's arithmetic on
@@ -62,14 +62,14 @@ class TestTheScript:
             "not json",
             _artifact("lib", None),  # the library itself, no executable
             _artifact("test", "/t/golden-1"),
-            _artifact("lib", "/t/online_core-2"),
+            _artifact("lib", "/t/rheon_core-2"),
             json.dumps({"reason": "build-finished", "success": True}),
         ]
-        assert cp.lib_test_executable(lines) == "/t/online_core-2"
+        assert cp.lib_test_executable(lines) == "/t/rheon_core-2"
 
     @pytest.mark.parametrize("count", [0, 2])
     def test_none_or_two_is_refused(self, count):
-        lines = [_artifact("lib", f"/t/online_core-{i}") for i in range(count)]
+        lines = [_artifact("lib", f"/t/rheon_core-{i}") for i in range(count)]
         with pytest.raises(SystemExit, match="expected one library test executable"):
             cp.lib_test_executable(lines)
 
@@ -251,7 +251,7 @@ class TestTheOracleMark:
     def test_this_repos_modules_are_sorted_and_the_cli_is_left_out(self):
         second = REPO / "tests/test_second_opinion.py"
         assert oracle_marks.is_oracle_test(second, ["tmp_path"])
-        assert not oracle_marks.is_oracle_test(second, ["tmp_path", "online_cli"])
+        assert not oracle_marks.is_oracle_test(second, ["tmp_path", "rheon_cli"])
         assert not oracle_marks.is_oracle_module(REPO / "tests/test_ci_cost_policy.py")
 
     def test_a_test_here_is_not_one(self, request):
@@ -308,7 +308,7 @@ class TestTheWorkflow:
         assert resized == {("true", "false"), ("true", "true")}, resized
 
     def test_the_sde_tests_cover_every_module_running_products_or_the_oracle(self):
-        src = REPO / "crates/online-core/src"
+        src = REPO / "crates/rheon-core/src"
         needed = set()
         for path in src.rglob("*.rs"):
             text = path.read_text(encoding="utf-8")
@@ -327,7 +327,7 @@ class TestTheWorkflow:
         assert env["CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS"] == "true"
         assert env["CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS"] == "true"
         build = self._steps("sde")[self._at("sde", "cargo build --release")]["run"]
-        assert "-p online-core --tests" in build and "cpu_paths.py lib-tests" in build
+        assert "-p rheon-core --tests" in build and "cpu_paths.py lib-tests" in build
 
     def test_each_oracle_leg_proves_its_paths_before_its_tests(self):
         legs = WF["jobs"]["oracles"]["strategy"]["matrix"]["include"]

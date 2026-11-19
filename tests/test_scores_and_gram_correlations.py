@@ -13,8 +13,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online import corr
+import rheon as po
+from rheon import corr
 
 TIER = "essential"
 

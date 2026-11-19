@@ -25,11 +25,11 @@ from scipy.stats import norm
 from statsmodels.robust.norms import HuberT
 
 import ledger
-import polars_online as po
+import rheon as po
 
 TIER = "mixed"
 
-ROBUST_RS = Path(__file__).resolve().parents[1] / "crates/online-core/src/robust.rs"
+ROBUST_RS = Path(__file__).resolve().parents[1] / "crates/rheon-core/src/robust.rs"
 
 
 def stream(n: int, frac: float, seed: int, level: float = 1000.0) -> pl.DataFrame:

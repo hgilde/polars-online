@@ -49,7 +49,7 @@ default prior and under a sticky one, and scores the rows after seeding:
 
 ```python
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # Two series whose returns take turns, 500 rows a regime, and the regime each row was drawn in.
 sim = po.sim.regimes(
@@ -107,7 +107,7 @@ and fits the filter on the raw rows and on rows clipped to ±5:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # A sticky two-state chain, two overlapping blobs it switches between, and one extreme row.
 rng = np.random.default_rng(12)
@@ -155,7 +155,7 @@ regime you know, the share in their true state, as the recipes do.
 
 The fields are defined in [OUTPUTS.md](../OUTPUTS.md#hmm), and every
 parameter in `hmm`'s
-[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.hmm),
+[docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.hmm),
 whose Notes, under *Limits* and *The transition prior*, give the rules.
 [Seeding: a model that places its starting
 values](../explanation/warm-up-and-readiness.md#seeding-a-model-that-places-its-starting-values)

@@ -20,7 +20,7 @@ import polars as pl
 import pytest
 from hfhd import hf
 
-import polars_online as po
+import rheon as po
 
 TIER = "mixed"
 
@@ -512,7 +512,7 @@ def test_the_correlation_is_the_covariance_scaled():
 def test_the_block_survives_a_refresh_time_grid():
     """The pipeline E57 is for: asynchronous ticks, a refresh-time grid,
     differences, then a block estimate."""
-    from polars_online import stream
+    from rheon import stream
 
     rng = np.random.default_rng(4)
     rows = []

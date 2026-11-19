@@ -29,7 +29,7 @@ CARGO_LOCK = """
 version = 4
 
 [[package]]
-name = "online-py"
+name = "rheon-py"
 version = "1.2.0"
 
 [[package]]
@@ -57,7 +57,7 @@ UV_LOCK = """
 version = 1
 
 [[package]]
-name = "polars-online"
+name = "rheon"
 version = "1.2.0"
 source = { editable = "." }
 
@@ -67,7 +67,7 @@ version = "12.3.0"
 source = { registry = "https://pypi.org/simple" }
 """
 
-TREE = """online-py v1.2.0 (/repo/crates/online-py)
+TREE = """rheon-py v1.2.0 (/repo/crates/rheon-py)
 rustls v0.23.45
 rustls v0.23.45 (*)
 paste v1.0.15 (proc-macro)
@@ -118,13 +118,13 @@ def test_the_locks_are_read_for_their_registry_packages_alone():
     crates = adv.cargo_lock_packages((REPO / "Cargo.lock").read_text(encoding="utf-8"))
     pypi = adv.uv_lock_packages((REPO / "uv.lock").read_text(encoding="utf-8"))
     assert len(crates) > 300 and len(pypi) > 50, (len(crates), len(pypi))
-    assert not any(name.startswith("online-") for name, _ in crates)
-    assert not any(name == "polars-online" for name, _ in pypi)
+    assert not any(name.startswith("rheon-") for name, _ in crates)
+    assert not any(name == "rheon" for name, _ in pypi)
 
 
 def test_cargo_trees_lines_give_name_and_version():
     assert adv.parse_cargo_tree(TREE) == {
-        ("online-py", "1.2.0"),
+        ("rheon-py", "1.2.0"),
         ("rustls", "0.23.45"),
         ("paste", "1.0.15"),
         ("quick-xml", "0.39.4"),

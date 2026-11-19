@@ -4,7 +4,7 @@
 # start first, so that they do not start last.
 #
 # Measured on 2026-10-11, the extended tier: the eigen-solve and solve pool
-# tests in online-core's unit tests took 75 s and 28 s, and online-polars'
+# tests in rheon-core's unit tests took 75 s and 28 s, and rheon-polars'
 # chunk_plan, summary and cadence_exact tests 24 to 48 s each; every other
 # test, under 19 s.
 

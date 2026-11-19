@@ -14,8 +14,8 @@ import polars as pl
 import pytest
 from hfhd import hf
 
-import polars_online as po
-from polars_online import stream
+import rheon as po
+from rheon import stream
 
 TIER = "mixed"
 

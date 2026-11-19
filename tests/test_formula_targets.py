@@ -23,9 +23,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from conftest import run_online
-from polars_online._polars_online import validate_spec
+from rheon._rheon import validate_spec
 from test_windows import trades_and_quotes
 
 TIER = "essential"
@@ -384,7 +384,7 @@ def test_what_is_refused() -> None:
 def test_a_target_formula_a_formula_cannot_carry_names_the_spec() -> None:
     """A node a formula cannot read, in a target's formula, is refused in the
     spec's name: the builder is the call the expression was given to."""
-    from polars_online._formula import accepted_text
+    from rheon._formula import accepted_text
 
     shifted = po.ewm_mean("mid", half_life=H, window_size=W, reverse=True) - pl.col("mid").shift(1)
     with pytest.raises(ValueError) as err:
@@ -598,20 +598,20 @@ def test_the_plan_keeps_the_formulas_columns() -> None:
     assert got.columns == ["t", "m"]
 
 
-def test_the_toml_form_runs_the_same(online_cli: Any, tmp_path: Any) -> None:
+def test_the_toml_form_runs_the_same(rheon_cli: Any, tmp_path: Any) -> None:
     df = stream(300, 14)
     s = spec(fwd())
     assert s["targets"][0]["formula"][0] == "-"
     df.write_parquet(tmp_path / "in.parquet")
     run_online(
-        online_cli, tmp_path, [s], input=tmp_path / "in.parquet", output=tmp_path / "out.parquet"
+        rheon_cli, tmp_path, [s], input=tmp_path / "in.parquet", output=tmp_path / "out.parquet"
     )
     got = pl.read_parquet(tmp_path / "out.parquet")
     want = native(df, s)
     assert field(got, "pred_fwd") == field(want, "pred_fwd")
     short = spec(fwd(), embargo=2.0)
     res = run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [short],
         input=tmp_path / "in.parquet",
@@ -621,16 +621,14 @@ def test_the_toml_form_runs_the_same(online_cli: Any, tmp_path: Any) -> None:
     assert res.returncode != 0 and "fit_predict needs an embargo" in res.stderr
 
 
-def test_the_dry_run_refuses_a_short_embargo_as_the_run_does(
-    online_cli: Any, tmp_path: Any
-) -> None:
+def test_the_dry_run_refuses_a_short_embargo_as_the_run_does(rheon_cli: Any, tmp_path: Any) -> None:
     """Task 154: the dry run built the bank but never asked it, so it passed
     a config the run then refused at its first chunk. A run that keeps no
     prediction takes any embargo, in the dry run as in the run."""
     stream(50, 16).write_parquet(tmp_path / "in.parquet")
     short = spec(fwd(), embargo=2.0)
     res = run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [short],
         input=tmp_path / "in.parquet",
@@ -640,7 +638,7 @@ def test_the_dry_run_refuses_a_short_embargo_as_the_run_does(
     )
     assert res.returncode != 0 and "fit_predict needs an embargo" in res.stderr
     run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [short],
         input=tmp_path / "in.parquet",
@@ -816,7 +814,7 @@ def test_learn_only_is_the_calls_not_the_banks() -> None:
 def test_a_formula_target_is_never_order_free() -> None:
     """R2-P2: ``fit`` over accumulator-only specs skips the row-order warning,
     since their sums commute; a target that reads the rows ahead does not."""
-    from polars_online._frame import _order_free
+    from rheon._frame import _order_free
 
     plain = po.spec.ewridge("m", targets=["y"], features=["x"], lam=1.0)
     ahead = po.spec.ewridge(
@@ -837,10 +835,10 @@ def test_a_formula_target_is_never_order_free() -> None:
         po.ModelBank([ahead]).fit(plan)
 
 
-def test_a_null_literal_has_a_form_toml_can_carry(online_cli: Any, tmp_path: Any) -> None:
+def test_a_null_literal_has_a_form_toml_can_carry(rheon_cli: Any, tmp_path: Any) -> None:
     """R2-P3: ``when/then`` with no ``otherwise`` carries a null literal, which
     TOML has no value for; the tree spells it ``["lit"]``."""
-    from polars_online._formula import from_tree, to_tree
+    from rheon._formula import from_tree, to_tree
 
     tree = to_tree(pl.when(pl.col("x") > 0).then("mid"))
     assert tree[-1] == ["lit"]
@@ -857,19 +855,19 @@ def test_a_null_literal_has_a_form_toml_can_carry(online_cli: Any, tmp_path: Any
     s = spec(target)
     df.write_parquet(tmp_path / "in.parquet")
     run_online(
-        online_cli, tmp_path, [s], input=tmp_path / "in.parquet", output=tmp_path / "out.parquet"
+        rheon_cli, tmp_path, [s], input=tmp_path / "in.parquet", output=tmp_path / "out.parquet"
     )
     got = pl.read_parquet(tmp_path / "out.parquet")
     assert field(got, "pred_fwd") == field(native(df, s), "pred_fwd")
 
 
-def test_no_output_is_the_command_lines_fit(online_cli: Any, tmp_path: Any) -> None:
+def test_no_output_is_the_command_lines_fit(rheon_cli: Any, tmp_path: Any) -> None:
     """R2-P4: a run with no output keeps no prediction, so it takes any
     embargo, as ``ModelBank.fit`` does."""
     df = stream(120, 44)
     df.write_parquet(tmp_path / "in.parquet")
     run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [spec(fwd(), embargo=None)],
         input=tmp_path / "in.parquet",
@@ -1037,7 +1035,7 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
 
 
 def test_a_target_named_after_its_own_column_is_refused_at_the_builder(
-    online_cli: Any, tmp_path: Any
+    rheon_cli: Any, tmp_path: Any
 ) -> None:
     """Task 159 (P1): a window target without ``.alias()`` is named after its
     leftmost column; where that is a column the formula reads, the bank could
@@ -1061,7 +1059,7 @@ def test_a_target_named_after_its_own_column_is_refused_at_the_builder(
         po.ModelBank([table])
     stream(50, 17).write_parquet(tmp_path / "in.parquet")
     res = run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [table],
         input=tmp_path / "in.parquet",

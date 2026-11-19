@@ -28,9 +28,9 @@ import statsmodels.api as sm
 from statsmodels.robust.norms import HuberT
 
 import ledger
-import polars_online as po
-from polars_online import _polars_online as native
-from polars_online import _spec
+import rheon as po
+from rheon import _rheon as native
+from rheon import _spec
 
 TIER = "mixed"
 

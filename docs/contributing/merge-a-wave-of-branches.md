@@ -46,11 +46,11 @@ The steps run in the main checkout:
    state](add-an-output-or-a-parameter.md#what-each-change-does-to-a-saved-state),
    step 4), and the API snapshot with `UPDATE_API_SURFACE=1` ([Change the
    public API](change-the-api.md#steps), step 4). The golden values only
-   print: `PRINT_GOLDEN=1 cargo test -p online-core --test golden --
+   print: `PRINT_GOLDEN=1 cargo test -p rheon-core --test golden --
    --nocapture` prints Rust's as lines `GOLDEN <kind>: &[...];`. Copy each
    printed list into the constant that the test's `check("<kind>", …)`
    call passes, under the `// ---
-   generated` marker in `crates/online-core/tests/golden.rs`. `uv run python
+   generated` marker in `crates/rheon-core/tests/golden.rs`. `uv run python
    tests/test_golden_pipeline.py` prints Python's, to paste over `GOLDEN`
    and `SWITCHED_GOLDEN` in that file. A golden value that moved is a
    regression until a branch's change explains it, so find out why before

@@ -16,7 +16,7 @@ import polars as pl  # noqa: E402
 import xgboost as xgb  # noqa: E402
 from pairs import TRUE, P, anova, binned, edges_of, make, residual_online, tables  # noqa: E402
 
-import polars_online as po  # noqa: E402
+import rheon as po  # noqa: E402
 
 
 def xgb_rmse(x, y, tr, va, te, cons, n_train=None):

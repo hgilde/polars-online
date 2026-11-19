@@ -20,7 +20,7 @@ In each new shell, run `source scripts/env.sh`, or `. .\scripts\env.ps1` in
 PowerShell, to put `cargo` and `uv` on the `PATH`. VS Code's terminal gets them from
 `.vscode/settings.json`.
 
-**Run `cargo` through `uv run` because `online-py` builds against pyo3's
+**Run `cargo` through `uv run` because `rheon-py` builds against pyo3's
 `abi3-py312`.** That build needs a Python 3.12 or newer interpreter, and
 `uv run` hands it the project's. The tests download or generate their own
 data and cache downloads under `.cache/`. Offline, the tests that need a
@@ -34,8 +34,8 @@ uv sync                                                # Python env (CPython 3.1
 ./scripts/gate.sh --extended                           # every check, and every test but the soak tests and the oracle grids: before every push
 ./scripts/gate.sh --serial                             # either tier with every test in one process
 ./scripts/clear_caches.sh --dry-run                    # what the build caches hold; without --dry-run, clear them
-uv run cargo test --workspace --exclude online-py      # Rust tests; `-- --include-ignored` for all
-uv run maturin develop --release -m crates/online-py/Cargo.toml   # the extension, into the env
+uv run cargo test --workspace --exclude rheon-py      # Rust tests; `-- --include-ignored` for all
+uv run maturin develop --release -m crates/rheon-py/Cargo.toml   # the extension, into the env
 uv run pytest                                          # Python tests
 uv run --group docs sphinx-build -W docs/reference docs/_build/html   # API reference
 uv run python scripts/validate.py > docs/VALIDATION.md # re-run the experiments that chose the defaults
@@ -94,11 +94,11 @@ push to `main`. Both tiers run these steps, in this order:
 1. `cargo fmt --all -- --check`
 2. `cargo clippy --workspace --all-targets --locked -- -D warnings`, which
    lints the tests too
-3. the Rust tests of the workspace without online-py, since online-py has
+3. the Rust tests of the workspace without rheon-py, since rheon-py has
    no Rust tests and would link libpython into every test binary. They run
    under `cargo nextest run`, with `cargo test --doc` for the doctests,
    which nextest does not run. Where nextest is not installed, they run
-   under `cargo test --workspace --exclude online-py`. `--extended` adds the tests
+   under `cargo test --workspace --exclude rheon-py`. `--extended` adds the tests
    marked `#[ignore = "extended: ..."]` (`--run-ignored all`, or
    `-- --include-ignored` for `cargo test`)
 4. `uv lock --check`, before any `uv run` could rewrite a stale lock file
@@ -150,7 +150,7 @@ the standard errors beside it, the only fields whose rows move with the
 chunking.
 
 **If a change moves a golden number, that is the finding, so understand
-why before regenerating it.** `crates/online-core/tests/golden.rs` and
+why before regenerating it.** `crates/rheon-core/tests/golden.rs` and
 `tests/test_golden_pipeline.py` pin the numbers both layers produce, to
 within 1e-12 on every platform.
 
@@ -160,7 +160,7 @@ The code and the docs keep a few house rules, each checked by the test
 gate where a check is possible:
 
 - **Rust**: `cargo fmt`, `cargo clippy --workspace --all-targets -- -D warnings`,
-  small files, one model per file. No `unsafe` in `online-core`. `f64` everywhere.
+  small files, one model per file. No `unsafe` in `rheon-core`. `f64` everywhere.
 - **Python**: `ruff` (format + lint), `mypy` clean, type hints. The package
   depends on `polars` alone. A test may use any open-source library the
   package does not depend on, declared in the dev group and imported
@@ -177,19 +177,19 @@ gate where a check is possible:
 
 ## Adding a model
 
-Models live in `crates/online-core/src/`, behind the `OnlineModel` trait, and
+Models live in `crates/rheon-core/src/`, behind the `OnlineModel` trait, and
 know nothing about Polars, Python, or clocks-as-columns. Plumbing lives in
-`online-polars` and `online-py`. A new model needs:
+`rheon-polars` and `rheon-py`. A new model needs:
 
 - the recursion, with the update equations in the docstring;
 - unit tests with an **oracle**, not just a golden number. That is another
   library that computes the same quantity wherever one does; otherwise the
   recursion written out longhand, an equivalent model configured a different
   way, or the optimality conditions of the problem;
-- an entry in `crates/online-core/tests/model_contract.rs`, which checks the
+- an entry in `crates/rheon-core/tests/model_contract.rs`, which checks the
   shared contract (`weight_sum` semantics, slot counts, state round-tripping) for
   every model at once;
-- wiring in `crates/online-polars/src/spec.rs` and a `po.spec.<name>()`
+- wiring in `crates/rheon-polars/src/spec.rs` and a `po.spec.<name>()`
   constructor.
 
 That is the shape of it. [`docs/EXTENDING.md`](docs/EXTENDING.md) is the full

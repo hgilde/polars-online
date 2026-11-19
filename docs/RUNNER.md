@@ -74,7 +74,7 @@ type = "ew_cov"
 ```
 
 ```sh
-polars-online --config blocks.toml --no-output --closed-groups blocks.parquet
+rheon --config blocks.toml --no-output --closed-groups blocks.parquet
 ```
 
 ```text
@@ -212,8 +212,8 @@ Read and write any of the four formats. The extension decides, unless
 extension does not say needs one:
 
 ```sh
-polars-online --config job.toml --input today.csv --output scored.ndjson
-polars-online --config job.toml --input feed.dat --input-format ipc --output out.parquet
+rheon --config job.toml --input today.csv --output scored.ndjson
+rheon --config job.toml --input feed.dat --input-format ipc --output out.parquet
 ```
 
 ```text
@@ -287,7 +287,7 @@ directory where [a plain run](how-to/run-a-bank-from-the-command-line.md#run-a-b
 import tomllib
 
 import polars as pl
-import polars_online as po
+import rheon as po
 
 with open("job.toml", "rb") as f:
     bank = po.ModelBank(tomllib.load(f)["specs"])
@@ -393,7 +393,7 @@ smaller chunks report them more often. Under `coef_every` or
 `max_rows_between_coefs` they do not move:
 
 ```sh
-polars-online --config job.toml --chunk-size 7 --output small-chunks.parquet
+rheon --config job.toml --chunk-size 7 --output small-chunks.parquet
 ```
 
 ```text
@@ -403,12 +403,12 @@ wrote 400 rows (58 chunks) to small-chunks.parquet
 ## From Rust, and the Polars it needs
 
 The command line is a thin wrapper over a Rust crate of this workspace,
-`online-polars`, which a Rust program can call itself. The binary carries
+`rheon-polars`, which a Rust program can call itself. The binary carries
 its own Rust Polars, so it needs no Python at all.
 
 ### The same pipeline from Rust
 
-From Rust, the same pipeline is `online_polars::run_config` for a
+From Rust, the same pipeline is `rheon_polars::run_config` for a
 `RunConfig`. `run_config_on` runs it for a `LazyFrame` or batches the
 caller already has. `run` takes a `Bank` the caller holds, an `Input` (a
 `LazyFrame`, or frames the caller produces), an `Output` (`File`,

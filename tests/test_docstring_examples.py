@@ -18,7 +18,7 @@ import textwrap
 
 import pytest
 
-import polars_online as po
+import rheon as po
 from doc_recipes import differences
 from polars_version import block_marks
 from test_production_hardening import _readme_namespace

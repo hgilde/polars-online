@@ -1,0 +1,1014 @@
+//! Pure-Rust online (streaming) regression models.
+//!
+//! This crate knows nothing about Polars, Python, or clocks-as-columns: it consumes
+//! one row at a time (`&[f64]` features, `&[Option<f64>]` targets, a clock delta and a
+//! weight) and produces a [`Step`]. All plumbing lives in `rheon-polars` / `rheon-py`.
+//!
+//! ```
+//! use rheon_core::{Decay, EwRidge, EwRidgeCfg, OnlineModel};
+//!
+//! // y = 1 + 2x, fitted by exponentially weighted ridge with a 50-row half_life.
+//! let mut model = EwRidge::new(EwRidgeCfg {
+//!     n_features: 1,
+//!     n_targets: 1,
+//!     fit_intercept: true,
+//!     decay: Decay::Halflife(50.0),
+//!     ridge: vec![1e-8],
+//!     feature_sets: vec![],
+//!     standardize: false,
+//!     ridge_scale: false,
+//!     coef_prior: None,
+//!     session_shrink: None,
+//!     long_half_life: None,
+//!     min_weight: 5.0,
+//!     solve_every: 0.0,
+//!     solve_share: None,
+//!     max_rows_between_solves: 1,
+//!     gram_block_rows: 0,
+//!     target_gaps: rheon_core::TargetGaps::OwnRows,
+//!     window: None,
+//!     window_every: None,
+//!     max_rows_between_snapshots: None,
+//! })?;
+//!
+//! let mut pred = f64::NAN;
+//! for i in 0..100 {
+//!     let x = (i % 7) as f64;
+//!     // `d_clock = 1.0` on every row is a row-count clock; `weight = 1.0`.
+//!     let step = model.step(&[x], &[Some(1.0 + 2.0 * x)], 1.0, 1.0);
+//!     // `pred` comes from the state *before* this row's target is learned
+//!     // (out of sample by construction), and is NaN until `n_eff` -- the
+//!     // accumulated weight before the row -- reaches `min_weight`.
+//!     assert_eq!(step.pred[0].is_nan(), step.n_eff < 5.0);
+//!     pred = step.pred[0];
+//! }
+//! assert!((pred - 3.0).abs() < 1e-6, "x = 99 % 7 = 1, so y = 3");
+//! let coef = model.coefficients().unwrap();
+//! assert!((coef[0][0] - 1.0).abs() < 1e-6 && (coef[0][1] - 2.0).abs() < 1e-6);
+//!
+//! // The state is a versioned, serializable value: save it, restore it later,
+//! // and the restored model continues exactly where this one stopped.
+//! let saved = model.state();
+//! let mut restored = EwRidge::restore(&saved)?;
+//! let next = (&[4.0], &[Some(9.0)]);
+//! assert_eq!(restored.step(next.0, next.1, 1.0, 1.0), model.step(next.0, next.1, 1.0, 1.0));
+//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! ```
+//!
+//! The clock delta is the caller's job: [`ClockState`] turns raw clock values
+//! into capped, session-aware deltas, and every model decays by them.
+//! See `docs/PLAN.md` §2 and §4.
+
+mod audit;
+mod bocpd;
+mod boundary;
+mod breaks;
+mod budget;
+mod calibration;
+mod clock;
+mod cluster;
+/// Compensated running means, `hi + lo` (docs/PLAN.md task 101): public so
+/// `rheon-polars`' window core keeps a variance's mean by the same rule
+/// (task 212).
+pub mod comp;
+mod conformal;
+mod constraint;
+mod corrchange;
+mod deco;
+mod drift;
+mod ewclass;
+mod ewcov;
+mod ewdiag;
+mod ewlagcov;
+mod ewridge;
+mod ftrl;
+mod gaps;
+/// Fits read off an exported Gram, offline (docs/PLAN.md tasks 226-227).
+pub mod gramfit;
+mod hasher;
+mod health;
+mod held_median;
+mod hmm;
+mod holt;
+mod huber_refit;
+pub mod humanfloat;
+mod influence;
+mod kalman;
+mod lasso;
+mod margbins;
+mod marginal;
+mod marglag;
+mod model;
+/// Test oracles' dense linear algebra, on faer's LU and eigensolver: never
+/// `solve.rs` (docs/PLAN.md task 169).
+#[cfg(test)]
+mod oracle;
+mod pa;
+mod pieces;
+mod rcov;
+mod refusals;
+mod rls;
+mod robust;
+mod runs;
+mod sandwich;
+mod scratch;
+mod seqtest;
+mod sgd;
+mod since;
+mod solve;
+mod specification;
+mod spread;
+mod stats;
+mod tails;
+/// The thread pools of the tests that run one computation at several pool
+/// sizes, held within what a Windows runner can commit.
+#[cfg(test)]
+mod test_pool;
+mod warmup;
+mod window;
+mod window_moments;
+
+pub use audit::{
+    Audit, AuditCfg, ClockReport as AuditClock, ColumnReport as AuditColumn, DISTINCT_CAP,
+    MAX_DISTINCT_CAP, NULL, PairReport as AuditPair, is_null,
+};
+pub use bocpd::{Bocpd, BocpdCfg, BocpdEmission};
+pub use breaks::{Breaks, TwinFit, cusum_null, cusum_null_at, cusum_null_window, cusum_sq_null_at};
+pub use calibration::{Calibration, Coverage};
+pub use clock::{
+    ClockAdvance, ClockCfg, ClockState, ClockValue, Decay, Disorder, ExactCaps, OnClockReset,
+    PlainStep, SessionGap, Stamp, cmp_int_f64, ns_of_seconds, seconds_of_ns,
+};
+pub use cluster::{
+    ClusterSummary, FeatureMoments, KMeans, KMeansCfg, LINK_FACTOR, LINK_FLOOR, LINK_QUANTILE,
+    Micro, MicroCfg, MicroCluster, SeedRule, SplitMix64, dist2, merged_radius2,
+};
+pub use conformal::{Conformal, gauss_gain, ln_basic, norm_ppf};
+pub use constraint::Constraint;
+pub use corrchange::{
+    ChangeNorm, CorrChange, CorrChangeCfg, CorrChangeKind, MAX_PERM, kolmogorov_cdf,
+    kolmogorov_quantile,
+};
+pub use deco::{Deco, DecoCfg, DecoDynamics};
+pub use drift::PageHinkley;
+pub use ewclass::{Covariance, EwClass, EwClassCfg};
+pub use ewcov::{
+    EwCov, EwCovCfg, EwCovDiag, EwCovModel, EwCovStat, LowerTriangle, Pca, TargetMoments,
+    partial_corr, variance_is_usable,
+};
+pub use ewdiag::{EwDiag, Including};
+pub use ewlagcov::{EwLagCov, MAX_LAG, check_lag_ceiling};
+pub use ewridge::{EwRidge, EwRidgeCfg};
+pub use ftrl::{Ftrl, FtrlCfg, FtrlLoss};
+pub use gaps::{GramPart, TargetGaps};
+pub use hasher::{FixedHasher, FixedState};
+pub use health::FeatureHealth;
+pub use hmm::{Hmm, HmmCfg};
+pub use holt::{Holt, HoltCfg};
+pub use huber_refit::{
+    BIN_REFIT_ROWS_PER_BIN, DEFAULT_REFIT_MAX_FEATURES, DEFAULT_REFIT_ROWS, MAX_REFIT_ROWS,
+    REFIT_PASSES, REFIT_RUNS_PER_ROW, RefitStatus, default_bin_refit_rows, default_refit_rows,
+    refit_reservation,
+};
+pub use influence::Influence;
+pub use kalman::{Kalman, KalmanCfg};
+pub use lasso::{Lasso, LassoCfg};
+pub use margbins::{BinCfg, BinRule, BinStat};
+pub(crate) use margbins::{MarginalBins, edges_from};
+pub use marginal::{
+    FeatureMomentLayout, Marginal, MarginalCfg, MarginalShard, Pair as MarginalPair, SerialRule,
+    ShardRunner, Shards, run_in_order,
+};
+pub(crate) use marglag::{LagMoments, MarginalLags, PairMix, TargetLag};
+pub use model::{
+    CoefVariance, DAMAGED, Extra, INPUT_BOUND, ModelState, OnlineModel, State, StateError, Step,
+    all_usable, check_schema, usable,
+};
+pub use pa::{Pa, PaCfg, PaMode};
+pub use pieces::Sequential;
+pub use rcov::{
+    Rcov, RcovCfg, RcovEstimate, RcovKind, parzen, parzen_c_star, phi_11, phi_12, phi_22, preavg_g,
+    psi1, psi2,
+};
+pub use refusals::{Refusals, STOPPED, STOPPED_MANY};
+pub use rls::{Rls, RlsCfg};
+pub use robust::{HuberScale, MAD_BAND_OCTAVES, NORMAL_Q3, Robust, RobustCfg, RobustLoss};
+pub use runs::Runs;
+pub use sandwich::Sandwich;
+pub use seqtest::{SLOTS as SEQTEST_SLOTS, SeqTest, SeqTestCfg};
+pub use sgd::{LearningRate, Sgd, SgdCfg, SgdLoss};
+pub use solve::{SpdFactor, quad_forms_logdet, solve_spd};
+pub use specification::Specification;
+pub use stats::{
+    EW_QUANTILE_ALPHA, EwAutoCorr, EwQuantile, HitTest, MAX_BAND_OCTAVES, SlotMetrics,
+};
+pub use tails::Tails;
+pub use warmup::{WARMUP_ROWS, Warmup};
+pub use window::{
+    At, Bytes, Cadence, DiagMoments, Edit, Footprint, Moments, Offer, Pack, Packer, Snapshots,
+    Unpacker, WindowBudget, WindowClosed, WindowShadow, truncated, truncated_diag, truncated_mean,
+    truncated_scalar,
+};
+
+/// Version of the serialized model-state layout.
+///
+/// Bump on any state layout change and keep a loader for the previous version
+/// (`docs/PLAN.md`, hard rule 5). History:
+///
+/// - 1: initial layout.
+/// - 2: `rls` stores the information factor `R` and `u = R^-T b` instead of
+///   the covariance `P` (docs/IMPROVEMENTS.md C5). Schema-1 `rls` states are
+///   converted on load; every other model is unchanged. `kmeans` and `micro`
+///   (0.2.0) added `ModelState` variants without a bump: no existing layout moved,
+///   and a 0.1 build meets a bank holding one as an unknown variant at
+///   deserialization rather than as a version it refuses. `ew_class` and
+///   `seqtest` (0.2.0) likewise.
+/// - 3: `kalman` and `sgd` standardize with an [`EwDiag`] (means and
+///   variances, O(k) a row) instead of a full [`EwCov`] they only ever read
+///   the diagonal of (docs/records/PERFORMANCE-LOG.md §13). Schema-2 states of both are
+///   converted on load by taking that diagonal, which is the same numbers;
+///   every other model is unchanged.
+/// - 4: the spec every bank file carries gained `embargo`
+///   (docs/ENHANCEMENTS.md E47), and a stream carries the rows it has
+///   accepted but not yet learned from. Both are additive with defaults, so
+///   a schema-3 file loads, continues to the bit and re-saves in the new
+///   layout; the bump is because every spec's bytes moved, which is what
+///   hard rule 5 asks to be told about. Nothing in a model's own state
+///   changed. Task 38's `Sum w^2` and target moments rode into schema 3
+///   without a bump: they are skipped when absent, so a schema-3 file's
+///   bytes did not move.
+/// - 5: the spec gained `group_close` (docs/ENHANCEMENTS.md E54), and a
+///   stream that closes on session keeps the session value of the span it is
+///   in. Additive with defaults again, so a schema-4 file loads, continues to
+///   the bit and re-saves as 5; the bump is because every spec's bytes moved.
+///   The rest of the E54-E64 batch rides on 5 without a further bump:
+///   appended `ModelState` variants, `Option` fields that skip when absent,
+///   and new `BankFile` map keys with defaults are all additive.
+/// - 6: the `ew_cov` spec gained `window` and `window_every` (docs/PLAN.md
+///   §13), and a windowed accumulator carries the ring of snapshots the
+///   cutoff is computed from. The model's own fields skip when absent, so an
+///   unwindowed *model* is unchanged, but spec fields serialize their nulls
+///   like every other spec key, so every spec's bytes moved -- which is the
+///   same reason 4 and 5 bumped. A schema-5 file loads, continues to the bit
+///   and re-saves as 6. What an older build would do with a *windowed* file
+///   is why this is a bump rather than a silent addition: it would ignore the
+///   ring and report untruncated statistics.
+///
+///   The code review of 2026-09-12 added one field and rides on 6 without a
+///   bump, as task 38's rode on 3: a stream's record of the prediction each
+///   row waiting under `embargo` was scored with (C21), skipped when
+///   empty, so no file without a delay moves. An older build reading a file
+///   that has it ignores the record and folds the replay's prediction,
+///   which is what it always did.
+/// - 7: three models moved to centred or clock-aware state (the code review
+///   of 2026-09-12). `ewridge` keeps each target's cross-moments centred --
+///   the target's mean, `E[(z − m_z)(y − ȳ)]` and the offset of `z`'s mean
+///   over the target's rows from its mean over all of them -- where it kept
+///   `E[z·y]` raw: in the live accumulators, the `session_shrink` twin and a
+///   window's snapshots (N1). `bocpd`'s runs keep a Welford mean and scatter
+///   where they kept `Σw·x` and `Σw·x x'` (C23). `holt` keeps each target's
+///   clock since its last observation (C22). A schema-6 file loads: the raw
+///   moments are split into centred ones as it is read (`EwRidgeWire`,
+///   `RunWire`), which kept the numbers the file carried and not the bits,
+///   and `holt`'s clock started at zero, the one thing a schema-6 file could
+///   not say -- until 8 raised the minimum and the conversions went.
+/// - 8: `ewridge` and `lasso` gained `target_gaps` (docs/PLAN.md task 81).
+///   Their accumulators hold one Gram per set of targets present on the
+///   same rows and the Gram each target reads, the weight over every row
+///   moved into the cross-moments, and `lasso` keeps its cross-moments
+///   centred, as `ewridge` does since 7 (the review's N2). A closed row's
+///   Gram names its targets and carries their column means. No loader for
+///   7: see [`MIN_SCHEMA_VERSION`].
+/// - 9: `holt` keeps the weight its level and its trend have gathered per
+///   target, which its weighted means need (the code review of 2026-09-12,
+///   S29/S30), and `ftrl` the discounted sum of its proximal steps (C24). No
+///   loader for 8: see [`MIN_SCHEMA_VERSION`].
+/// - 10: `robust` keeps each target's observation weight beside its Gram's
+///   (the second review of 2026-09-15, F1): the rows the target was present
+///   on, which the per-target `min_weight` gate and the quantile fit's
+///   warm-up read, where both read the Gram's weight -- for the quantile the
+///   band's, which a half-life caps. No loader for 9: see
+///   [`MIN_SCHEMA_VERSION`].
+///
+///   The ring a stream cuts a windowed spread with (the code review's S1)
+///   rides on 9 without a bump, as C21's record rode on 6: skipped when
+///   absent, so no file without one moves, and an older build reading one
+///   ignores it and reports the whole history's spread, as it always did. A
+///   file saved by an earlier build of 9 restarts the ring on load, so for
+///   one window its spread counts only the rows after the load.
+/// - 11: `robust` keeps each target's cross-moments centred, `c_j = E[(z −
+///   m_j)(y − ȳ_j)]` beside `ȳ_j`, where it kept them raw, `E[z·y]`, and
+///   solved the raw normal equations or centred them by subtraction -- the
+///   `level²·ε` loss `ewridge` and `lasso` were cured of in 7 and 8, left
+///   behind here (the review of 2026-09-18, S2). No loader for 10: see
+///   [`MIN_SCHEMA_VERSION`].
+/// - 12: the clock state drops the three fields the two 0.8.x disorder rules
+///   kept -- the inferred session's start and the typical-step estimate with
+///   its weight -- now that one rule, `min_backwards_jump` against
+///   `gap_cap`, needs no state (2026-09-20). A field removed is a layout
+///   change; no loader for 11.
+/// - 13: the readiness statistics (docs/WARMUP-AND-CONVERGENCE.md, 2026-09-21).
+///   `ewridge` keeps what its last solve left for them -- the effective
+///   degrees of freedom and each coefficient's data share per slot, and,
+///   when the per-row leverage is asked for, the systems it is read
+///   against -- and whether it keeps them, ahead of its window; the stream
+///   keeps the decay time each instance has seen (what `settled_frac` is
+///   read from) and which of its readiness notices it has raised. No loader
+///   for 12.
+/// - 14: the clock state keeps its previous row's value in the form the
+///   source had it -- a number, or a temporal clock's nanoseconds -- so the
+///   gap between two instants is taken in integers and is exact whatever
+///   the stream's age ([`ClockValue`], 2026-09-24). A temporal clock was a
+///   double of seconds from a per-column origin the bank kept beside the
+///   streams, which resolved 2^-52 of the time since it; the origin is gone
+///   with it. No loader for 13.
+/// - 15: each stream keeps, per model instance, the clock its rows held under
+///   `embargo` have covered (`StreamState::pending_clock` in
+///   rheon-polars), where 14 rebuilt it at every chunk as a fresh sum. The
+///   two round differently, so `settled_frac` depended on where a chunk
+///   ended, against hard rule 3 (a property test found it, 2026-09-24). A
+///   schema-14 file loads: its loader rebuilds the value as 14 did at a chunk
+///   boundary.
+/// - 16: every `EwCov`, and `marginal` for each of its pairs, keeps per slot
+///   the value it has held since it last changed and the learned row that
+///   started that run ([`Runs`]), counting its learned rows, and a window's
+///   snapshot records the count, so a window can say exactly that a slot
+///   held one value over it, where the subtraction left a remainder the
+///   lasso standardized by (docs/PLAN.md task 94; by row index since the
+///   review of 2026-09-25, where a decayed weight drifted). Every running
+///   mean keeps what its double leaves out (`m_lo`, `mean_lo` and their
+///   kin): the mean is a pair whose steps no rounding drops, where a plain
+///   mean stopped short of a value held and left every variance centred on
+///   it on the gap (task 101, 2026-09-24). And `kmeans` and `micro` keep,
+///   in `FeatureMoments`, each feature's long-run reference for the
+///   metric's floor, and `scale_floor` in their cfgs (task 102). A schema-14
+///   or 15 file loads: the named encoding defaults all of it to empty or
+///   zero, the runs start at the next learned row, a mean starts as the
+///   double it was saved as, the references start at the next five rows,
+///   and `scale_floor` is 0, the metric the state had.
+/// - 17: the cross accumulator behind `ewridge` and `lasso` keeps each
+///   target's own feature mean as a pair of its own, where it kept the
+///   offset from the all-row mean and reconstructed the mean from two
+///   level-sized numbers (review 2026-09-26, G3: a target absent on a row
+///   whose features stood at the input bound left the fit infinite). A
+///   schema-14, 15 or 16 file loads: the offsets are turned into means
+///   once, at the precision they had, in the live accumulators and in
+///   every window snapshot.
+/// - 18: a stream under `embargo` with a conformal interval keeps, beside
+///   each held row's score-time prediction, the radius every slot's interval
+///   was shown with, and the release scores the row against it (docs/PLAN.md
+///   task 112, C21's other half). The file's types do not change, what a
+///   record holds does, so a 17 build would misread it and is refused. A
+///   17 file loads: its records carry no radius, and those rows are scored
+///   against the radius at release, as 17 scored them.
+/// - 19: no model state changes; a bank file does. `on_clock_reset` keeps
+///   `"error"`, now its default, and `"reset_state"`; `"max"` and `"zero"`
+///   are gone, and `min_backwards_jump` is required with `"reset_state"`
+///   and refused with `"error"` (docs/PLAN.md task 120, decided
+///   2026-09-28). A bank file names every spec's policy, and every one
+///   written before names one that no longer exists, so the bank loads none
+///   older than 19 (`rheon_polars`' `MIN_BANK_SCHEMA_VERSION`); a model's
+///   own state from 14 on still loads.
+/// - 20: `ewridge`, `lasso`, `huber` and `quantile` keep the weight learned
+///   since their last solve, and their configuration the share of the fit's
+///   weight that makes a solve due, the default cadence under a finite
+///   half-life (docs/PLAN.md task 115 (b), [`DEFAULT_SOLVE_SHARE`]); `pa`,
+///   `sgd`, `ftrl` and `rls` keep each target's own weight, which its
+///   `min_weight` reads, and `ftrl` each target's penalty scale, its weight
+///   on the clock of the rows that teach it and the decay it is owed (task
+///   115 (d); the scale and that weight gone in 51), a 19 file loading with
+///   the scale at 1; `corrchange` keeps a `sequential`
+///   monitoring period, and its cfg `monitor_rows` and `boundary_gamma`
+///   (task 114); a window's snapshot in `ewridge` and `lasso` keeps the
+///   target moments (task 136), and in `marginal` the lag moments (task
+///   137); `deco` keeps one weight per correlation value (task 115 (h)),
+///   where a 19 file holds one for all, read as that weight on each; and a
+///   `marginal`'s cfg names where its feature moments are kept (task 125).
+///   The rest are `#[serde(default)]`, so a 19 file loads: the
+///   counter starts at 0, the bank sets the share from the spec, each
+///   target's weight starts at the shared one its gate read, and a
+///   `corrchange` has no monitoring period. A 19 build would do none of
+///   that, so a 20 file is refused there by its version.
+/// - 21: the stream's diagnostics run on the clock (docs/PLAN.md task 146).
+///   `resid_quantiles` and `ew_cov`'s `mahal_quantiles` keep an
+///   exponentially weighted sketch ([`EwQuantile`]) where they kept P²
+///   markers, one per slot for every level; a Page-Hinkley detector keeps
+///   its mean's decaying weight and an excess integrated over the clock;
+///   a residual autocorrelation keeps its pairs' weight. A 20 file's P²
+///   markers say nothing about a decayed distribution and its excess is
+///   in rows, so no loader is written. The stream's diagnostics live in the
+///   bank file, which refuses one older than 21 (`rheon_polars`'
+///   `MIN_BANK_SCHEMA_VERSION`); of the models' own states only an `ew_cov`
+///   with `mahal_quantiles` changed, and it refuses one older than 21 by
+///   name. Every other model's state from 14 on still loads.
+/// - 22 (2026-10-02, task 144): the public names changed, and a bank file
+///   stores its specs under them, so the bank refuses one older than 22;
+///   the models' own states are unchanged, and still load from 14.
+/// - 23 (2026-10-03, task 104): a row held under `embargo` carries its
+///   number in the spec's window core and whether that core has resolved
+///   its formula targets, and a bank file carries each such core with the
+///   rows it holds. Both are additive with defaults, so a 22 file -- which
+///   has no formula target -- loads as it was, and the bank's minimum stays
+///   22.
+/// - 24 (2026-10-03, review R4): the window core a bank file carries per
+///   formula target is in the windows state's version 3 form (a row's raw
+///   clock in its queues, the rows a resume skips), so a 23 file holding
+///   one would fail at a group's first chunk; the bank refuses one older
+///   than 24 by number (pre-1.0, no loader). The models' own states are
+///   unchanged, and still load from 14.
+/// - 25 (2026-10-03, review R6): the window core a bank file carries per
+///   formula target is in the windows state's version 5 form (the last row
+///   read, beside the rows held, as a sliced state's identity of its
+///   input). Round five moved the windows version alone, to 4, so a 24
+///   file holding a version-4 core failed at a group's first chunk; the
+///   bank refuses one older than 25 by number, and a test pairs the two
+///   numbers. The models' own states are unchanged, and still load from
+///   14.
+/// - 26 (2026-10-05, task 159): the window core a bank file carries per
+///   formula target is in the windows state's version 6 form (a number
+///   clock's raw value rides in a row's `off`, and a window's edge is
+///   decided from it); the bank refuses one older than 26 by number. The
+///   models' own states are unchanged, and still load from 14.
+/// - 27 (2026-10-05, task 159): the windows state's version 7 form, which
+///   carries the group and session columns' dtypes; the bank refuses one
+///   older than 27 by number. The models' own states are unchanged.
+/// - 28 (2026-10-06, task 161): `ew_cov`'s configuration carries
+///   `pca_every` in clock units and `max_rows_between_pca`, and its state
+///   the clock since the last refresh. `since_pca` became `rows_since_pca`,
+///   a field with no default, so an `ew_cov` state from before 28 does not
+///   decode; the bank refuses a file older than 28 by number, and pre-1.0
+///   no loader is written.
+///   Every other model's state from 14 on still loads.
+/// - 29 (2026-10-06, task 163): `micro`'s configuration carries
+///   `prune_every` in clock units and `max_rows_between_prunes`, and its
+///   state the clock since the last checkpoint; a `micro` state from before
+///   29 does not decode, and the bank refuses a file older than 29 by
+///   number. Every other model's state from 14 on still loads, `ew_cov`'s
+///   from 28.
+/// - 30 (2026-10-06, task 162): a window's snapshots are spaced on the clock
+///   ([`Cadence`]): the ring keeps its clock spacing beside its row cap, and
+///   the five windowed models' configurations carry `window_every` in clock
+///   units and `max_rows_between_snapshots`, with `window` and
+///   `window_every` written as nil where absent so that only the row cap,
+///   the last, skips. A windowed state from before 30 does not decode
+///   compactly; named, as a bank file is, it decodes with no spacing and
+///   its rows, but its `window_every` counted rows, so the bank refuses a
+///   file older than 30 by number, and pre-1.0 no loader is written.
+/// - 31 (2026-10-06, task 174): `lasso`'s configuration carries each
+///   target's own `min_weight`, from which the target's selection counts
+///   its errors (review 2026-10-05, CA3); it counted from the model's first
+///   prediction, which the smallest threshold gates. A `lasso` state from
+///   before 31 decodes named with every target at the model's `min_weight`,
+///   the default, and does not decode compactly. A bank file's states from
+///   before 31 carry only the smallest of a spec's thresholds, so the bank
+///   refuses a file older than 31 by number, and pre-1.0 no loader is
+///   written. Every other model's state from 14 on still loads.
+/// - 32 (2026-10-06, task 175): a window's edge is decided on each row's
+///   stamp, its decayed clock held exactly ([`Stamp`]): integer nanoseconds
+///   on a temporal clock, the raw value beside the time the caps removed on
+///   a number clock. The ring keys each snapshot by the stamp beside the
+///   model's summed clock, `(clock, stamp, snapshot)` where it was `(clock,
+///   snapshot)`, so a windowed state from before 32 does not decode, and a
+///   stream's clock keeps the exact clock it stamps the next row from, which
+///   a 31 file lacks. The bank refuses a file older than 32 by number;
+///   pre-1.0 no loader is written. A model without a window loads its state
+///   as it did at 31.
+/// - 33 (2026-10-06, task 170): a quantile fit keeps each target's band
+///   system in its state -- the factor of the band Gram's system that its
+///   nudges read their leverage from, packed with its jitter rung and the
+///   moves made since it was factorized, and the columns kept and their
+///   scales. A band row at `ridge = 0` moves the factor in place, which
+///   holds the Gram's system to rounding where a factor made afresh holds
+///   it to the bit, so a restore that made one afresh parted from the fit
+///   that never stopped by a rounding; restored, the factor is the one
+///   saved, and `robust`'s restore refuses a system that is not of its
+///   Gram. A `robust` state from before 33 decodes with no systems, which
+///   its first nudge builds; the bank refuses a file older than 33 by
+///   number, and pre-1.0 no loader is written.
+/// - 34 (2026-10-06, task 176): an `embargo` is decided on the elapsed
+///   clock held exactly ([`ClockAdvance::elapsed_stamp`]): integer
+///   nanoseconds on a temporal clock, the raw value beside the steps it
+///   does not count on a number clock. A stream's exact clock keeps the
+///   elapsed clock beside the decayed one, and each row a stream holds
+///   keeps its place on it where it kept the time still to wait, so a 33
+///   file's streams are another shape. The bank refuses a file older than
+///   34 by number; pre-1.0 no loader is written. No model's state moved.
+/// - 35 (2026-10-06, task 178): no model state changes; a bank file does.
+///   `coef_every` reads the clock, as `solve_every` does, where it counted
+///   rows, and `0`, its old default, now writes `coef` on every row;
+///   `max_rows_between_coefs` caps the rows. A stream keeps where its `coef`
+///   cadence stands, the stamp of its last `coef` row and the rows since. A
+///   34 file's specs would read differently, so the bank refuses a file
+///   older than 35 by number; pre-1.0 no loader is written. A model's own
+///   state loads as it did at 34.
+/// - 36 (2026-10-06, task 179): `bocpd`'s configuration carries
+///   `hazard_on_clock`, under which `hazard` is the expected clock time
+///   between changepoints and each step's chance of a break is applied
+///   before the row it leads into. It is last and left out where it is
+///   false, so a state with a per-row hazard writes the bytes it did at 35
+///   and a 35 state reads as the per-row hazard it was: the bank still
+///   loads 35. A 36 file whose `hazard` is a duration is one a 35 build
+///   would read as a number of rows, so the version moves and a 35 build
+///   refuses it by number.
+/// - 37 (2026-10-06, task 180): `solve_every` (`ewridge`, `lasso`, `huber`,
+///   `quantile`), `pca_every` (`ew_cov`) and `prune_every` (`micro`) are
+///   decided on the decayed clock held exactly, as `window_every` and
+///   `coef_every` are: each of those states keeps the stamp of its last
+///   solve, refresh or checkpoint, and the stamp of the last row, beside
+///   the clock summed since, where it kept that sum alone. A state of the
+///   five from before 37 does not decode, compactly or named; the bank
+///   refuses a file older than 37 by number, and pre-1.0 no loader is
+///   written. Every other model's state loads as it did at 36.
+/// - 38 (2026-10-06, task 186): a system `ewridge` keeps for its readiness
+///   statistics carries no Gram index, a field written at every solve and
+///   read nowhere (review round 4, CA11), so a 37 state holding one, kept
+///   under `emit_error_inflation`, is another shape. A closed `rcov` row a
+///   bank holds undrained says `psd_repaired` as null where the repair could
+///   not run (CE9), which a 37 build cannot read. The bank refuses a file
+///   older than 38 by number, and pre-1.0 no loader is written. Every other
+///   model's state loads as it did at 37.
+///
+///   Task 198 moved no layout at 38. It raised [`MIN_SCHEMA_VERSION`] to it,
+///   froze a state of every [`ModelState`] variant at it
+///   (`tests/state_fixtures.rs`), and took out the repairs that defaulted a
+///   field written since an older layout: a 38 state without one, or with a
+///   mean's low part of the wrong length, is refused where it was mended.
+///   Every state a 38 build writes carries them all, so each still loads.
+/// - 39 (2026-10-07, task 194): no model state changes; a bank file does.
+///   A stream keeps what a save writes beside its models as one value, so
+///   the file nests it under `persisted` (docs/SIMPLIFICATION.md S6); a
+///   data summary and a closed row keep their clock range as the clock
+///   values themselves, a temporal one in integer nanoseconds, where they
+///   kept a double of seconds (review round 4, N18); a marginal's closed
+///   pair names its statistic `t_stat`; and the bank keeps the form of each
+///   group and session column, `key_dtypes`, where it kept a `"monotone"`
+///   spec's `key_integer` alone (N22). The bank refuses a file older than 39
+///   by number, and pre-1.0 no loader is written. A model's own state loads
+///   as it did at 38.
+/// - 40 (2026-10-07, task 195): `sgd` and `pa` keep each target's EW
+///   residual variance, the scale their `huber_delta` and `eps` are in
+///   (U1); `pa` keeps `sgd`'s scaler under `standardize` (U2); `bocpd`
+///   keeps the rows its warm-up holds and the prior they set (U4);
+///   `ewridge` and `robust` keep each target's own `min_weight` for its own
+///   first solve (S9b); `rls`'s cfg names its prior strength `delta` (N11);
+///   and `sgd`'s cfg carries `strict_binary` (S4). A state of those models
+///   from before 40 does not decode, and its `huber_delta` and `eps` meant
+///   other numbers; the bank refuses a file older than 40 by number, and
+///   pre-1.0 no loader is written. Every other model's state loads as it
+///   did at 38.
+/// - 41 (2026-10-07, task 196): a window's ring keeps its edge, Polars'
+///   `closed` (`"right"`, the default, drops a row exactly one window old,
+///   where every ring before kept it), so a windowed `ewridge`, `lasso`,
+///   `ew_cov`, `ew_class` or `marginal` state from before 41 does not
+///   decode. `kmeans` keeps `update_every_rows` and `split_merge_every_rows`
+///   and `corrchange` `permute_every_rows` under those names, and
+///   `corrchange` counts the reports since its permutation draw from one,
+///   so the value is redrawn every `permute_every_rows` reports, not one
+///   more. The bank refuses a file older than 41 by number -- its specs say
+///   `type = "ewridge"`, carry `closed`, and no longer `holt`'s
+///   `level_half_life` -- and pre-1.0 no loader is written. Every other
+///   model's state loads as it did at 40.
+/// - 42 (2026-10-07, task 200): an integer clock column is held as an
+///   integer ([`ClockValue::I64`]), where it was a double that resolved 256
+///   at today's epoch nanoseconds: the clock state keeps an integer clock's
+///   last value, its stamps ([`Stamp::Int`]) and the skipped and removed
+///   time in the column's own units; the bank keeps an integer clock's
+///   width with its dtype; and a windows state's rows say what their `off`
+///   holds (windows state 8). A float or temporal clock's state is the
+///   bytes it was. The bank refuses a file older than 42 by number, and
+///   pre-1.0 no loader is written. A model's own state loads as it did.
+/// - 43 (2026-10-07, task 201): relative targets were removed. A spec's
+///   target table no longer takes `relative_to` or `relative`, and a target
+///   derived from its row's columns is a column computed upstream; the
+///   stream reads no reference column, and every target's `hit_rate` is
+///   taken about 0, where a ratio target's was taken about 1. A 42 file's
+///   spec may hold such a table, and its metrics were kept on the other
+///   centre, so the bank refuses a file older than 43 by number; pre-1.0 no
+///   loader is written. No model's own state moved.
+/// - 44 (2026-10-07, task 202): an insensitivity band -- `pa`'s `eps`, and
+///   `sgd`'s under `epsilon_insensitive` -- is in units of the target's own
+///   EW standard deviation, so `pa` keeps each target's EW mean and
+///   variance of `y` where it kept a residual variance, and `sgd` keeps
+///   them under `epsilon_insensitive` alone and its residual variance under
+///   `huber` alone. A `pa` or `sgd` state from before 44 does not decode,
+///   and its band meant another number; the bank refuses a file older than
+///   44 by number, and pre-1.0 no loader is written. Every other model's
+///   state loads as it did before.
+/// - 45 (2026-10-07, task 116): readiness beyond `ewridge`. `rls` keeps
+///   `s₂ = Σ λ^(2i) w_i²` over the rows its fit learned, for Kish's sample
+///   size behind its noise statistic, and `huber` and `quantile` keep each
+///   target's data shares, `support_coef`, from their last solve. An `rls`
+///   state from before 45 does not decode, and a robust one carries no
+///   shares; the minimum moves to 45 with it, and pre-1.0 no loader is
+///   written.
+/// - 46 (2026-10-08, task 208): a stream keeps the wait its "has not been
+///   met" notices count (review round 5, F3): per instance, the decay time
+///   at which each target's `min_weight` floor, and the noise gate, began
+///   withholding every row past 95% settled. A 45 file's stream would start
+///   each wait again at the load; the bank refuses a file older than 46 by
+///   number, and pre-1.0 no loader is written. No model's own state moved.
+/// - 47 (2026-10-08, task 206): a standardizing `sgd`, `pa` or `kalman`
+///   keeps its scaler's warm-up ([`Warmup`]: Kish's count of the rows the
+///   scaler has learned, and whether it has reached [`WARMUP_ROWS`]). Past
+///   it `sgd`'s and `pa`'s coefficients are in the caller's units, where
+///   they were in the scaler's coordinates, and `kalman`'s `b` and `P`
+///   follow every move of the moments (review round 5, G1). A state from
+///   before 47 does not decode, and its coefficients meant another thing;
+///   the minimum moves to 47 with it, and pre-1.0 no loader is written.
+/// - 48 (2026-10-08, task 212): a windows state is version 9. A window
+///   operator's queue keeps which of its operators are variances
+///   (`ewm_var`, `ewm_std`), whose sums are six wide where every other
+///   operator's are three, and each operator keeps its `bias`. A bank file
+///   embeds a windows state per formula target; it refuses a file older
+///   than 48 by number, and pre-1.0 no loader is written. No model's own
+///   state moved.
+/// - 49 (2026-10-08, task 211): `kalman` keeps no warm-up. A standardizing
+///   one holds `b` and `P` at an anchor -- the means, as pairs, and the
+///   scales of the moments at its last re-map -- and every `kalman` keeps,
+///   per covariance, the clock since it last took an observation (the
+///   process noise is charged once for it) and the squared innovations its
+///   standardized prior is sized from. A state from before 49 does not
+///   decode, and pre-1.0 no loader is written.
+/// - 50 (2026-10-08, task 214): a standardizing `kalman` sizes its prior
+///   from the median of the first three rows' squared innovations, and
+///   keeps those rows' squares and weights where it kept the sums of every
+///   row's. A state from before 50 does not decode, and pre-1.0 no loader is
+///   written.
+/// - 51 (2026-10-08, task 215): `ftrl` keeps no penalty scale: its `scale`
+///   and `w_taught` are gone, the penalties fixed against sums aged on the
+///   clock. `kmeans`' and `micro`'s centres are pairs, each summary keeping
+///   `c_lo` beside `c`. A state from before 51 does not decode, and pre-1.0
+///   no loader is written.
+/// - 52 (2026-10-08, task 217): `ewridge`'s and `lasso`'s cross-moments
+///   (`gaps::Cross`) keep each target's rows of positive weight, `nj`, and
+///   every row's, `n`, live and in every window snapshot, so a window that
+///   holds none of a target's rows is empty for it by an exact count. A
+///   state from before 52 does not decode, and pre-1.0 no loader is
+///   written.
+/// - 54 (2026-10-08, task 223 (b)): a new model, `audit`, whose state is
+///   [`ModelState::Audit`], and a bank's spec may name it. A bank file names
+///   its specs, so the bank's schema moves with it; pre-1.0 the minimums
+///   move too and no loader is written.
+/// - 55 (2026-10-09, task 221): a bank's stream keeps the diagnostics with
+///   a memory of their own beside the others, per model instance
+///   (`rheon_polars`' `Persisted::checks`): `Calibration`'s moments and
+///   `Breaks`' sums per slot, `TwinFit`'s two fits per target, and
+///   `Sandwich`'s bread, meat, lag products and ring per slot. A spec that
+///   switches none on writes none, and its spec writes the new keys.
+///   Pre-1.0 no loader is written.
+/// - 56 (2026-10-09, task 221 (d)-(h)): the same diagnostics gain the
+///   specification tests' sums per slot (`Specification`), and later
+///   parts' accumulators beside them. A spec that switches none on writes
+///   none. Pre-1.0 no loader is written.
+/// - 57 (2026-10-09, review round 6, B-5 and A-6): `Tails` keeps its
+///   weighted mean and central sums (Pébay's updates) where it kept raw
+///   power sums about the first residual, and under `embargo` a held row's
+///   score record keeps the row's own error inflation after its prediction
+///   (and its interval's radius) where a diagnostic reads one. Pre-1.0 no
+///   loader is written.
+/// - 59 (2026-10-09, task 233, review round 6, C-1): `audit` keeps, per
+///   column, its smallest nonzero change between consecutive rows and the
+///   changes at it, which `frozen` weighs its repeats against. Pre-1.0 no
+///   loader is written.
+/// - 60 (2026-10-09, task 232): under a horizon the diagnostics read Newey
+///   and West's variance: `Calibration` keeps the sandwich of its
+///   regression, `Specification` the sandwiches of Breusch and Pagan's and
+///   RESET's, and `Breaks` the lag products of its studentized residuals
+///   and their ring. Without a horizon none is written. Pre-1.0 no loader
+///   is written.
+/// - 61 (2026-10-11): the layouts that landed together before 1.0. Review
+///   round 7 (A-2): on a quantile fit under a horizon, `Breaks` keeps the
+///   studentized residuals' lag products and their ring beside the
+///   indicators', which `break_wald`'s noise reads; every other fit, and
+///   one without a horizon, writes neither. Task 244: an `ew_cov`'s
+///   configuration keeps `bias` (`EwCovCfg::bias`), and its components'
+///   variances are the scaled co-moments' when `bias` is off, the default;
+///   a state from before 61 would read as unbiased numbers it never wrote.
+///   And a spec's keys and words take the names they keep at 1.0
+///   (`n_clusters`, `n_components`, `init` and `"k-means++"`,
+///   `covariance_type` and `"tied"`/`"diag"`, `snapshot_every`,
+///   `max_rows_between_pcas`, `penalties`, `bocpd`'s four priors,
+///   `window_rows`, `change_action`), and `ew_class`'s and `hmm`'s
+///   configuration writes its covariance as `"tied"` and `"diag"`. Pre-1.0
+///   no loader is written.
+/// - 62 (2026-10-13, task 257): the first layout change since 1.0, so the
+///   first with a loader. Under `gram_block_rows`, `ewridge`'s targets fold
+///   their cross-moments and feature means into the block's merge, and a
+///   state saved mid-block holds each target's values on the held rows,
+///   its history's weight and its mean at the block's start
+///   (`gaps::Held`, `acc.held`), written only while a block holds them. A
+///   state of 61 holds none: its targets were current through the held
+///   rows, so the loader is the field's default, and the rows after it
+///   are folded as a suffix of the block. Schema 61's fixtures are kept
+///   (`tests/state_fixtures/v61/`).
+/// - 63 (2026-10-23, task 271): `huber` and `sgd(loss="huber")` draw the
+///   Huber cut in a scale the configuration names, `huber_scale` (`"mad"`,
+///   the EW median of `|e|` over `Φ⁻¹(3/4)`, or `"rms"`, the EW root mean
+///   square, the one scale there was), aged on `huber_scale_decay` (`None`:
+///   the model's decay). Under the MAD each target keeps an `EwQuantile` of
+///   `|e|` at 0.5 (`mad`, empty under the RMS), bounded to 8 octaves either
+///   side of the median (its `band`, task 271 (b); a sketch without the
+///   field, saved before it, loads unbounded and goes on as it was). A state of 62 has neither
+///   field and was fitted under the RMS, so the loader is the fields'
+///   defaults: `huber_scale` defaults to `"rms"` on load
+///   (`HuberScale::of_a_state_before_63`), where a spec's default is
+///   `"mad"`, the decay to the model's and the sketches to none, and the
+///   state goes on to the bit. Schema 62's fixtures are kept
+///   (`tests/state_fixtures/v62/`). Within 63, before its release (task
+///   275): a window's ring keeps the running product of the per-row decay
+///   factors its model took (`Snapshots::decay`, one per decay the window
+///   is read with, two for `lasso`), and each snapshot the products it was
+///   taken at, a fourth element of its tuple, by whose ratio it is decayed
+///   forward. A ring saved without them loads with none: its snapshots are
+///   decayed by the summed clock as they were, so the first read after
+///   loading is the saved state's to the bit, and those taken after the load
+///   carry products.
+/// - 64 (2026-10-25, task 277): `huber` and `sgd(loss="huber")` refit each
+///   target's first `refit_rows` learned rows to convergence, once, and
+///   rebuild its residual scale from the converged residuals
+///   ([`crate::huber_refit`]): the configuration keeps `refit_rows` (a
+///   spec's `huber_refit_rows`, 500 by default) and the model a buffer per
+///   target (`refit`: the rows it learned and the ones that only aged its
+///   sums, until the refit, then none). A state of 63 has neither field
+///   and was fitted without a refit, so the loader is the fields'
+///   defaults: `refit_rows` 0 and no buffers, and the state goes on to the
+///   bit as a 63 build continued it; a stream resumed from it never refits
+///   rows it has long passed. A bank saved at 63 keeps its spec as written,
+///   with no `huber_refit_rows`, so a group it first sees after the load, or
+///   one a drift reset rebuilds, takes the spec's default and refits at
+///   500 rows, beside the restored groups that do not. A buffer holds its
+///   learned rows and, between them, the rows that only aged its sums as
+///   runs of `(λ, λ_s, count, before)`, capped at four runs a learned row of
+///   the count, past which the target gives its refit up
+///   (`huber_refit::RefitBuf`), or, given up to a spec's `refit_budget`,
+///   `over_budget`. The bank keeps each spec's reservation of that budget
+///   (`refit_reserved`) and each stream whether its group gave its refit
+///   up to it (`refit_over_budget`); a 63 bank has neither and loads none.
+///   And a stream's instances keep their drift
+///   reset's restart mark as `restarted`, one per instance, which a 63
+///   state, written before it, loads as `false`: within 63, before its
+///   release, the mark was `decay_time`'s sign (task 278, batch 3), which a
+///   released 63 never wrote. Schema 63's fixtures are kept
+///   (`tests/state_fixtures/v63/`).
+/// - 65 (2026-11-05, task 323): no MAD sketch takes an anchor chosen from
+///   the residuals one pass sees -- each target's under `huber`,
+///   `quantile`, `sgd(loss="huber")` and `marginal(bin_stat="huber")`.
+///   While a target's refit waits its buffer keeps each row's one-pass
+///   `|e|` beside it (`RefitBuf`'s `resid`; a histogram's `HeldDevs`, the
+///   deviations from each target's location), the scale is read from them
+///   exactly, and the sketch takes none; the refit's rebuilt sketch is
+///   anchored at the converged residuals' weighted median, as before, and
+///   a refit that never runs builds it so from the `|e|` held; with the
+///   refit off the grid is fixed at 1 (`EwQuantile::anchored`). A state of
+///   64 or earlier has neither field and goes on to the bit: its model's
+///   restore marks each anchored sketch (`anchor_by_first_value`, written
+///   only where `true`) to keep anchoring at its first value, a buffer with
+///   no `|e|` reads the sketch it feeds until its refit, and a histogram
+///   its warm-up still waits for is built so (`Binned`'s `before_65`).
+///   Schema 64's fixtures are kept (`tests/state_fixtures/v64/`).
+/// - 66 (2026-11-05, tasks 327 and 328), two changes in one schema:
+///   - task 327: `hmm` and `ew_class` under `covariance_type = "diag"` keep
+///     each state's or class's variances alone, an `EwCovDiag` in
+///     `diag_states` / `diag_classes` (and a windowed class's snapshots in
+///     `diag_classes` of `DiagMoments`), where they kept a whole `EwCov`
+///     and updated its `k²` co-moments a row to read `k` of them. Each
+///     variance's step reads no other entry, so nothing a row reports
+///     moves. A diagonal state of 65 or earlier keeps its whole matrices in
+///     `states` / `classes` and loads as their diagonals, going on to the
+///     bit and saving the bytes this build saves from the same rows; the
+///     other shapes load as they were, with the new list empty.
+///   - task 328: `corrchange(kind = "window")` merges its windows'
+///     correlations from summaries of blocks of rows, cut by each row's
+///     number since the ring last started; the state keeps that count,
+///     `ring_rows`, written only where it is not 0, and rebuilds the sums
+///     from the ring on load. A window's state of 65 or earlier has none and
+///     is numbered from its ring's oldest row: a numbering as good as any,
+///     whose reports are within the merged sums' rounding of the exact
+///     statistic, as every numbering's are. A window short enough to be
+///     read whole (fewer than four blocks) reports the bits it did.
+///
+///   Schema 65's fixtures are kept (`tests/state_fixtures/v65/`).
+/// - 67 (2026-11-05, task 340, the user's two decisions of the same day;
+///   task 341, queued by the user the same day; task 342b, the user's
+///   decision of 2026-11-07), four changes in one schema:
+///   - the notices a failed call leaves: a bank's stream keeps, per model
+///     instance, the readiness notices it has raised and the bank has not
+///     yet taken (`rheon_polars`' `Notified::pending`, each a `Notice`:
+///     its body, and the session span it names where one is). Every call
+///     that completes takes them before the bank can be saved, so a saved
+///     stream holds some only after a call that learned rows and then
+///     returned an error; written only then. A bank saved and loaded
+///     between such a call and its next said them never, the flags that
+///     they were raised being saved and their text not; now its first
+///     completing call says them, taking every stream's. A state of 66 or
+///     earlier holds none and loads with none.
+///   - `marginal`'s `before_65` (schema 65), the mark a histogram still to
+///     be built from a state of 64 or earlier carries, is cleared once the
+///     histogram is built, at the freeze, where it acts last; before, it
+///     was written on every later save. A state of 65 or 66 saved past its
+///     freeze carries it still and loads without it; one saved inside its
+///     warm-up loads marked, as before, and goes on to the bit either way.
+///   - `label_clock`: a bank's stream under a spec with a label-time
+///     column holds each accepted row until the first row whose clock
+///     reaches its label time, so a held row (`rheon_polars`'
+///     `PendingRow`) gains its `label` time and the buffer is ordered by
+///     it, ties in arrival order; the stream keeps the clock of the label
+///     times it has learned at (`label_learned`), and counts the rows
+///     accepted with no label time and the held rows dropped unlearned
+///     (`labels_missing`, `labels_dropped`). Each is written only by such
+///     a stream, so no other state's bytes move. A row held under
+///     `embargo` keeps no label time: its release is decided by the delay
+///     on the elapsed clock as before, so a state of 66 or earlier,
+///     `embargo` rows included, loads as it was and goes on to the bit.
+///   - `conformal_rate = "auto"`: a `Conformal` tracker keeps `held_mean`,
+///     the EW mean of the rows waiting for their labels at each release,
+///     which divides its step. Written only where it is not 0, which only a
+///     tracker under `"auto"` with rows held reaches, so no other state's
+///     bytes move; its gain `g(α)` is derived from `α` on load and never
+///     written. A state of 66 or earlier has no field, loads with 0 and goes
+///     on to the bit: no such state was saved under `"auto"`.
+///   - The conformal multiplier (task 368, the user's decision of
+///     2026-11-09): a `Conformal` tracker keeps `m`, the interval being
+///     `pred ± m·σ`, in place of the radius `q`; `m` starts at `Φ⁻¹(1 −
+///     α/2)` (its tails' logarithm `ln_basic`, basic arithmetic, so no libm
+///     result enters the state), which it derives on load beside the gain
+///     and never writes; and `released`, the rows given before the start,
+///     counted without decay, is written only while the start waits with
+///     rows held. A state of 66 or earlier holds `q` and no `m`: it loads
+///     with `q` kept, shows it as saved on the next row, and converts it to
+///     `m = q / σ` on the first row with an error scale, so it goes on under
+///     the multiplier from there, not to the bit (CLAUDE.md rule 5's
+///     thirteenth exception); a re-save before that row writes `q` again.
+///     No kept fixture holds a conformal tracker;
+///     `a_conformal_radius_of_schema_66_is_shown_then_converted` holds the
+///     form, written from a current bank.
+///
+///   Schema 66's fixtures are kept (`tests/state_fixtures/v66/`).
+pub const SCHEMA_VERSION: u32 = 67;
+
+/// The default solve cadence of `ewridge`, `lasso`, `huber` and `quantile`
+/// (docs/PLAN.md task 115 (b)): a solve once the weight learned since the last
+/// reaches `ln 2 / 50` of the weight the fit holds, which is the share that
+/// `half_life / 50` of clock brings in steady state.
+pub const DEFAULT_SOLVE_SHARE: f64 = std::f64::consts::LN_2 / 50.0;
+
+/// A `solve_every` at or past this many clock units never comes due, as
+/// `inf` does: the model solves only where its row cap or its own first
+/// solves say, and its cadence has no first period on the default schedule
+/// (task 278, the user's decision of 2026-10-26). Past the end of any stream
+/// on every kind of clock: on a temporal clock the units are seconds, and
+/// `1e18` s is 3.2e10 years where a 64-bit nanosecond stamp spans 584; on
+/// the row clock it is `1e18` rows, 31.7 years at a billion rows a second;
+/// on a number clock it is 31.7 years of an epoch-nanosecond integer
+/// column, the finest clock a column holds in practice. So `1e18`, which a
+/// spec wrote for "never" before `inf` was accepted, keeps that meaning, and
+/// a cadence that some stream could reach stays a cadence.
+pub const SOLVE_NEVER: f64 = 1e18;
+
+/// Whether `solve_every` never comes due ([`SOLVE_NEVER`]): `inf`, or a
+/// finite value at or past the threshold.
+pub fn solve_never(solve_every: f64) -> bool {
+    solve_every >= SOLVE_NEVER
+}
+
+/// The oldest schema version [`check_schema`] accepts: a [`State`] naming an
+/// older one is refused by its number, in the words
+/// [`StateError::SchemaVersion`] gives.
+///
+/// **The schemas this build loads, every one of them** (docs/PLAN.md task
+/// 198, review round 4, D1 and CF1). Each schema from this one to
+/// [`SCHEMA_VERSION`] has a frozen state of every [`ModelState`] variant,
+/// held to loading, going on to the bit and saving its bytes again
+/// (`tests/state_fixtures.rs`), and a test refuses a range a fixture does
+/// not cover. Before 1.0 a layout change raises this with
+/// [`SCHEMA_VERSION`] and regenerates the fixtures (hard rule 5's waiver);
+/// from 1.0 it stays at 1.0's schema, and every later layout change ships
+/// a loader, keeping the fixture of the schema before it. The bank's own
+/// minimum (`rheon_polars`' `MIN_BANK_SCHEMA_VERSION`) is held to the same
+/// rule.
+///
+/// **61 since review round 7 and task 244** (2026-10-11), 1.0's schema,
+/// where it stays: schema 62 (task 257) loads a state of 61 through its
+/// loader, held to schema 61's kept fixtures, and schema 63 (task 271) a
+/// state of 62 through its own, held to schema 62's. Before that: a quantile
+/// fit's residuals' lag products under a horizon (A-2), and `ew_cov`'s
+/// `bias`; a state from before 61 is refused by its number, and the
+/// fixtures are regenerated at 61. **60 since task 232** (2026-10-09): the diagnostics' Newey-West sums
+/// under a horizon; a state from before 60 is refused by its number, and
+/// the fixtures are regenerated at 60.
+/// **57 since review round 6** (2026-10-09, B-5 and A-6): the tails'
+/// central sums and a held row's scored error inflation; a state from
+/// before 57 is refused by its number, and the fixtures are regenerated at
+/// 57. **56 since task 221 (d)-(h)** and **55 since task 221** (2026-10-09):
+/// a bank's stream keeps the diagnostics with a memory of their own; each
+/// raised the minimum with the schema, and the fixtures were regenerated
+/// at it.
+/// **54 since task 223 (b)** (2026-10-08): the `audit` model; the
+/// fixtures are regenerated at 54, an `audit` among them.
+/// **52 since task 217** (2026-10-08): `ewridge`'s and `lasso`'s
+/// cross-moments keep the rows of positive weight per target and over every
+/// row; a state from before 52 is refused by its number, and the fixtures
+/// are regenerated at 52.
+/// **51 since task 215** (2026-10-08): `ftrl` keeps no penalty scale, and
+/// the clusters' centres are pairs; a state from before 51 is refused by
+/// its number, and the fixtures are regenerated at 51.
+/// **50 since task 214** (2026-10-08): `kalman`'s noise basis is the first
+/// three rows' squared innovations and weights, its prior their median; a
+/// state from before 50 is refused by its number, and the fixtures are
+/// regenerated at 50.
+/// **49 since task 211** (2026-10-08): `kalman`'s anchor, its clocks since
+/// an observation and its prior's squared innovations, in place of its
+/// warm-up; a state from before 49 is refused by its number, and the
+/// fixtures are regenerated at 49. **48 since task 212** (2026-10-08), with
+/// [`SCHEMA_VERSION`] and the fixtures regenerated at it: a windows state is
+/// version 9, and no model's own state moved.
+/// **47 since task 206** (2026-10-08): a standardizing `sgd`, `pa` and
+/// `kalman` keep their scaler's warm-up, and past it their numbers mean
+/// another thing, so a state from before 47 is refused by its number; the
+/// fixtures are regenerated at 47. **46 since task 208** (2026-10-08), with
+/// [`SCHEMA_VERSION`] and the fixtures regenerated at it: a stream's state
+/// keeps its readiness notices' waits, and no model's own state moved.
+/// **45 since task 116** (2026-10-07): `rls`'s squared-weight sum and the
+/// robust models' data shares.
+///
+/// **44 since tasks 194-202** (2026-10-07), with [`SCHEMA_VERSION`] and the
+/// fixtures regenerated at it. A state from before a layout moved does not
+/// decode, so it is refused by its number first; by [`SCHEMA_VERSION`]'s
+/// history the moves were: `bocpd`, `ewridge`, `robust` (`huber` and
+/// `quantile`), `rls`, `sgd` and `pa` at 40 (task 195); a windowed
+/// `ewridge`, `lasso`, `ew_cov`, `ew_class` or `marginal`, a `kmeans` and a
+/// `corrchange` at 41 (task 196); the clock state, which holds an integer
+/// clock as one, at 42 (task 200, a float or temporal clock's bytes
+/// unchanged); and `pa` and `sgd` again at 44 (task 202). 39 and 43 moved a
+/// bank file alone (tasks 194 and 201). The loaders the floor passed went
+/// with it: `deco`'s single `rho_w`, `ew_cov`'s schema-1 names and P²
+/// markers, `marginal`'s missing runs and a stream's schema-14 held-rows
+/// clock.
+///
+/// **38 from task 198.** It was 14 until then, and said "the oldest layout
+/// this build still loads" while six models' layouts had moved since with
+/// no loader: a state of such a layout failed in serde, before a `State`
+/// existed for this gate to read, whatever version it named. The repairs
+/// that defaulted a field written since an older layout went with that
+/// number. How it came to be 14:
+///
+/// **14 since 2026-09-24**: a schema-13 clock state holds a double where the
+/// nanoseconds now are, and pre-1.0 no loader is written for one.
+///
+/// **13 since 2026-09-21** (task 87): a schema-12 state holds none of the
+/// readiness statistics -- the decay time each instance has seen, and what
+/// `ewridge`'s last solve left for them -- and pre-1.0 no loader is written
+/// for one.
+///
+/// **12 since 2026-09-20**, on the same rule as the entries below: a
+/// schema-10 `robust` state's raw cross-moments could be centred on load,
+/// but only by the subtraction the change exists to remove, and pre-1.0 no
+/// loader is written for one.
+///
+/// **10 since 2026-09-15**, later the same day as 9: `robust`'s observation
+/// weights cannot be recovered from a schema-9 state, and pre-1.0 no loader
+/// is written for one.
+///
+/// **9 since 2026-09-15**, where it had been 8, on the same rule as the entry
+/// below: `holt`'s weights and `ftrl`'s proximal sum cannot be recovered
+/// from a schema-8 state, and pre-1.0 no loader is written for one.
+///
+/// **8 since 2026-09-14**, where it had been 6. The user, on `target_gaps`
+/// (docs/PLAN.md task 81): "Do not worry about state saved before the next
+/// version release, we are pre 1.0 and we can change things now". A
+/// schema-6 or 7 file is refused by its version with the message
+/// [`check_schema`] gives; the conversions 7 made for 6 -- `ewridge`'s raw
+/// cross-moments, `bocpd`'s run sums -- went with their frozen fixtures
+/// (`state_schema6.rs`, `state_schema6_ridge.rs`). The same exception to hard
+/// rule 5 as the one below, for the same reason: pre-1.0, the layout is
+/// worth more than the compatibility.
+///
+/// **6 from 2026-09-07**, where it had been 1 since the beginning. The
+/// naming pass that day renamed six spec keys with no aliases, and a spec
+/// denies unknown fields, so no file written before it can be read: a
+/// schema-1..5 state names fields no builder has. Rejecting it on the
+/// version, with the message [`check_schema`] gives, is kinder than failing
+/// later on a field name the user never chose.
+///
+/// This is a deliberate exception to hard rule 5 ("keep a loader for the
+/// previous version"), taken while the library is days old and pre-1.0
+/// because getting the names right was judged worth more than the
+/// compatibility. Schema 7's conversions were held to schema-6 fixtures
+/// until 8 raised the minimum again.
+pub const MIN_SCHEMA_VERSION: u32 = 61;
+
+#[cfg(test)]
+mod tests {
+    /// The default solve share is what its doc says it is: the share of the
+    /// steady-state weight that `half_life / 50` of clock brings. A row per
+    /// clock unit at a half-life of 500 holds `1/(1 − 2^(−1/500))` in steady
+    /// state, and ten rows bring ten of it; the two agree to `O(1/h)`.
+    #[test]
+    fn the_default_solve_share_is_a_fiftieth_of_a_half_life() {
+        let h = 500.0_f64;
+        let steady = 1.0 / (1.0 - (-1.0 / h).exp2());
+        let share = (h / 50.0) / steady;
+        let rel = (super::DEFAULT_SOLVE_SHARE - share).abs() / share;
+        assert!(rel < 1e-3, "{} vs {share}", super::DEFAULT_SOLVE_SHARE);
+    }
+}

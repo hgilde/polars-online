@@ -20,8 +20,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online import gram as pg
+import rheon as po
+from rheon import gram as pg
 
 TIER = "essential"
 

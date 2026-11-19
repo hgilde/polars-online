@@ -2,10 +2,10 @@
 
 The x86-64 wheels of ``polars-online`` are compiled for CPUs with AVX2, FMA
 and the rest of Polars' feature set, and a CPU without one dies on an
-illegal instruction. ``polars_online/_cpu_check.py`` reads the CPU's
+illegal instruction. ``rheon/_cpu_check.py`` reads the CPU's
 features in pure Python, first thing in ``__init__``, and warns. These
 tests hold the pieces: the build script that records what a build needs
-(``crates/online-py/build.rs``, compiled and run for real), the comparison
+(``crates/rheon-py/build.rs``, compiled and run for real), the comparison
 and the warning (against a faked CPU, since the failing path cannot be
 reached on a CPU that has every feature), the real reader (on an x86-64
 host, against ``/proc/cpuinfo`` where there is one), and the order of the
@@ -28,12 +28,12 @@ from pathlib import Path
 import pytest
 import yaml
 
-from polars_online import _cpu_check
+from rheon import _cpu_check
 
 TIER = "essential"
 
 REPO = Path(__file__).resolve().parents[1]
-BUILD_RS = REPO / "crates" / "online-py" / "build.rs"
+BUILD_RS = REPO / "crates" / "rheon-py" / "build.rs"
 RELEASE = yaml.safe_load((REPO / ".github" / "workflows" / "release.yml").read_text("utf-8"))
 
 #: The flags the release gives the x86-64 wheels of `polars-online`.
@@ -66,11 +66,11 @@ def build_script(tmp_path_factory) -> Path:
 def _run_build_script(
     exe: Path, root: Path, flags: list[str] | None, arch: str = "x86_64", python_dir: bool = True
 ) -> tuple[subprocess.CompletedProcess, Path]:
-    """Run it in a copy of the layout (crates/online-py/, python/polars_online/)
+    """Run it in a copy of the layout (crates/rheon-py/, python/rheon/)
     and return the process and the file it writes."""
-    manifest = root / "crates" / "online-py"
+    manifest = root / "crates" / "rheon-py"
     manifest.mkdir(parents=True, exist_ok=True)
-    package = root / "python" / "polars_online"
+    package = root / "python" / "rheon"
     if python_dir:
         package.mkdir(parents=True, exist_ok=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("CARGO", "RUSTFLAGS"))}
@@ -280,7 +280,7 @@ def test_a_build_with_no_target_feature_flag_has_nothing_to_check(monkeypatch):
 
 
 def test_no_record_at_all_is_no_check(monkeypatch):
-    monkeypatch.setitem(sys.modules, "polars_online._build_flags", None)  # import fails
+    monkeypatch.setitem(sys.modules, "rheon._build_flags", None)  # import fails
     assert _cpu_check.baked_flags() == ""
 
 
@@ -369,12 +369,12 @@ def test_the_check_runs_before_the_extension_module_is_asked_for():
 
         class Log:
             def find_spec(self, name, path=None, target=None):
-                if name.startswith("polars_online"):
+                if name.startswith("rheon"):
                     asked.append(name)
                 return None
 
         sys.meta_path.insert(0, Log())
-        import polars_online
+        import rheon
 
         print("\\n".join(asked))
         """
@@ -392,8 +392,8 @@ def test_the_check_runs_before_the_extension_module_is_asked_for():
     asked = res.stdout.split()
     # The package, then the check, then what the check reads, and only then
     # anything else of the package: the compiled module among it.
-    assert asked[:3] == ["polars_online", "polars_online._cpu_check", "polars_online._build_flags"]
-    assert "polars_online._polars_online" in asked, asked
+    assert asked[:3] == ["rheon", "rheon._cpu_check", "rheon._build_flags"]
+    assert "rheon._rheon" in asked, asked
 
 
 def test_the_skip_variable_skips_the_whole_check_in_a_fresh_interpreter():
@@ -410,9 +410,9 @@ def test_the_skip_variable_skips_the_whole_check_in_a_fresh_interpreter():
                 return None
 
         sys.meta_path.insert(0, Log())
-        import polars_online
+        import rheon
 
-        print("polars_online._build_flags" in asked)
+        print("rheon._build_flags" in asked)
         """
     )
     env = {**os.environ, _cpu_check.SKIP_ENV: "1"}

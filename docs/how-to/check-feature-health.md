@@ -50,7 +50,7 @@ when `rls`'s coefficient on it ran away:
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # y = x0 + 0.5 x1 + noise. x1's feed stops at row 300 and comes back at row 3,300; the join that
 # built the table carried its last value forward.

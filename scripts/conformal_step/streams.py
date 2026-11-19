@@ -27,7 +27,7 @@ sys.path.insert(0, str(SLOT / "scripts" / "tree_features"))
 CACHE = SLOT / ".cache" / "conformal-step"
 CACHE.mkdir(parents=True, exist_ok=True)
 
-import polars_online as po  # noqa: E402
+import rheon as po  # noqa: E402
 
 N_ROWS = 100_000
 GAP = 10.0  # the generator's mean step of clock

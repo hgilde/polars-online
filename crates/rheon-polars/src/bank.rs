@@ -1,0 +1,5461 @@
+//! The chunk-fed model bank (docs/PLAN.md §5): column extraction, per-group
+//! state, fan-out over (spec x group) on the bank's pool (pool.rs), versioned
+//! msgpack save/load.
+
+use std::collections::HashMap;
+use std::path::Path;
+
+use polars::chunked_array::builder::AnonymousOwnedListBuilder;
+use polars::prelude::*;
+use polars_arrow::array::{
+    Array as ArrowArray, BooleanArray, Float64Array, ListArray, PrimitiveArray, StructArray,
+    Utf8ViewArray,
+};
+use polars_arrow::bitmap::MutableBitmap;
+use polars_arrow::datatypes::{ArrowDataType, Field as ArrowField};
+use polars_arrow::offset::OffsetsBuffer;
+use rayon::prelude::*;
+use rheon_core::{ClockCfg, Disorder, usable};
+use serde::{Deserialize, Serialize};
+
+use crate::arrow::{
+    ArrowChunk, ClockArray, ClockCol, KeyDtype, KeyForm, LabelTimes, chunk_from_frame_at,
+    f64_values,
+};
+use crate::column::F64Column;
+use crate::resolvers::{
+    FormulaBundle, SavedResolvers, TargetWindows, prepare_targets, resolve_targets,
+};
+use crate::rows::{FeatureCol, FeatureCols, FeatureRows};
+use crate::spec::{ModelKind, Spec};
+use crate::stream::{
+    AnyModel, ChunkOut, ClockDtype, ClockRefusal, StepRefusal, Stream, StreamState, combo_labels,
+    last_accepted,
+};
+use crate::summary::{DataSummary, Role, SummaryRow, counts, describe_frame, summary_frame};
+use crate::windows_frame::WindowsRun;
+use rheon_core::ClockValue;
+
+/// One stream's group key. A null group value is its own key, distinct from any
+/// string a user might have in the column — notably the literal `"<null>"`,
+/// which the earlier string sentinel collided with. A zoned Datetime's key
+/// is its instant as the UTC wall time ([`crate::arrow::key_text`]).
+///
+/// Serialized transparently as its inner `Option<String>` (msgpack `nil` or a
+/// string). The files written before this type existed, with plain string
+/// keys, are bank format version 1, and their schema is far below
+/// [`MIN_BANK_SCHEMA_VERSION`]: they are refused by it, not loaded.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct GroupKey(pub Option<String>);
+
+impl GroupKey {
+    /// The single key used when a spec has no `group` column.
+    pub fn ungrouped() -> Self {
+        GroupKey(Some(String::new()))
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        self.0.as_deref()
+    }
+}
+
+impl std::fmt::Display for GroupKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.0 {
+            Some(s) => write!(f, "{s}"),
+            None => write!(f, "<null group>"),
+        }
+    }
+}
+
+/// Bank state-file layout version, independent of `rheon_core::SCHEMA_VERSION`
+/// (which versions the *model* state). Version 2 made group keys nullable; a
+/// version 1 file is refused by its schema ([`MIN_BANK_SCHEMA_VERSION`]),
+/// as every file written before schema 37 is. Version 3 lets a spec
+/// carry a clock parameter as a duration (`"10m"`, docs/PLAN.md task 88),
+/// and is written only by a bank whose specs do: every other file is still
+/// version 2, byte for byte, so a build from before durations reads it,
+/// and refuses a file with a duration by its version rather than by a type
+/// error deep in a spec.
+const BANK_FORMAT_VERSION: u32 = 3;
+
+/// The oldest schema a bank file loads from: every schema from it to
+/// `rheon_core::SCHEMA_VERSION` has a frozen bank file, `with_windows` state
+/// and `refresh_time` state, each held to loading, going on to the bit and
+/// saving its bytes again (`tests/state_fixtures.rs`; docs/PLAN.md task 198).
+/// Before 1.0 it moves with the schema; from 1.0 it stays at 1.0's, and a
+/// layout change ships a loader for the file before it.
+///
+/// It was 19, above the models'
+/// own `rheon_core::MIN_SCHEMA_VERSION`: a bank file names every spec's
+/// `on_clock_reset`, and every one written before schema 19 names `"max"` --
+/// the old default, written whether or not the spec had a clock -- or
+/// `"zero"`, which no longer exist, and one under `"reset_state"` names no
+/// `min_backwards_jump` (docs/PLAN.md task 120, 2026-09-28). The user, the
+/// same day: "Do not worry about old specs". **21 since 2026-10-02**, with
+/// the models' own: a bank file keeps the stream's diagnostics, and before
+/// 21 they counted rows where they now run on the clock (task 146). Refused
+/// by its version rather than by a parse error deep in a spec; pre-1.0, no
+/// loader is written. **22 since task 144** (2026-10-02): the specs a bank
+/// file stores carry the renamed parameters. **24 since review R4**
+/// (2026-10-03): the window core a bank file carries per formula target is
+/// in the windows state's version 3 form, refused here by number rather
+/// than at a group's first chunk. **25 since review R6** (the same day):
+/// the windows state went to 5; round five moved it to 4 alone, so a 24
+/// bank holding a version-4 core failed late. A windows state version
+/// moves this number with it
+/// (`windows_frame.rs::a_windows_state_version_moves_the_banks_schema_with_it`).
+/// **28 since task 161** (2026-10-06): `ew_cov`'s configuration and state
+/// changed shape (its PCA refreshes on the clock; `since_pca` became
+/// `rows_since_pca`, with no default), so a 27 file holding one would not
+/// decode. **29 since task
+/// 163** (2026-10-06): `micro`'s, for its pruning on the clock. **30 since
+/// task 162** (the same day): a window's snapshots are spaced on the clock,
+/// so `snapshot_every` in a 29 file's spec counts rows where this build reads
+/// clock units, and its rings carry no spacing; the five windowed models'
+/// configurations changed shape with them. **31 since task 174** (the same
+/// day): a `lasso` keeps each target's own `min_weight` for its selection,
+/// and a 30 file's lasso holds only the smallest.
+/// **32 since task 175** (the same
+/// day): a window's snapshots are keyed by each row's stamp beside the
+/// summed clock, so a 31 file's rings are another shape, and its streams
+/// keep no exact clock to stamp the next row from; pre-1.0, no loader is
+/// written, and a 31 file is refit. **33 since task 170** (the same day): a
+/// quantile fit's state keeps its band systems, the factors its nudges read
+/// their leverage from, which a band row at `ridge = 0` moves in place; a
+/// 32 file holds none, and a bank loading it would build them afresh where
+/// the saved bank held moved ones, a rounding apart, so it is refit. **34
+/// since task 176** (the same day): an `embargo` is decided on the elapsed
+/// clock held exactly, which each stream's clock keeps and each held row
+/// keeps its place on, where a 33 file's held rows keep the time still to
+/// wait as a double; it is refit.
+/// **35 since task 178** (the same day): `coef_every` reads the clock, where a
+/// 34 file's spec counted rows with it and wrote `0` for its default, which
+/// now means every row; and a stream keeps where its `coef` cadence stands.
+/// A 34 file is refit. Task 179's schema 36 left it at 35: `bocpd`'s
+/// `hazard_on_clock` is written only where it is true, so a 35 file reads
+/// as the per-row hazard it held. **37 since task 180** (the same day): the solve,
+/// component and checkpoint cadences of `ewridge`, `lasso`, `huber`,
+/// `quantile`, `ew_cov` and `micro` keep the stamp of their last event,
+/// where a 36 file's keep a summed clock, so a 36 file holding one would
+/// not decode; it is refit. **38 since task 186** (the same day): the
+/// systems `ewridge` keeps for its readiness statistics lost a Gram index
+/// nothing read, and a closed `rcov` row's `psd_repaired` can be null; a 37
+/// file is refit. **39 since task 194** (2026-10-07): a stream's state nests
+/// what it keeps beside its models (S6), a clock range is kept as clock
+/// values (N18), a closed pair's statistic is `t_stat` (N8), and the
+/// envelope keeps each key column's form (N22); a 38 file is refit.
+/// **40 since task 195** (2026-10-07): `sgd`'s and `pa`'s
+/// `huber_delta` and `eps` are in units of a residual spread each keeps,
+/// `pa` keeps a scaler, `bocpd` a warm-up, `ewridge` and `robust` each
+/// target's own `min_weight`, and `rls`'s prior strength is `delta`; a file
+/// from before it is refit. **41 since task 196** (2026-10-07): a spec's
+/// model is `type = "ewridge"`, a windowed one carries `closed`, `holt`'s
+/// has no `level_half_life`, and `kmeans`' and `corrchange`'s row counts say
+/// `_rows`; a window's ring keeps its edge. A 40 file is refit. **42
+/// since task 200** (2026-10-07): an integer clock is held as an integer,
+/// in the streams' clocks and stamps and in the bank's clock dtypes, and a
+/// windows state is version 8; an older file is refit. **43 since task
+/// 201** (2026-10-07): relative targets were removed, so a 42 file's spec
+/// may hold a target table this build refuses, and a ratio target's metrics
+/// were kept about 1 where every target's are now kept about 0; a 42 file
+/// is refit. **44 since task 202** (the same day): an insensitivity band,
+/// `pa`'s `eps` and `sgd`'s under `epsilon_insensitive`, is in units of the
+/// target's own spread, which each keeps where it kept a residual one; a
+/// file from before it is refit. **45 since task 116** (the same day):
+/// `rls` keeps the squared-weight sum its noise statistic reads Kish's size
+/// from, and `huber` and `quantile` their data shares; a file from before it
+/// is refit. **46 since task 208** (2026-10-08): a stream keeps the waits
+/// its "has not been met" notices count, which a 45 file's stream would
+/// start again at the load; a file from before it is refit. **47 since
+/// task 206** (the same day): a standardizing `sgd`, `pa` or `kalman` keeps
+/// its scaler's warm-up, and past it `sgd`'s and `pa`'s coefficients are in
+/// the caller's units, where they were in the scaler's coordinates; a file
+/// from before it is refit. **48 since task 212** (the same day): a windows
+/// state is version 9, its queues six wide for a variance and its
+/// operators carrying `bias`; a file from before it is refit. **49 since
+/// task 211** (the same day): `kalman` keeps an anchor, its clocks since an
+/// observation and its prior's squared innovations in place of its warm-up;
+/// a file from before it is refit. **50 since task 214** (the same day):
+/// `kalman` keeps the first three rows' squared innovations, which its
+/// prior is the median of; a file from before it is refit. **51 since task
+/// 215** (the same day): `ftrl` keeps no penalty scale, and `kmeans`' and
+/// `micro`'s centres are pairs; a file from before it is refit. **52 since
+/// task 217** (the same day): `ewridge`'s and `lasso`'s cross-moments keep
+/// their rows of positive weight, per target and over every row; a file
+/// from before it is refit. **54 since task 223 (b)** (the same day): a
+/// spec may be an `audit`; a file from before it is refit.
+/// **55 since task 221** (the same day): a stream
+/// keeps the diagnostics with a memory of their own, and a spec the keys
+/// that switch them on; a file from before it is refit. **56 since task
+/// 221 (d)-(h)** (the same day): those diagnostics gain the specification
+/// tests and the parts after them; a file from before it is refit. **57
+/// since review round 6** (2026-10-09, B-5 and A-6): the tails keep central
+/// sums, and a held row's score record its error inflation; a file from
+/// before it is refit. **59 since task 233** (the same day, C-1): an
+/// audit keeps each column's smallest change and the changes at it; a file
+/// from before it is refit. **60 since task 232** (the same day): under a
+/// horizon the diagnostics keep Newey and West's sums; a file from before
+/// it is refit. **61 since review round 7 and task 244** (2026-10-11): a
+/// quantile fit's breaks keep its residuals' lag products under a horizon
+/// beside its indicators' (A-2), an `ew_cov` keeps `bias`, its spec
+/// writes it, and its components' variances follow it, and a spec's keys
+/// and words take the names they keep at 1.0; a file from before it is
+/// refit.
+pub const MIN_BANK_SCHEMA_VERSION: u32 = 61;
+
+/// The version of the envelope a bank with these specs needs: 3 with a
+/// duration in a spec.
+fn format_version_for(specs: &[Spec]) -> u32 {
+    if specs
+        .iter()
+        .any(|s| s.clock_spans().iter().any(|(_, span)| span.is_duration()))
+    {
+        3
+    } else {
+        2
+    }
+}
+
+/// The version of a file with none: version 1, written before the envelope
+/// carried one. Not dead: it reads such a file's header, so the file is
+/// refused by its schema version, with the way out, rather than by a
+/// missing field (task 160, PA9).
+fn default_format_version() -> u32 {
+    1
+}
+
+/// Stable, platform-independent 64-bit hash for session-change detection.
+const fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h: u64 = 0xcbf29ce484222325;
+    let mut i = 0;
+    while i < bytes.len() {
+        h ^= bytes[i] as u64;
+        h = h.wrapping_mul(0x100000001b3);
+        i += 1;
+    }
+    h
+}
+
+/// The hash a null session value carries. Kept as the hash of the historical
+/// sentinel string so that saved states resume with no spurious session change
+/// -- `prev_session` stores these hashes, and a resumed stream compares its
+/// next row against the stored value.
+const NULL_SESSION_HASH: u64 = fnv1a(b"\0<null>");
+
+fn null_session_hash() -> u64 {
+    NULL_SESSION_HASH
+}
+
+/// Session values are compared by 64-bit hash (`ClockState.prev_session`). A
+/// null is its own session, and must be distinct from *every* string -- the
+/// T-E2 bug, one layer down: hashing null as a sentinel string made a session
+/// literally named `"\0<null>"` indistinguishable from null, silently sharing
+/// one session with it. Any string that lands on the null hash (the sentinel
+/// itself, or a 2^-64 accident) is nudged to a neighbouring value instead.
+pub(crate) fn session_hash(v: Option<&str>) -> u64 {
+    match v {
+        None => null_session_hash(),
+        Some(s) => nudged(fnv1a(s.as_bytes())),
+    }
+}
+
+/// [`session_hash`] of an integer's decimal text (what a cast to String
+/// gives), the digits written to the stack: no cast of the column and no
+/// allocation a row.
+pub(crate) fn session_hash_int(v: i64) -> u64 {
+    let mut buf = [0u8; 20];
+    let mut at = buf.len();
+    let mut u = v.unsigned_abs();
+    loop {
+        at -= 1;
+        buf[at] = b'0' + (u % 10) as u8;
+        u /= 10;
+        if u == 0 {
+            break;
+        }
+    }
+    if v < 0 {
+        at -= 1;
+        buf[at] = b'-';
+    }
+    nudged(fnv1a(&buf[at..]))
+}
+
+/// A hash that is not the null session's.
+#[inline]
+fn nudged(h: u64) -> u64 {
+    if h == NULL_SESSION_HASH { h ^ 1 } else { h }
+}
+
+/// Columns extracted once per (spec, chunk).
+///
+/// Plain `f64` with **NaN for null**, not `Option<f64>` (docs/records/PERFORMANCE-LOG.md
+/// P3): half the bytes, no per-value branch, and a memcpy instead of an
+/// element-wise walk for a null-free column. Sound because every consumer
+/// already collapses the two — a feature or weight is accepted only when it
+/// is `usable()` (finite, within `INPUT_BOUND`), so null and NaN both skip
+/// the row, and a target is taken only when usable, so null and NaN are both
+/// "no target". The clock is the one column where null is an *error*, and
+/// that is checked at extraction.
+struct SpecColumns {
+    features: FeatureCols,
+    targets: Vec<Vec<f64>>,
+    clock: Option<ClockCol>,
+    /// Each row's label time, for a spec with `label_clock` (task 341).
+    label: Option<LabelTimes>,
+    session: Option<Vec<u64>>,
+    weight: Option<Vec<f64>>,
+    /// The session column's *values*, in the chunk's own row order, for a
+    /// spec that closes a group on a session change (E54): the closed row
+    /// reports the span's session, and `session` above is a hash. Read at
+    /// one row per closed span, so it is the array rather than a gathered
+    /// `Vec<Option<String>>` -- which would allocate a string per row of the
+    /// chunk to use one of them.
+    session_str: Option<Utf8ViewArray>,
+}
+
+/// Values as `f64`, null as NaN, in the order `layout` gives (see
+/// [`Layout`]). Zero-copy-ish for the common case: a null-free column is
+/// borrowed and copied straight out when the layout is the identity, and
+/// read at a stride otherwise.
+///
+/// There is no dtype check and no cast here: an [`ArrowChunk`] holds a
+/// numeric column as a `Float64Array` and nothing else, so both were made
+/// when the chunk was built (`crate::arrow`).
+fn f64_column(
+    chunk: &ArrowChunk,
+    spec: &Spec,
+    role: &str,
+    name: &str,
+    layout: Layout<'_>,
+) -> PolarsResult<Vec<f64>> {
+    let values = f64_values(chunk.f64(spec, role, name)?);
+    Ok(match layout {
+        Some(perm) => perm.iter().map(|&i| values[i]).collect(),
+        None => values.into_owned(),
+    })
+}
+
+/// The spec's feature columns, as the chunk holds them (docs/records/PERFORMANCE-LOG.md
+/// §20, §42): each column itself, in its source's type, its nulls in its
+/// validity -- nothing copied. A stream copies the rows of each run it learns into a buffer of its
+/// own just before it learns them ([`FeatureCols::rows_into`]), so the
+/// chunk is never written out in rows: as one block that was 160 MB at
+/// 20,000 rows of 1,000 features, written to memory and read back. The
+/// copy widens a `Float32` or integer value to `f64` and reads a null as
+/// `rheon_core::NULL` as it writes the row, where a whole-chunk cast and
+/// fill was another 160 MB.
+///
+/// `par_transpose` lets a pass that copies many rows at once (scoring, the
+/// window pre-pass) spread the copy over the pool. It is for a lone spec:
+/// where several specs run at once, each copies on its own thread, since the
+/// specs already run in parallel and the copy is bound by memory. On every
+/// thread it measured 2 to 2.5 ns of CPU more per feature and row at the
+/// same wall time, five specs of 200 float32 features over 20,000 rows on 14
+/// cores, the threads waiting on memory ([`transposes_in_parallel`]).
+fn feature_cols(
+    chunk: &ArrowChunk,
+    spec: &Spec,
+    layout: Layout<'_>,
+    par: bool,
+    par_transpose: bool,
+) -> PolarsResult<FeatureCols> {
+    // Each column's buffer and validity, shared: nothing is copied here.
+    let cols = spec
+        .features
+        .iter()
+        .map(|c| chunk.feature(spec, c))
+        .collect::<PolarsResult<Vec<FeatureCol>>>()?;
+    Ok(FeatureCols::new(
+        cols,
+        chunk.height(),
+        layout.map(<[usize]>::to_vec),
+        par && par_transpose,
+    ))
+}
+
+/// Whether a spec's transpose spreads over the pool ([`feature_rows`]):
+/// only where it is the one spec with features, as a lone wide spec's
+/// transpose would otherwise be one thread's while the rest wait.
+fn transposes_in_parallel(specs: &[Spec]) -> bool {
+    specs.iter().filter(|s| !s.features.is_empty()).count() <= 1
+}
+
+/// The order a spec's columns are extracted in: `None` is the frame's own
+/// order; `Some(perm)` puts row `perm[j]` at position `j`, which the bank uses
+/// to lay a chunk out group after group (docs/records/PERFORMANCE-LOG.md P9). Only ever
+/// a permutation of `0..height`, so every row appears exactly once.
+pub(crate) type Layout<'a> = Option<&'a [usize]>;
+
+/// `v` in layout order.
+pub(crate) fn gathered<T: Copy>(v: Vec<T>, layout: Layout<'_>) -> Vec<T> {
+    match layout {
+        None => v,
+        Some(perm) => perm.iter().map(|&i| v[i]).collect(),
+    }
+}
+
+/// Where a position in layout order came from, for naming a row in an error.
+fn source_row(layout: Layout<'_>, j: usize) -> usize {
+    layout.map_or(j, |perm| perm[j])
+}
+
+/// An `ew_class` label column as class indices: each value's position in
+/// `classes` as `f64`, null as NaN (a row scored but not learned from). Any
+/// dtype with a string form is a label, as for a key; a non-null value the
+/// spec does not list is an error naming the row, the value and the classes,
+/// rather than a row silently not learned from.
+fn label_column(
+    chunk: &ArrowChunk,
+    spec: &Spec,
+    name: &str,
+    classes: &[String],
+    layout: Layout<'_>,
+) -> PolarsResult<Vec<f64>> {
+    let arr = chunk.str(spec, "label", name)?;
+    let mut v: Vec<f64> = Vec::with_capacity(arr.len());
+    let mut last: Option<(&str, f64)> = None;
+    for (j, value) in arr.iter().enumerate() {
+        v.push(match value {
+            None => f64::NAN,
+            Some(val) => match last {
+                // Labels run in streaks; the last hit answers most rows.
+                Some((l, idx)) if l == val => idx,
+                _ => match classes.iter().position(|c| c == val) {
+                    Some(i) => {
+                        last = Some((val, i as f64));
+                        i as f64
+                    }
+                    None => polars_bail!(ComputeError:
+                        "spec {:?}: label column {:?} has the value {:?} at row {} (counting \
+                         from 0), which is not one of the classes {:?}. List every value the \
+                         column can hold in classes, or set the label to null on rows the model \
+                         should predict without learning.",
+                        spec.name, name, val, chunk.row_base() + j, classes
+                    ),
+                },
+            },
+        });
+    }
+    Ok(gathered(v, layout))
+}
+
+/// Below this many rows a chunk's columns are read, and a spec's fields
+/// assembled, on the calling thread. A task at the floor is a 32 KB copy,
+/// about what a rayon dispatch costs, so there is nothing to gain -- and
+/// something to lose: a caller that hands the bank many small chunks -- a few
+/// dozen rows each -- spreads their allocations over the pool's threads when
+/// they fan out. Measured as a doubled RSS wobble in
+/// `tests/test_ffi_memory.py` (±4.6 vs ±2 KB per call around a flat mean)
+/// with no change in speed (docs/records/PERFORMANCE-LOG.md §12). Public so that
+/// `tests/chunk_plan.rs` can run the same frames on both sides of it.
+pub const PAR_MIN_ROWS: usize = 4096;
+
+/// The same threshold in feature values, for a chunk that is wide rather
+/// than tall: at `k = 10,000` a chunk of a few hundred rows is tens of
+/// megabytes to cast and transpose, well worth a dispatch, and half a
+/// megabyte of features is not the many-small-chunks case above. The block itself
+/// is allocated on the calling thread either way.
+const PAR_MIN_CELLS: usize = 1 << 16;
+
+/// `scoring` is [`Bank::predict`]'s reading of the chunk: the features and
+/// the clock are required as ever, a target or session column is read when
+/// present and taken as absent otherwise, and the weight column is not read
+/// at all -- a scoring row has nothing to weigh.
+///
+/// Every column comes back in `layout` order. The columns are independent
+/// passes over the chunk, so they are read in parallel (from [`PAR_MIN_ROWS`]
+/// up): with one spec in the bank this phase was a single thread copying
+/// every column in turn.
+fn extract(
+    chunk: &ArrowChunk,
+    spec: &Spec,
+    scoring: bool,
+    layout: Layout<'_>,
+    par_transpose: bool,
+) -> PolarsResult<SpecColumns> {
+    let optional = |name: &str| scoring && !chunk.has(name);
+    let par =
+        chunk.height() >= PAR_MIN_ROWS || chunk.height() * spec.features.len() >= PAR_MIN_CELLS;
+    let features = || feature_cols(chunk, spec, layout, par, par_transpose);
+    let targets = || -> PolarsResult<Vec<Vec<f64>>> {
+        // A comparison's targets are residual fields of two other specs'
+        // output, which the bank fills in once those have run
+        // (`compare_targets`); the frame is not read for them.
+        if spec.model.compares().is_some() {
+            return Ok(Vec::new());
+        }
+        map_maybe_par(spec.targets.defs(), par, |t| {
+            let c = t.column.as_str();
+            // A formula target is not known at its row: the bank's window
+            // core resolves it later (docs/PLAN.md task 104), so here it is
+            // null on every row. A scoring call may leave a target out.
+            if t.is_formula() || optional(c) {
+                Ok(vec![f64::NAN; chunk.height()])
+            } else if let ModelKind::EwClass { classes, .. } = &spec.model {
+                label_column(chunk, spec, c, classes, layout)
+            } else {
+                let v = f64_column(chunk, spec, "target", c, layout)?;
+                // A `strict_binary` target is 0 or 1, and anything else is an
+                // error naming the row, as a label outside `ew_class`'s
+                // classes is -- checked here, before any stream is touched, so
+                // the bank is left as it was (review 2026-09-12, S31). It was
+                // a silent skip that still counted the row toward `n_eff`.
+                if matches!(
+                    spec.model,
+                    ModelKind::Ftrl {
+                        strict_binary: true,
+                        ..
+                    } | ModelKind::Sgd {
+                        strict_binary: true,
+                        ..
+                    }
+                ) && let Some(j) = v.iter().position(|&f| usable(f) && f != 0.0 && f != 1.0)
+                {
+                    polars_bail!(ComputeError:
+                        "spec {:?}: target column {:?} has the value {} at row {} (counting \
+                         from 0), but strict_binary takes only 0 or 1. Set the target to null \
+                         on rows the model should predict without learning, or leave out \
+                         strict_binary to clamp each value to the range from 0 to 1.",
+                        spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
+                    );
+                }
+                // A Poisson fit takes counts, and a negative one is an error
+                // naming the row, as scikit-learn's `PoissonRegressor`
+                // refuses one and as `strict_binary` refuses a label (the
+                // user, 2026-10-08; docs/PLAN.md task 209 (e)). Taken as it
+                // stood, `p - y` drove the prediction to the link's clamp.
+                // `-0.0` is not below zero: it is the count 0.
+                if matches!(&spec.model, ModelKind::Sgd { loss, .. } if loss.as_deref() == Some("poisson"))
+                    && let Some(j) = v.iter().position(|&f| usable(f) && f < 0.0)
+                {
+                    polars_bail!(ComputeError:
+                        "spec {:?}: target column {:?} has the value {} at row {} (counting \
+                         from 0), but loss=\"poisson\" takes a count, which is never negative. \
+                         Set the target to null on rows the model should predict without \
+                         learning, or choose another loss.",
+                        spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
+                    );
+                }
+                // `bocpd`'s hazard column rides in the targets slot and is
+                // not a target: it is a parameter, and a value the model
+                // cannot use makes the row report nulls and vanish from the
+                // posterior with nothing said. Null and a value that is not
+                // usable (NaN, ±inf, past `INPUT_BOUND`) mean "no value here"
+                // and fall back to `hazard`, as everywhere else; a usable one
+                // that is not a hazard is an error (docs/REVIEW-E54-E64.md
+                // B1; past the bound since task 278, D-WB). The
+                // `strict_binary` and Poisson checks above read the same way.
+                if matches!(
+                    spec.model,
+                    ModelKind::Bocpd {
+                        hazard_col: Some(_),
+                        ..
+                    }
+                ) && let Some(j) = v.iter().position(|&f| usable(f) && f <= 1.0)
+                {
+                    polars_bail!(ComputeError:
+                        "spec {:?}: hazard column {:?} has the value {} at row {} (counting \
+                         from 0), but a hazard, the expected number of rows between \
+                         changepoints, must be above 1. Set it above 1, or to null to use the \
+                         spec's own hazard on that row.",
+                        spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
+                    );
+                }
+                Ok(v)
+            }
+        })
+    };
+    let clock = || -> PolarsResult<Option<ClockCol>> {
+        let Some(c) = &spec.clock else {
+            return Ok(None);
+        };
+        // A temporal clock arrives as nanoseconds and a numeric one as
+        // numbers: which, is a question about the source column, settled
+        // where the chunk is built (`crate::arrow`, docs/records/TESTING-LOG.md T-E10).
+        // A clock with no value has no defined delta either way, so a null
+        // -- a NaN in the numeric form, with inf -- is refused by row.
+        let bad = |j: usize| {
+            polars_err!(ComputeError:
+                "spec {:?}: clock column {:?} has a null, NaN or infinite value at row {} \
+                 (counting from 0), and a clock needs a value on every row. Drop the rows with \
+                 no clock value, or fill them, before the bank reads them.",
+                spec.name, c, chunk.row_base() + source_row(layout, j)
+            )
+        };
+        // An integer column's values in the stream's row order, a null
+        // refused by row.
+        let gather_i64 = |a: &polars_arrow::array::Int64Array| -> PolarsResult<Vec<i64>> {
+            let values = a.values().as_slice();
+            if let Some(validity) = a.validity().filter(|v| v.unset_bits() > 0) {
+                let n = layout.map_or(values.len(), <[usize]>::len);
+                let source = |j: usize| layout.map_or(j, |perm| perm[j]);
+                if let Some(j) = (0..n).find(|&j| !validity.get_bit(source(j))) {
+                    return Err(bad(j));
+                }
+            }
+            Ok(match layout {
+                Some(perm) => perm.iter().map(|&i| values[i]).collect(),
+                None => values.to_vec(),
+            })
+        };
+        Ok(Some(match chunk.clock(spec, c)? {
+            ClockArray::F64(a) => {
+                let values = f64_values(a);
+                let v: Vec<f64> = match layout {
+                    Some(perm) => perm.iter().map(|&i| values[i]).collect(),
+                    None => values.into_owned(),
+                };
+                if let Some(j) = v.iter().position(|f| !f.is_finite()) {
+                    return Err(bad(j));
+                }
+                ClockCol::F64(v)
+            }
+            ClockArray::Nanos(a) => ClockCol::Ns(gather_i64(a)?),
+            // An integer clock, as its integers (task 200).
+            ClockArray::I64(a) => ClockCol::I64(gather_i64(a)?),
+            // An unsigned clock past what an `i64` holds is refused by
+            // row: an integer clock is held as one (task 200), and a cast
+            // to a double, which took it before, resolved 2048 there.
+            ClockArray::U64(a) => {
+                let n = layout.map_or(a.len(), <[usize]>::len);
+                let source = |j: usize| layout.map_or(j, |perm| perm[j]);
+                let mut v = Vec::with_capacity(n);
+                for j in 0..n {
+                    let Some(x) = a.get(source(j)) else {
+                        return Err(bad(j));
+                    };
+                    let Ok(x) = i64::try_from(x) else {
+                        polars_bail!(ComputeError:
+                            "spec {:?}: clock column {:?} has the value {} at row {} \
+                             (counting from 0), above {}, the largest value an integer clock \
+                             holds (an Int64's). Shift the clock by subtracting an origin, then \
+                             cast it to Int64.",
+                            spec.name, c, x, chunk.row_base() + source_row(layout, j), i64::MAX
+                        );
+                    };
+                    v.push(x);
+                }
+                ClockCol::I64(v)
+            }
+        }))
+    };
+    // Each row's label time, as the clock is read but with its nulls kept:
+    // a null is a label that never arrives (task 341).
+    let label = || -> PolarsResult<Option<LabelTimes>> {
+        let Some(l) = &spec.label_clock else {
+            return Ok(None);
+        };
+        let validity = |v: Option<&polars_arrow::bitmap::Bitmap>| -> Option<Vec<bool>> {
+            let v = v.filter(|v| v.unset_bits() > 0)?;
+            Some(match layout {
+                Some(perm) => perm.iter().map(|&i| v.get_bit(i)).collect(),
+                None => v.iter().collect(),
+            })
+        };
+        let ints = |a: &polars_arrow::array::Int64Array| -> Vec<i64> {
+            let values = a.values().as_slice();
+            match layout {
+                Some(perm) => perm.iter().map(|&i| values[i]).collect(),
+                None => values.to_vec(),
+            }
+        };
+        Ok(Some(match chunk.clock(spec, l.column())? {
+            ClockArray::F64(a) => {
+                let values = f64_values(a);
+                let v: Vec<f64> = match layout {
+                    Some(perm) => perm.iter().map(|&i| values[i]).collect(),
+                    None => values.into_owned(),
+                };
+                LabelTimes {
+                    values: ClockCol::F64(v),
+                    valid: None,
+                }
+            }
+            ClockArray::Nanos(a) => LabelTimes {
+                values: ClockCol::Ns(ints(a)),
+                valid: validity(a.validity()),
+            },
+            ClockArray::I64(a) => LabelTimes {
+                values: ClockCol::I64(ints(a)),
+                valid: validity(a.validity()),
+            },
+            // An unsigned label time past an `i64` is no place on an
+            // integer clock, which is one (task 200): never reached.
+            ClockArray::U64(a) => {
+                let n = layout.map_or(a.len(), <[usize]>::len);
+                let mut v = Vec::with_capacity(n);
+                let mut valid = Vec::with_capacity(n);
+                for j in 0..n {
+                    let x = a
+                        .get(layout.map_or(j, |perm| perm[j]))
+                        .and_then(|x| i64::try_from(x).ok());
+                    valid.push(x.is_some());
+                    v.push(x.unwrap_or(0));
+                }
+                LabelTimes {
+                    values: ClockCol::I64(v),
+                    valid: Some(valid),
+                }
+            }
+        }))
+    };
+    let session = || -> PolarsResult<(Option<Vec<u64>>, Option<Utf8ViewArray>)> {
+        match &spec.session {
+            Some(c) if !optional(c) => {
+                let a = chunk.str(spec, "session", c)?;
+                let hashes = gathered(a.iter().map(session_hash).collect(), layout);
+                let vals = spec.closes_on_session().then(|| a.clone());
+                Ok((Some(hashes), vals))
+            }
+            _ => Ok((None, None)),
+        }
+    };
+    let weight = || -> PolarsResult<Option<Vec<f64>>> {
+        match &spec.weight {
+            Some(_) if scoring => Ok(None),
+            Some(c) => {
+                let v = f64_column(chunk, spec, "weight", c, layout)?;
+                // A negative weight is never meaningful for a weighted mean, and
+                // silently letting one through corrupts the accumulators (the EW
+                // count and the per-target cross moments disagree about whether the
+                // row happened). Non-finite weights are a different case, handled
+                // uniformly with unusable features: NaN, ±inf and a magnitude past
+                // `INPUT_BOUND` mean "no information for this row" and skip it
+                // (docs/PLAN.md §3), so only a *usable* negative weight is an
+                // error. A finite one past the bound is missing too, as the
+                // README says: `-1e101` was refused here (task 278, D-WB).
+                if let Some(j) = v.iter().position(|&f| usable(f) && f < 0.0) {
+                    polars_bail!(ComputeError:
+                        "spec {:?}: weight column {:?} has the value {} at row {} (counting \
+                         from 0), but a weight must be at least 0. Set the weight to 0 for a \
+                         row the model should predict without learning, or to null to skip \
+                         the row.",
+                        spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
+                    );
+                }
+                // `rcov` sums returns over a block; a fractional weight has
+                // no meaning there, so it takes a weight only as "this row
+                // is a return" or "this row is not" (E57). A weight that is
+                // not usable is missing, as everywhere else (task 278, D-WB).
+                if matches!(spec.model, ModelKind::Rcov { .. })
+                    && let Some(j) = v.iter().position(|&f| usable(f) && f != 0.0 && f != 1.0)
+                {
+                    polars_bail!(ComputeError:
+                        "spec {:?}: weight column {:?} has the value {} at row {} (counting \
+                         from 0), but rcov takes a weight of 0 or 1 only, since a realized \
+                         covariance sums returns rather than weighing them. Set the weight to 1 \
+                         on a row that is a return and to 0 on one that is not.",
+                        spec.name, c, v[j], chunk.row_base() + source_row(layout, j)
+                    );
+                }
+                Ok(Some(v))
+            }
+            None => Ok(None),
+        }
+    };
+    // Every column in one parallel batch: the session hash and the clock
+    // check are passes of their own, and used to wait for the features.
+    let ((features, targets), (clock, (session, weight))) = join_maybe_par(
+        par,
+        || join_maybe_par(par, features, targets),
+        || join_maybe_par(par, clock, || join_maybe_par(par, session, weight)),
+    );
+    let (session, session_str) = session?;
+    Ok(SpecColumns {
+        features: features?,
+        targets: targets?,
+        clock: clock?,
+        label: label()?,
+        session,
+        weight: weight?,
+        session_str,
+    })
+}
+
+/// One stream's flat output buffers for a chunk. Fallible because the clock
+/// policy can refuse a row (task 120). Boxed: a run's buffers are moved from
+/// the task that fills them to the spec that assembles them, and a move of
+/// the struct, about seven hundred bytes of vector headers, was a tenth of a
+/// one-row task (task 270, G-1).
+type StreamRows = PolarsResult<Box<ChunkOut>>;
+
+/// The run buffers a bank keeps between chunks for its small tasks to fill
+/// again ([`ChunkOut::renew`]), at most [`SPARE_BYTES`] of them, each at most
+/// [`SPARE_ONE`]: a bank of many small groups makes a run's buffers for each
+/// group of each chunk, and allocating and freeing them was the largest
+/// share of such a task (task 270, G-1). A long run's buffers are freed as
+/// before, so a wide or long chunk leaves nothing held.
+#[derive(Default)]
+pub(crate) struct Spares {
+    /// Each kept run's buffers, with the bytes they hold.
+    outs: Vec<(Box<ChunkOut>, usize)>,
+    bytes: usize,
+}
+
+/// The most bytes of run buffers a bank keeps between chunks.
+const SPARE_BYTES: usize = 16 << 20;
+/// The most bytes one kept run's buffers may hold.
+const SPARE_ONE: usize = 4 << 20;
+
+impl Spares {
+    /// A kept run's buffers, if any are left.
+    fn take(&mut self) -> Option<Box<ChunkOut>> {
+        let (out, bytes) = self.outs.pop()?;
+        self.bytes -= bytes;
+        Some(out)
+    }
+
+    /// Keep a run's buffers for a later run, where they fit; free them
+    /// otherwise.
+    fn give(&mut self, out: Box<ChunkOut>) {
+        let Some(bytes) = out.heap_bytes_within(SPARE_ONE) else {
+            return;
+        };
+        if self.bytes + bytes <= SPARE_BYTES {
+            self.bytes += bytes;
+            self.outs.push((out, bytes));
+        }
+    }
+}
+
+/// A run's buffers for `n_rows` rows: `spare`'s, renewed (`ChunkOut::renew_run`:
+/// what the run writes in full is not filled again), or new.
+fn run_buffers(
+    spare: Option<Box<ChunkOut>>,
+    spec: &Spec,
+    n_models: usize,
+    n_slots: usize,
+    n_rows: usize,
+) -> Box<ChunkOut> {
+    match spare {
+        Some(mut out) => {
+            out.renew_run(spec, n_models, n_slots, n_rows);
+            out
+        }
+        None => Box::new(ChunkOut::new(spec, n_models, n_slots, n_rows)),
+    }
+}
+
+/// Pair `(t, j)` of a `marginal` instance as its table reports it: with
+/// `corr`, `beta`, `t_stat`, `t_stat_serial`, the lag correlations, their
+/// fitted decays `phi_x`/`phi_y` and the split withheld while the
+/// stream is less settled than `min_settled_frac` (`unsettled`), as the core
+/// withholds them below `min_weight` (task 278, the user's decision of
+/// 2026-10-25). The moments are reported either way, as under `min_weight`.
+fn gated_pair(
+    m: &rheon_core::Marginal,
+    t: usize,
+    j: usize,
+    unsettled: bool,
+) -> rheon_core::MarginalPair {
+    let mut p = m.pair(t, j);
+    if unsettled {
+        p.corr = f64::NAN;
+        p.beta = f64::NAN;
+        p.t = f64::NAN;
+        p.t_serial = f64::NAN;
+        p.split_gain = f64::NAN;
+        p.split_at = f64::NAN;
+        p.split_gain_t = f64::NAN;
+        // As `corr` is (task 278's follow-ups); `n_serial` is a count.
+        // The fitted decays are estimated from the lag correlations, so
+        // they go with them.
+        for v in p
+            .lag_corr_xx
+            .iter_mut()
+            .chain(&mut p.lag_corr_yy)
+            .chain(&mut p.lag_corr_xy)
+            .chain(&mut p.lag_corr_yx)
+        {
+            *v = f64::NAN;
+        }
+        p.phi_x = f64::NAN;
+        p.phi_y = f64::NAN;
+    }
+    p
+}
+
+/// The [`ClosedRow`]s of one stream at the moment it closes: one per decay
+/// instance, the state exactly as it stands (docs/ENHANCEMENTS.md E54).
+///
+/// `at` is where the closing row sits in the chunk -- the first row of the
+/// new session, or the first row of the greater key -- which is what orders
+/// the bank's queue. The PCA block is left empty; the bank fills it as the
+/// row is queued, so that the sign continuity depends on queue order alone
+/// and not on which thread got there first.
+fn close_rows(
+    si: usize,
+    spec: &Spec,
+    key: &GroupKey,
+    stream: &Stream,
+    at: usize,
+) -> Vec<ClosedRow> {
+    let summary = stream.summary();
+    let session = spec
+        .closes_on_session()
+        .then(|| stream.persisted.last_session.clone())
+        .flatten();
+    stream
+        .models
+        .iter()
+        .enumerate()
+        .flat_map(|(i, (label, model))| {
+            let grams = gram_of(key, label, model);
+            let unsettled = stream.settled_withholds(spec, i);
+            let pairs = match model {
+                AnyModel::Marginal(m) => spec
+                    .targets
+                    .iter()
+                    .enumerate()
+                    .flat_map(|(t_i, t)| {
+                        spec.features.iter().enumerate().map(move |(j, f)| {
+                            let p = gated_pair(m, t_i, j, unsettled);
+                            PairRow {
+                                feature: f.clone(),
+                                target: t.clone(),
+                                n_eff: p.n_eff,
+                                n_kish: p.n_kish,
+                                mean_x: p.mean_x,
+                                var_x: p.var_x,
+                                mean_y: p.mean_y,
+                                var_y: p.var_y,
+                                cov: p.cov,
+                                corr: p.corr,
+                                beta: p.beta,
+                                t_stat: p.t,
+                                lag_corr_xx: p.lag_corr_xx,
+                                lag_corr_yy: p.lag_corr_yy,
+                                lag_corr_xy: p.lag_corr_xy,
+                                lag_corr_yx: p.lag_corr_yx,
+                                n_serial: p.n_serial,
+                                t_serial: p.t_serial,
+                                phi_x: p.phi_x,
+                                phi_y: p.phi_y,
+                                bin_edges: p.bin_edges,
+                                bin_n: p.bin_n,
+                                bin_mean_y: p.bin_mean_y,
+                                bin_var_y: p.bin_var_y,
+                                split_gain: p.split_gain,
+                                split_at: p.split_at,
+                                split_gain_t: p.split_gain_t,
+                            }
+                        })
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let rcov = match model {
+                AnyModel::Rcov(m) => {
+                    let e = m.estimate();
+                    let k = spec.k();
+                    // `min_weight` on a block (task 278, the user's decision
+                    // of 2026-10-25): its weight is the returns accepted, each
+                    // row's weight being 0 or 1, so the floor is a count of
+                    // returns. Below it the estimate is withheld, as one too
+                    // short to estimate from is, and the other fields still
+                    // say what the block held.
+                    let enough = m.n_eff() >= spec.min_periods_or_default();
+                    Some(RcovRow {
+                        rcov: e.rcov.as_ref().filter(|_| enough).map(|c| vech(c, k)),
+                        rcorr: e.rcorr.as_ref().filter(|_| enough).map(|c| vech(c, k)),
+                        n: e.n,
+                        kind: e.kind.to_string(),
+                        bandwidth_used: e.bandwidth_used,
+                        omega2: e.omega2,
+                        iv_sparse: e.iv_sparse,
+                        iq: e.iq,
+                        psd_repaired: e.psd_repaired,
+                    })
+                }
+                _ => None,
+            };
+            let coefs = model.coefficients();
+            // One row per Gram, with its targets' coefficients (task 81).
+            let row = |gram: Option<Gram>| {
+                let coef = coefs.as_ref().map(|c| {
+                    let per = c.len() / spec.m().max(1);
+                    match gram.as_ref().map(|g| &g.targets) {
+                        Some(t) if !t.is_empty() && per > 0 => t
+                            .iter()
+                            .flat_map(|&j| c[j * per..(j + 1) * per].iter().flatten().copied())
+                            .collect(),
+                        _ => c.iter().flatten().copied().collect(),
+                    }
+                });
+                ClosedRow {
+                    spec: si,
+                    group: key.clone(),
+                    instance: label.clone(),
+                    session: session.clone(),
+                    // The Gram's weight, as its `n_kish` is: `from_row`
+                    // reads it as the Gram's (the model's under `pairwise`).
+                    n_eff: gram.as_ref().map_or(model.n_eff(), |g| g.n_eff),
+                    n_kish: gram.as_ref().and_then(|g| g.n_kish),
+                    rows_fed: summary.map(|s| s.rows_fed),
+                    rows_learned: summary.map(|s| s.rows_learned),
+                    clock_min: summary.and_then(|s| s.clock_min),
+                    clock_max: summary.and_then(|s| s.clock_max),
+                    gram,
+                    coef,
+                    eig_vals: None,
+                    eig_vecs: None,
+                    pairs: pairs.clone(),
+                    rcov: rcov.clone(),
+                    at,
+                }
+            };
+            if grams.is_empty() {
+                vec![row(None)]
+            } else {
+                grams.into_iter().map(|g| row(Some(g))).collect()
+            }
+        })
+        .collect()
+}
+
+/// Refuse a chunk whose group keys are not in non-decreasing order, or
+/// whose first key is below what this spec has already closed past
+/// (docs/ENHANCEMENTS.md E54).
+///
+/// This is what makes interleaving an *error* rather than a wrong answer:
+/// [`group_indices`] partitions by first appearance, so the rows of `A, B,
+/// A` would be gathered into one run per key and the close would emit `A`
+/// while its later rows were still to come. The check runs before any model
+/// is touched, beside `check_clock`, so a refused chunk leaves the bank as
+/// it was.
+///
+/// `slot` is scratch: the group each row belongs to, so the walk compares
+/// two `GroupKey`s rather than re-reading the column.
+fn check_monotone(
+    spec: &Spec,
+    groups: &Groups<'_>,
+    n: usize,
+    integer: bool,
+    text: bool,
+    high_water: Option<&GroupKey>,
+    row_base: usize,
+) -> PolarsResult<()> {
+    use std::cmp::Ordering::*;
+    if groups.is_empty() {
+        return Ok(());
+    }
+    // Only a monotone close reads the keys as `GroupKey`s.
+    let keys = groups.owned_keys();
+    if let Some(g) = keys.iter().position(|k| k.as_str().is_none()) {
+        polars_bail!(ComputeError:
+            "spec {:?}: row {} (counting from 0) has a null group key, but group_close = \
+             \"monotone\" closes groups in the order of their keys, and a null has no place in \
+             that order. Give every row a group key, or set group_close = \"session\" with a \
+             session column (session=) whose changes close each group.",
+            spec.name, row_base + groups.rows(g)[0]
+        );
+    }
+    let mut slot = vec![usize::MAX; n];
+    for gi in 0..groups.len() {
+        for &r in groups.rows(gi) {
+            slot[r] = gi;
+        }
+    }
+    let mut prev = usize::MAX;
+    for (r, &gi) in slot.iter().enumerate() {
+        if gi == usize::MAX {
+            continue;
+        }
+        if prev != usize::MAX && gi != prev && key_cmp(&keys[gi], &keys[prev], integer) == Less {
+            let column = spec.group.as_deref().unwrap_or("");
+            // Polars sorts an integer or a text column in the order the
+            // keys are compared in; any other column's keys are compared as
+            // their text, which its own sort does not follow.
+            let sort = if integer || text {
+                format!("Sort the rows by {column:?}, which Polars sorts in that order")
+            } else {
+                format!(
+                    "Cast {column:?} to Int64, where every key is a whole number, or to String, \
+                     and sort the rows by it"
+                )
+            };
+            polars_bail!(ComputeError:
+                "spec {:?}: row {} (counting from 0) has group {} after group {}, but \
+                 group_close = \"monotone\" needs the keys in ascending order, as numbers for an \
+                 integer column and as text otherwise. {sort}, or set group_close = \"session\" with \
+                 a session column (session=).",
+                spec.name, row_base + r, keys[gi], keys[prev]
+            );
+        }
+        prev = gi;
+    }
+    if let Some(hw) = high_water {
+        // A mark stored under one dtype and read under another is a
+        // different key: `"10"` orders after `"9"` as an integer and before
+        // it as a string, so the mark would let through exactly the groups
+        // it exists to refuse.
+        if integer && hw.as_str().is_none_or(|k| k.parse::<i128>().is_err()) {
+            polars_bail!(ComputeError:
+                "spec {:?}: the largest group key the saved state has read is {}, which is not an \
+                 integer, but group column {:?} is, so the state was saved with a group column \
+                 of another type. Cast the group column back to the type the state was saved \
+                 with, or rebuild the state from its input.",
+                spec.name, hw, spec.group.as_deref().unwrap_or("")
+            );
+        }
+        // The first key of the chunk is the smallest, the walk above having
+        // passed; anything below the mark belongs to a group this bank has
+        // already emitted and dropped.
+        if key_cmp(&keys[0], hw, integer) == Less {
+            polars_bail!(ComputeError:
+                "spec {:?}: row {} (counting from 0) has group {}, below group {}, the largest the \
+                 bank has read, and group_close = \"monotone\" never takes a group below that. \
+                 Remove the rows whose group is below {}, or sort the rows by the group column \
+                 before the bank's first call.",
+                spec.name, row_base + groups.rows(0)[0], keys[0], hw, hw
+            );
+        }
+    }
+    Ok(())
+}
+
+/// The rows of `idx` at which this stream's session value changes, under
+/// `group_close = "session"` (E54). Each is the first row of a new span, so
+/// the span before it closes there.
+///
+/// Read from the session hashes the columns already carry and the stream's
+/// own last hash, in row order: a boundary is a property of two consecutive
+/// rows, which is what makes the split chunk-invariant.
+fn session_bounds(stream: &Stream, sess: &[u64], n: usize, base: usize) -> Vec<usize> {
+    let mut prev = stream.persisted.clock.prev_session();
+    let mut bounds = Vec::new();
+    for ri in 0..n {
+        let h = sess[base + ri];
+        if prev.is_some_and(|p| p != h) {
+            bounds.push(ri);
+        }
+        prev = Some(h);
+    }
+    bounds
+}
+
+/// The sinks `process` filled, each with its spec's index.
+type Filled<'s> = Vec<(usize, Sink<'s>)>;
+
+/// What `process` returns: each task's runs, with its spec's index, the
+/// rows the streams closed with, the filled sinks, and the run buffers a
+/// task was given or emptied into a sink and did not keep.
+type Processed<'s> = (Vec<Runs>, Vec<ClosedRow>, Filled<'s>, Vec<Box<ChunkOut>>);
+
+/// The runs one task hands back, each with its spec's index: usually one,
+/// which is held in the task's result, not in a list of its own (an
+/// allocation for every group of every chunk).
+#[derive(Default)]
+struct Runs {
+    first: Option<(usize, StreamRows)>,
+    more: Vec<(usize, StreamRows)>,
+}
+
+impl Runs {
+    fn push(&mut self, run: (usize, StreamRows)) {
+        if self.first.is_none() {
+            self.first = Some(run);
+        } else {
+            self.more.push(run);
+        }
+    }
+}
+
+impl IntoIterator for Runs {
+    type Item = (usize, StreamRows);
+    type IntoIter = std::iter::Chain<
+        std::option::IntoIter<(usize, StreamRows)>,
+        std::vec::IntoIter<(usize, StreamRows)>,
+    >;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.first.into_iter().chain(self.more)
+    }
+}
+
+/// Run one phase of a chunk through its streams, learning: every `(spec,
+/// group)` task in parallel, each in runs of [`ChunkOut::run_rows`] rows
+/// through its stream in order, one set of buffers per run. The runs are a
+/// cache-sizing device (docs/records/PERFORMANCE-LOG.md §13); chunk invariance makes them
+/// the same computation as one, and `last` keeps the coefficient report on
+/// the chunk's final row.
+///
+/// A spec with a sink in `sinks` -- one that a single stream serves in the
+/// chunk ([`sinks`]) -- hands each run to it as the run ends: the run is
+/// copied into the sink on another thread while the next is learned, and
+/// its buffers are then filled again by the run after, so the task holds
+/// two runs' buffers, not the chunk's. The sinks come back filled. Every
+/// other spec's runs come back as they are, for [`assemble_phase`]. Each
+/// task's first run fills buffers kept from an earlier chunk where `spares`
+/// has some.
+#[allow(clippy::too_many_arguments)]
+fn process<'s>(
+    work: Vec<(usize, &GroupKey, &[usize], usize, &mut Stream)>,
+    specs: &[Spec],
+    cfgs: &[ClockCfg],
+    cols: &[SpecColumns],
+    formulas: &[Option<FormulaBundle>],
+    row_base: usize,
+    mut sinks: Vec<Option<Sink<'s>>>,
+    spares: &mut Spares,
+) -> Processed<'s> {
+    type TaskOut<'s> = (
+        Runs,
+        Vec<ClosedRow>,
+        Option<(usize, Sink<'s>)>,
+        Option<Box<ChunkOut>>,
+    );
+    let work: Vec<_> = work
+        .into_iter()
+        .map(|w| {
+            let sink = sinks.get_mut(w.0).and_then(Option::take);
+            (w, sink, spares.take())
+        })
+        .collect();
+    // `"auto"`'s share of the pool: the tasks here run side by side, so a
+    // spec's Gram update splits only into threads no task holds (task 253).
+    // Called inside the bank's pool, so this is its size.
+    let share = if par() {
+        crate::pool::gram_share(work.len(), rayon::current_num_threads())
+    } else {
+        1
+    };
+    let per_task: Vec<TaskOut<'s>> = map_vec_maybe_par(
+        work,
+        par(),
+        |((si, key, idx, base, stream), mut sink, mut spare)| {
+            #[cfg(test)]
+            threads_tests::probe(&specs[si].name);
+            let spec = &specs[si];
+            let gram_threads = spec.model.gram_threads_sharing(share);
+            #[cfg(test)]
+            threads_tests::probe_gram(&spec.name, gram_threads);
+            let sc = &cols[si];
+            let formula_targets = formulas[si].as_ref().map(|b| b.targets(key));
+            let mut outs = Runs::default();
+            let mut closed: Vec<ClosedRow> = Vec::new();
+            // A session close splits the run: the rows before the boundary
+            // are the span, the stream emits its row and starts over, and
+            // the rows after are a fresh stream's first rows (E54). Every
+            // segment gets its own buffers, exactly as the cache-sized runs
+            // below do, so nothing else in the chunk path changes.
+            let bounds = match (spec.closes_on_session(), sc.session.as_deref()) {
+                (true, Some(sess)) => session_bounds(stream, sess, idx.len(), base),
+                _ => Vec::new(),
+            };
+            // The group's last accepted row in the chunk, which `coef` rides
+            // on without a cadence, whichever run or session span it is in.
+            let coef_at = last_accepted(&sc.features, sc.weight.as_deref(), base, idx.len());
+            // The run's features as rows, copied from the columns just before
+            // the run is learned and read from cache, one buffer reused run
+            // after run (docs/records/PERFORMANCE-LOG.md §42).
+            let mut rows = FeatureRows::pooled();
+            // Each segment's first row: 0, then each boundary.
+            let start_of = |seg: usize| if seg == 0 { 0 } else { bounds[seg - 1] };
+            // A run learned and waiting for its sink.
+            let mut pending: Option<Box<ChunkOut>> = None;
+            let session_of = |row: usize| -> Option<String> {
+                let s = sc.session_str.as_ref()?;
+                s.get(row).map(str::to_string)
+            };
+            'segments: for seg in 0..=bounds.len() {
+                let start = start_of(seg);
+                let end = bounds.get(seg).copied().unwrap_or(idx.len());
+                if seg > 0 {
+                    // The span before this row is finished.
+                    closed.extend(close_rows(si, spec, key, stream, idx[start]));
+                    let over = stream.refit_over_budget();
+                    // The notices the span raised and nobody has taken go
+                    // on to the next span's stream, to be said first: lost
+                    // with the span, they were said or not by where a chunk
+                    // ended (task 333). Each names the closed span, whose
+                    // session value the stream still holds (task 334).
+                    let held = stream.take_notices(spec);
+                    *stream = Stream::new(spec).expect("the spec built this stream once");
+                    stream.carry_notices(held);
+                    // The group's reservation is the one it was given when
+                    // the bank first saw it (`reserve_refits`).
+                    if over {
+                        stream.refit_give_up();
+                    }
+                }
+                // Configuration, not state: set on every segment, a fresh
+                // stream's too. The same bits at any count.
+                stream.set_gram_threads(gram_threads);
+                let (n_models, n_slots) = (stream.n_models(), stream.n_slots());
+                let run_rows = ChunkOut::run_rows(spec, n_models, n_slots);
+                let mut off = start;
+                for run in idx[start..end].chunks(run_rows) {
+                    let mut out = run_buffers(spare.take(), spec, n_models, n_slots, run.len());
+                    let learn =
+                        |stream: &mut Stream, out: &mut ChunkOut, rows: &mut FeatureRows| {
+                            sc.features.rows_into(rows, base + off, run.len());
+                            stream.process_chunk(
+                                spec,
+                                &cfgs[si],
+                                rows,
+                                &sc.targets,
+                                sc.clock.as_ref(),
+                                sc.label.as_ref(),
+                                sc.session.as_deref(),
+                                sc.weight.as_deref(),
+                                run,
+                                base + off,
+                                out,
+                                coef_at,
+                                formula_targets,
+                            )
+                        };
+                    // The run before this one is copied into its sink on
+                    // another thread while this one is learned.
+                    let r = match (sink.as_mut(), pending.as_mut()) {
+                        (Some(sink), Some(prev)) => {
+                            let (r, ()) = join_maybe_par(
+                                par(),
+                                || learn(stream, &mut out, &mut rows),
+                                || sink.absorb(std::slice::from_mut(prev)),
+                            );
+                            // Copied: its buffers are the run after's.
+                            spare = pending.take();
+                            r
+                        }
+                        _ => learn(stream, &mut out, &mut rows),
+                    };
+                    off += run.len();
+                    match r {
+                        Ok(()) => {
+                            stream.remember_last(&out);
+                            match sink {
+                                Some(_) => pending = Some(out),
+                                None => outs.push((si, Ok(out))),
+                            }
+                            if let Some((bytes, cadence)) = stream.window_over_budget() {
+                                outs.push((si, Err(over_budget(spec, key, bytes, cadence, true))));
+                                break 'segments;
+                            }
+                        }
+                        Err(refusal) => {
+                            outs.push((si, Err(backwards_clock(spec, refusal, row_base))));
+                            break 'segments;
+                        }
+                    }
+                }
+                // The span's session value, for the row it will close with.
+                if end > start && sc.session_str.is_some() {
+                    stream.persisted.last_session = session_of(idx[end - 1]);
+                }
+            }
+            // The readiness shares of the chunk's last solves, once the
+            // stream's runs are done (task 265): taken after each run, they
+            // were a solve against the identity a run, about `k³`, and a
+            // chunk of a wide spec is many cache-sized runs.
+            rows.keep();
+            stream.settle_readiness();
+            if let (Some(sink), Some(prev)) = (sink.as_mut(), pending.as_mut()) {
+                sink.absorb(std::slice::from_mut(prev));
+            }
+            (outs, closed, sink.map(|s| (si, s)), pending.or(spare))
+        },
+    );
+    let mut outs = Vec::with_capacity(per_task.len());
+    let mut closed = Vec::new();
+    let mut filled = Vec::new();
+    let mut left = Vec::new();
+    for (o, c, s, l) in per_task {
+        outs.push(o);
+        closed.extend(c);
+        filled.extend(s);
+        left.extend(l);
+    }
+    (outs, closed, filled, left)
+}
+
+/// A sink for each spec that one stream serves in this work -- no group, or
+/// a single group in the chunk -- and `None` for the rest: their streams'
+/// runs interleave in the output, and are assembled when all are done.
+fn sinks<'s>(
+    work: impl Iterator<Item = usize>,
+    specs: &'s [Spec],
+    derived: &'s [SpecDerived],
+    n: usize,
+    clock_dtypes: &'s [Option<crate::stream::ClockDtype>],
+) -> Vec<Option<Sink<'s>>> {
+    let mut streams = vec![0usize; specs.len()];
+    for si in work {
+        streams[si] += 1;
+    }
+    map_range_maybe_par(streams.len(), par(), |si| {
+        #[cfg(test)]
+        if assembly::tests::sink_off(&specs[si].name) {
+            return None;
+        }
+        (streams[si] == 1).then(|| {
+            let dt = clock_dtypes.get(si).and_then(Option::as_ref);
+            Sink::new(&specs[si], &derived[si], n, dt, true)
+        })
+    })
+}
+
+/// The structs of the sinks `process` filled, into `out`.
+fn finish_sinks(filled: Filled<'_>, out: &mut [Option<StructArray>]) -> PolarsResult<()> {
+    let built: Vec<(usize, StructArray)> =
+        map_vec_maybe_par::<_, _, PolarsResult<_>>(filled, par(), |(si, sink)| {
+            Ok((si, sink.finish()?))
+        })?;
+    for (si, st) in built {
+        out[si] = Some(st);
+    }
+    Ok(())
+}
+
+/// [`process`] without the learning: [`Stream::predict_chunk`] per task.
+fn score(
+    work: Vec<(usize, &[usize], usize, &Stream)>,
+    specs: &[Spec],
+    cfgs: &[ClockCfg],
+    cols: &[SpecColumns],
+) -> Vec<(usize, StreamRows)> {
+    map_vec_maybe_par(work, par(), |(si, idx, base, stream)| {
+        #[cfg(test)]
+        threads_tests::probe(&specs[si].name);
+        let spec = &specs[si];
+        let sc = &cols[si];
+        // Scoring refuses no clock (`Stream::predict_chunk`).
+        let mut out = Box::new(ChunkOut::new(
+            spec,
+            stream.n_models(),
+            stream.n_slots(),
+            idx.len(),
+        ));
+        // Every row of the task at once: scoring is one pass.
+        let rows = sc.features.rows(base, idx.len());
+        stream.predict_chunk(
+            spec,
+            &cfgs[si],
+            &rows,
+            &sc.targets,
+            sc.clock.as_ref(),
+            sc.session.as_deref(),
+            idx,
+            base,
+            &mut out,
+        );
+        (si, Ok(out))
+    })
+}
+
+/// Assemble the structs of the specs `pick` selects, in parallel, into
+/// `out` (docs/records/PERFORMANCE-LOG.md P4).
+///
+/// A spec its sink already assembled as its stream ran (`process`) is left
+/// as it is.
+// Boxed runs (`StreamRows`): a run moves from task to spec to sink, and a
+// box is one pointer to move where the struct was seven hundred bytes.
+#[allow(clippy::too_many_arguments, clippy::vec_box)]
+fn assemble_phase(
+    specs: &[Spec],
+    derived: &[SpecDerived],
+    n: usize,
+    rows: &mut [Vec<Box<ChunkOut>>],
+    out: &mut [Option<StructArray>],
+    clock_dtypes: &[Option<crate::stream::ClockDtype>],
+    pick: impl Fn(usize) -> bool + Sync,
+    spares: &mut Spares,
+) -> PolarsResult<()> {
+    let done: Vec<bool> = out.iter().map(Option::is_some).collect();
+    let one = |(si, chunks): (usize, &mut Vec<Box<ChunkOut>>)| -> PolarsResult<_> {
+        let dt = clock_dtypes.get(si).and_then(Option::as_ref);
+        // The runs are done with once assembled: their buffers are kept
+        // for a later chunk's small runs, or freed, here rather than at
+        // the end of the call.
+        let mut chunks = std::mem::take(chunks);
+        let st = assemble(&specs[si], &derived[si], n, &mut chunks, dt)?;
+        Ok((si, st, chunks))
+    };
+    let built: Vec<(usize, StructArray, Vec<Box<ChunkOut>>)> = if par() {
+        rows.par_iter_mut()
+            .enumerate()
+            .filter(|(si, _)| pick(*si) && !done[*si])
+            .map(one)
+            .collect::<PolarsResult<_>>()?
+    } else {
+        rows.iter_mut()
+            .enumerate()
+            .filter(|(si, _)| pick(*si) && !done[*si])
+            .map(one)
+            .collect::<PolarsResult<_>>()?
+    };
+    for (si, c, chunks) in built {
+        out[si] = Some(c);
+        for ch in chunks {
+            spares.give(ch);
+        }
+    }
+    Ok(())
+}
+
+/// A comparison's targets once its two sides have run: per target `t`,
+/// `|resid_b| - |resid_a|` from the two structs -- positive when `a` was
+/// closer on the row -- in the spec's layout order, NaN where either side
+/// is null (a row one side did not predict is no trial). Any loss that
+/// grows with `|resid|` orders the two sides the same way, so the sign is
+/// the same test for absolute, squared or Huber loss.
+fn compare_targets(
+    spec: &Spec,
+    (a, b): (usize, usize),
+    out: &[Option<StructArray>],
+    layout: Layout<'_>,
+) -> PolarsResult<Vec<Vec<f64>>> {
+    let cmp = spec.model.compares().expect("resolved as a comparison");
+    let side = |si: usize, name: &str| -> PolarsResult<Vec<f64>> {
+        let st = out[si]
+            .as_ref()
+            .expect("the two sides of a comparison are assembled in the first phase");
+        // The struct carries its own schema, so the field is found by name in
+        // it rather than through polars.
+        let i = st
+            .fields()
+            .iter()
+            .position(|f| f.name.as_str() == name)
+            .ok_or_else(|| {
+                polars_err!(ColumnNotFound:
+                    "spec {:?}: the field {:?} it compares is not in the output of the spec it \
+                     reads. Set a and b to specs that write a residual for each target.",
+                    spec.name, name
+                )
+            })?;
+        let arr = st.values()[i]
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .ok_or_else(|| {
+                polars_err!(ComputeError:
+                    "spec {:?}: the field {:?} it compares is not a Float64 field. Set a and b \
+                     to specs whose residual fields are Float64.", spec.name, name
+                )
+            })?;
+        Ok(f64_values(arr).into_owned())
+    };
+    spec.targets
+        .iter()
+        .map(|t| {
+            let (fa, fb) = cmp.fields(t);
+            let (ra, rb) = (side(a, &fa)?, side(b, &fb)?);
+            let d = ra.iter().zip(&rb).map(|(x, y)| y.abs() - x.abs()).collect();
+            Ok(gathered(d, layout))
+        })
+        .collect()
+}
+
+mod inline;
+mod refusals;
+use inline::{join_maybe_par, map_maybe_par, map_range_maybe_par, map_vec_maybe_par, par};
+pub(crate) use refusals::clock_amount;
+#[cfg(test)]
+use refusals::over_budget_message;
+use refusals::{backwards_clock, non_finite_step, over_budget};
+
+/// Drop the streams a refused chunk materialized, `(spec index, key)` each.
+/// A new group's Huber refit buffers against its spec's `refit_budget`
+/// (docs/PLAN.md task 277): reserve the most they can hold
+/// ([`Stream::refit_reservation`]), or, where that would pass the budget,
+/// give the group's refits up, count it in `summary()`'s
+/// `refit_given_up`, and raise the notice once a bank.
+fn reserve_refits(
+    spec: &Spec,
+    key: &GroupKey,
+    stream: &mut Stream,
+    reserved: &mut f64,
+    noticed: &mut bool,
+    notices: &mut Vec<String>,
+) {
+    let need = stream.refit_reservation() as f64;
+    let Some(budget) = spec.model.refit_budget_mib() else {
+        return;
+    };
+    if need == 0.0 {
+        return;
+    }
+    let bytes = budget * 1024.0 * 1024.0;
+    if *reserved + need <= bytes {
+        *reserved += need;
+        return;
+    }
+    stream.refit_give_up();
+    if !*noticed {
+        *noticed = true;
+        // Under group, the null key is named too: the warning says which
+        // group gave the refit up first.
+        let group = match key.0.as_deref() {
+            Some(g) => format!("at group {g:?}"),
+            None => "at the null group".to_string(),
+        };
+        // A spec with no groups has one model, which is the one that gives up.
+        // The check runs as a group first appears and reserves its refit's
+        // memory, before it holds a row, so the warning says what the refit
+        // would hold.
+        let need_kib = crate::figures::three_figures(need / 1024.0, crate::figures::Round::Up);
+        let opening = if spec.group.is_some() {
+            format!(
+                "{group}, its groups' refits would hold more than refit_budget = {budget} MiB, \
+                 each group reserving {need_kib} KiB, so that group and every new group after it \
+                 give up the refit and keep the fit made in one pass. The column refit_given_up \
+                 of ModelBank.summary() counts the targets that gave it up. To refit more groups"
+            )
+        } else {
+            format!(
+                "its refit would hold up to {need_kib} KiB of rows, more than refit_budget = \
+                 {budget} MiB, so its model gives up the refit and keeps the fit made in one \
+                 pass. The column refit_given_up of ModelBank.summary() counts the targets that \
+                 gave it up. To keep the refit"
+            )
+        };
+        notices.push(format!(
+            "spec {:?}: {opening}, increase refit_budget (in MiB, or inf for no bound), or lower \
+             {rows}, the rows each refit holds.",
+            spec.name,
+            rows = match spec.model {
+                crate::ModelKind::Marginal { .. } => "bin_refit_rows",
+                crate::ModelKind::Quantile { .. } => "quantile_refit_rows",
+                _ => "huber_refit_rows",
+            },
+        ));
+    }
+}
+
+/// What a chunk's new groups moved of the refit budget's bookkeeping, as it
+/// stood before them ([`reserve_refits`]), for a refused chunk to put back.
+struct RefitsBefore {
+    reserved: Vec<f64>,
+    noticed: Vec<bool>,
+    /// The notices waiting before the chunk, which stay.
+    notices: usize,
+}
+
+impl RefitsBefore {
+    fn restore(&self, reserved: &mut Vec<f64>, noticed: &mut Vec<bool>, notices: &mut Vec<String>) {
+        reserved.clone_from(&self.reserved);
+        noticed.clone_from(&self.noticed);
+        notices.truncate(self.notices);
+    }
+}
+
+fn forget(states: &mut [Streams], fresh: &[(usize, GroupKey)]) {
+    for (si, key) in fresh {
+        states[*si].swap_remove(key);
+    }
+}
+
+/// One spec's streams, by group. An index map, so that a call can borrow
+/// the streams of its chunk's groups at once by their places in it
+/// ([`chunk_streams`]) and walk nothing else: the order of its entries is
+/// never read, every reader sorting the keys.
+type Streams = indexmap::IndexMap<GroupKey, Stream, rheon_core::FixedState>;
+
+/// The streams of one chunk's groups of one spec -- `places`, each group's
+/// place in the map, in the groups' order -- borrowed at once, with their
+/// keys: the map's entries split at those places in ascending order, so the
+/// work is the chunk's groups' and not the map's (task 332: a map of every
+/// stream, built to take a call's few out of it, cost a call of four rows 44
+/// million instructions at 100,000 groups seen). One allocation, as that map
+/// was.
+fn chunk_streams<'a>(
+    map: &'a mut Streams,
+    places: &[usize],
+) -> impl Iterator<Item = (&'a GroupKey, &'a mut Stream)> {
+    // (place in the map, place in the chunk, the stream once found)
+    type Found<'a> = (usize, usize, Option<(&'a GroupKey, &'a mut Stream)>);
+    let mut found: Vec<Found<'a>> = places
+        .iter()
+        .enumerate()
+        .map(|(c, &at)| (at, c, None))
+        .collect();
+    found.sort_unstable_by_key(|f| f.0);
+    let mut rest = map.as_mut_slice();
+    let mut from = 0;
+    for f in &mut found {
+        // A chunk's groups are distinct keys, so their places are too, and
+        // each lies at or past `from`.
+        let (_, tail) = std::mem::take(&mut rest).split_at_mut(f.0 - from);
+        let ((key, stream), tail) = tail.split_first_mut().expect("a place in the map");
+        f.2 = Some((key, stream));
+        rest = tail;
+        from = f.0 + 1;
+    }
+    found.sort_unstable_by_key(|f| f.1);
+    found.into_iter().map(|f| f.2.expect("every group found"))
+}
+
+/// A group's place in a spec's streams, if it has a stream: found from the
+/// chunk's key, which builds no `GroupKey`.
+fn place_of(streams: &Streams, key: groups::RawKey<'_>) -> Option<usize> {
+    key.with_ref(|r: KeyRef<'_>| streams.get_index_of(&r))
+}
+
+/// A stream's notices, taken and named by its spec and group, and under
+/// `group_close = "session"` by the span that raised each (`Notice`).
+fn say_notices(notices: &mut Vec<String>, spec: &Spec, key: &GroupKey, stream: &mut Stream) {
+    for notice in stream.take_notices(spec) {
+        // A spec with no groups names none: its one stream's key is the
+        // empty text, a value the reader never gave (WRITING §11).
+        let group = key
+            .0
+            .as_deref()
+            .filter(|_| spec.group.is_some())
+            .map_or(String::new(), |g| format!(" group {g:?}"));
+        let span = notice.span.as_deref().unwrap_or("");
+        // The where every notice body is said behind (WRITING §11).
+        let prefix = format!("spec {:?}{group}{span}", spec.name);
+        notices.push(format!("{prefix}: {}", notice.body));
+    }
+}
+
+/// The order `group_close = "monotone"` reads keys in.
+///
+/// [`GroupKey`] holds every key as a string and its derived `Ord` is
+/// therefore lexicographic, which puts `"10"` before `"9"` -- a monotone
+/// close on that order would close group 10 before group 9 had arrived. So
+/// the comparison is the *column's*: integer keys compare as integers (the
+/// text is what [`group_indices`] formatted, so it parses), and everything
+/// else -- String and Categorical, both rendered as strings by [`extract`]
+/// -- compares bytewise, which is what a string column's own sort does.
+///
+/// A null key has no place in either order; `"monotone"` refuses one at the
+/// pre-check, so `None` here only ever meets `None`.
+pub(crate) fn key_cmp(a: &GroupKey, b: &GroupKey, integer: bool) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    match (a.as_str(), b.as_str()) {
+        (Some(a), Some(b)) if integer => match (a.parse::<i128>(), b.parse::<i128>()) {
+            (Ok(a), Ok(b)) => a.cmp(&b),
+            // Unreachable through `group_indices`, which formats these keys
+            // itself; a state file whose key text is not a number falls back
+            // to the bytes rather than panicking.
+            _ => a.cmp(b),
+        },
+        (Some(a), Some(b)) => a.as_bytes().cmp(b.as_bytes()),
+        (None, None) => Ordering::Equal,
+        (None, Some(_)) => Ordering::Less,
+        (Some(_), None) => Ordering::Greater,
+    }
+}
+
+/// Whether a spec's `[group, session]` forms make its group keys integers,
+/// which [`key_cmp`] orders as numbers (review round 4, N21 and N22): every
+/// integer dtype, an `Int128` held as its text included (task 160, PA3).
+fn integer_form(forms: &[Option<KeyDtype>; 2]) -> bool {
+    matches!(&forms[0], Some(k) if k.form == KeyForm::Integer)
+}
+
+/// The axes a spec's [`Gram`] is indexed by: its columns (the features,
+/// with the intercept in front when the spec has one) and its targets. The
+/// Python `ModelBank.gram` builds the same two lists from the spec dict, and
+/// `tests/test_closed_groups.py` holds the two to each other.
+pub(crate) fn gram_axes(spec: &Spec) -> (Vec<String>, Vec<String>) {
+    // `ew_cov` accumulates over the features alone -- no target, and so no
+    // constant column to regress one on. It is the only model without a
+    // target that keeps a Gram (review 2026-09-12, D7).
+    let unsupervised = matches!(spec.model, ModelKind::EwCov { .. });
+    let mut columns = spec.features.clone();
+    if spec.fit_intercept && !unsupervised {
+        columns.insert(0, "intercept".to_string());
+    }
+    let targets = if unsupervised {
+        Vec::new()
+    } else {
+        spec.targets.to_vec()
+    };
+    (columns, targets)
+}
+
+/// The upper triangle of a row-major `k * k` symmetric matrix, with the
+/// diagonal, row by row: `k(k+1)/2` numbers instead of `k^2`, which is what
+/// the closed row carries (`po.gram.from_row` expands it). A co-moment
+/// matrix is symmetric to 1e-16 and not to the bit (E48), so the half that
+/// is kept is named: the upper one. `ModelBank.gram(layout="packed")`
+/// packs the same way (docs/PLAN.md task 229).
+pub fn vech(m: &[f64], k: usize) -> Vec<f64> {
+    let mut out = Vec::with_capacity(k * (k + 1) / 2);
+    for i in 0..k {
+        for j in i..k {
+            out.push(m[i * k + j]);
+        }
+    }
+    out
+}
+
+/// One model instance's [`Gram`]s: one per Gram its fit reads (several only
+/// under `target_gaps = "own_rows"`, task 81), none for a kind that keeps no
+/// co-moment matrix (`rls` and `kalman` track an inverse).
+///
+/// The one builder behind both [`Bank::gram`] and a [`ClosedRow`]'s Gram
+/// block, so "a closed row equals `gram()` read at the same point" holds by
+/// construction and the test is the tripwire that keeps it so.
+pub(crate) fn gram_of(key: &GroupKey, label: &str, model: &AnyModel) -> Vec<Gram> {
+    // Under a `window` every number here is the window's -- the accumulators
+    // the fit `coef` reports was solved from -- so the Gram solves to that fit;
+    // it read the live ones, so a windowed spec's Gram and closed row carried
+    // the whole history beside a `coef` solved on the window (review
+    // 2026-09-12, S19). The target moments are the window's too (task 136):
+    // the snapshots carry them, and a snapshot written before they did gives
+    // `None`, "this state cannot say", until the ring rolls over.
+    let (parts, tm) = match model {
+        AnyModel::EwRidge(m) => m.gram_parts(),
+        AnyModel::Lasso(m) => m.gram_parts(),
+        AnyModel::EwCov(m) => {
+            // No targets: the matrix is the whole output, and empty target
+            // moments say so, where `None` would say "cannot tell".
+            let cov = m.windowed_cov();
+            let cov = cov.flushed();
+            let lag = m.lag();
+            return vec![Gram {
+                group: key.clone(),
+                instance: label.to_string(),
+                k: cov.k(),
+                n_eff: cov.n_eff(),
+                n_kish: cov.n_kish(),
+                means: cov.means().to_vec(),
+                comoments: cov.comoments().to_full(),
+                targets: Vec::new(),
+                cross_moments: Vec::new(),
+                means_by_target: Vec::new(),
+                cross_centred: Vec::new(),
+                target_means: Some(Vec::new()),
+                target_vars: Some(Vec::new()),
+                target_n_kish: Some(Vec::new()),
+                target_weights: Vec::new(),
+                lags: lag.map(|l| l.lags().to_vec()),
+                lag_comoments: lag.map(|l| l.comoments().to_vec()),
+            }];
+        }
+        _ => return Vec::new(),
+    };
+    parts
+        .into_iter()
+        .map(|p| {
+            let pick = |v: &[f64]| p.targets.iter().map(|&j| v[j]).collect::<Vec<f64>>();
+            // Kish's count from the part's own target weights -- the
+            // window's under a window, which the moments are -- over `Q_t`.
+            let kish = tm.as_ref().map(|t| {
+                p.targets
+                    .iter()
+                    .zip(&p.target_weights)
+                    .map(|(&j, &w)| (t.q()[j] > 0.0).then(|| w * w / t.q()[j]))
+                    .collect::<Vec<Option<f64>>>()
+            });
+            Gram {
+                group: key.clone(),
+                instance: label.to_string(),
+                k: p.cov.k(),
+                n_eff: p.cov.n_eff(),
+                n_kish: p.cov.n_kish(),
+                means: p.cov.means().to_vec(),
+                comoments: p.cov.comoments().to_full(),
+                target_means: tm.as_ref().map(|t| pick(t.means())),
+                target_vars: tm.as_ref().map(|t| pick(t.vars())),
+                target_n_kish: kish,
+                cross_moments: p.cross_moments,
+                means_by_target: p.means_by_target,
+                cross_centred: p.cross_centred,
+                target_weights: p.target_weights,
+                targets: p.targets,
+                lags: None,
+                lag_comoments: None,
+            }
+        })
+        .collect()
+}
+
+/// One instance's EW accumulators, as returned by [`Bank::gram`].
+///
+/// Values are in the features' original units. `comoments` is **centered**
+/// (E11b, which is what makes it accurate at large offsets). `cross_moments`
+/// is **uncentered**, and `cross_centred` is the same centred at each
+/// target's means, which is what `po.gram.solve` reads: re-centring the raw
+/// form kept `L²·ε` of it at a level `L` (review 2026-09-12, N4). The raw
+/// form is bridged to the fit by one identity, and getting it wrong is a
+/// silent wrong answer rather than an error:
+///
+/// ```text
+/// raw[i][j] = comoments[i*k+j] + means[i]*means[j]
+/// raw · beta[t] = cross_moments[t]        (up to the ridge term)
+/// ```
+///
+/// The intercept, when the spec has one, is column 0: a constant 1, so it has
+/// zero variance in `comoments` and `raw[0][j] == means[j]`.
+///
+/// The model itself keeps its cross-moments centred and solves the centred
+/// system (review 2026-09-12, N1), so at a level `L` the raw ones here carry
+/// `L²·ε` of rounding that its own fit does not.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Gram {
+    pub group: GroupKey,
+    /// The decay instance's suffix (`"@h500"`, or `""` for a single instance).
+    pub instance: String,
+    /// Columns, including the intercept when the spec has one.
+    pub k: usize,
+    /// Accumulated weight behind these moments.
+    pub n_eff: f64,
+    /// Kish's effective sample size over the feature rows, `n_eff^2 / Sum w^2`
+    /// (docs/ENHANCEMENTS.md E45): the number of equally weighted rows these
+    /// moments are worth, which is what a standard error divides by. `None`
+    /// before the first row and for a state written before task 38.
+    pub n_kish: Option<f64>,
+    /// EW column means, length `k`.
+    pub means: Vec<f64>,
+    /// Centered co-moments, row-major `k*k`.
+    pub comoments: Vec<f64>,
+    /// The targets fitted from these moments (indices into the spec's), in
+    /// the order of the per-target fields: all, or under `target_gaps =
+    /// "own_rows"` the ones present on this Gram's rows (PLAN task 81).
+    pub targets: Vec<usize>,
+    /// Per-target uncentered cross-moments, each `k` long. Empty for
+    /// `ew_cov`.
+    pub cross_moments: Vec<Vec<f64>>,
+    /// Per target, the column means over its rows, which its fit is centred
+    /// at: `means` under `"own_rows"`, its own under `"pairwise"`.
+    pub means_by_target: Vec<Vec<f64>>,
+    /// Per target, its cross-moments centred at [`Self::means_by_target`] and
+    /// its own mean: what the fit is solved from, and what `po.gram.solve`
+    /// reads. `cross_moments` less `m_t·ȳ_t` in exact arithmetic; formed in
+    /// floating point, that difference keeps `L²·ε` of it at a level `L`
+    /// (review 2026-09-12, N4). Empty for `ew_cov`.
+    pub cross_centred: Vec<Vec<f64>>,
+    /// Per-target accumulated weight. Empty for `ew_cov`.
+    pub target_weights: Vec<f64>,
+    /// Per-target EW mean of the target. Empty for `ew_cov` (no targets);
+    /// `None` for a state written before task 38.
+    pub target_means: Option<Vec<f64>>,
+    /// Per-target EW centered variance of the target, alongside
+    /// [`Self::target_means`].
+    pub target_vars: Option<Vec<f64>>,
+    /// Per-target Kish effective sample size, `W_t^2 / Q_t`; an entry is
+    /// `None` for a target that has not seen a weighted row.
+    pub target_n_kish: Option<Vec<Option<f64>>>,
+    /// The lags an `ew_cov(lags = ...)` accumulates at, in output order, and
+    /// their cross-moments as `L * k * k` row-major within a lag
+    /// (docs/ENHANCEMENTS.md E56). `None` for a spec without lags.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lags: Option<Vec<usize>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lag_comoments: Option<Vec<f64>>,
+}
+
+/// One (feature, target) pair of a closed `marginal` group, the columns
+/// [`Bank::marginal`] reports for it: the linear block always, the lag
+/// block (E66) where the spec asked for `lags`, the binned block (E67)
+/// where it asked for `bins` or `bin_edges`. The lists are empty and the
+/// scalars NaN where the spec did not ask, and a row written before the two
+/// blocks existed reads back the same way (bank files are named msgpack).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PairRow {
+    pub feature: String,
+    pub target: String,
+    pub n_eff: f64,
+    pub n_kish: f64,
+    pub mean_x: f64,
+    pub var_x: f64,
+    pub mean_y: f64,
+    pub var_y: f64,
+    pub cov: f64,
+    pub corr: f64,
+    pub beta: f64,
+    /// The correlation's t-statistic, `t_stat` in `marginal()` (review round
+    /// 4, CD13: `t` read as every example's clock column).
+    pub t_stat: f64,
+    #[serde(default)]
+    pub lag_corr_xx: Vec<f64>,
+    #[serde(default)]
+    pub lag_corr_yy: Vec<f64>,
+    #[serde(default)]
+    pub lag_corr_xy: Vec<f64>,
+    #[serde(default)]
+    pub lag_corr_yx: Vec<f64>,
+    #[serde(default = "nan")]
+    pub n_serial: f64,
+    #[serde(default = "nan")]
+    pub t_serial: f64,
+    #[serde(default = "nan")]
+    pub phi_x: f64,
+    #[serde(default = "nan")]
+    pub phi_y: f64,
+    #[serde(default)]
+    pub bin_edges: Vec<f64>,
+    #[serde(default)]
+    pub bin_n: Vec<f64>,
+    #[serde(default)]
+    pub bin_mean_y: Vec<f64>,
+    #[serde(default)]
+    pub bin_var_y: Vec<f64>,
+    #[serde(default = "nan")]
+    pub split_gain: f64,
+    #[serde(default = "nan")]
+    pub split_at: f64,
+    #[serde(default = "nan")]
+    pub split_gain_t: f64,
+}
+
+/// The core's "not defined", for a field a row written before it existed
+/// does not carry.
+fn nan() -> f64 {
+    f64::NAN
+}
+
+/// One group's accumulators at the moment the bank could prove that no
+/// further row would join it (docs/ENHANCEMENTS.md E54), one per decay
+/// instance.
+///
+/// The row is the state *as it stood*, so it equals the [`Bank::gram`] a
+/// driver would have read at the same point, field for field and bit for
+/// bit -- both are built by [`gram_of`], which is what keeps that true. The
+/// stream is dropped once the row is made, which is the point: a bank over
+/// an unbounded key space stays bounded.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClosedRow {
+    /// Index of the spec in the bank; the frame carries its name.
+    pub spec: usize,
+    pub group: GroupKey,
+    /// The decay instance's suffix (`"@h500"`, or `""` for one instance).
+    pub instance: String,
+    /// The session value of the span just closed, under `group_close =
+    /// "session"`; `None` under `"monotone"`, and for a null session value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    pub n_eff: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub n_kish: Option<f64>,
+    /// Rows fed and rows learned from over the span, from the stream's own
+    /// [`DataSummary`]; `None` only for a stream restored from a file
+    /// written before task 35's summary existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows_fed: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rows_learned: Option<u64>,
+    /// The span's clock range as its stream kept it (review round 4, N18):
+    /// the frame gives it in the clock column's own dtype, exactly.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock_min: Option<ClockValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clock_max: Option<ClockValue>,
+    /// The accumulators, for a kind that keeps them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gram: Option<Gram>,
+    /// The flat `coef` list as of the last solve, for a kind that reports
+    /// one; the exact solve on the closed Gram is
+    /// `po.gram.solve(po.gram.from_row(row))`. NaN in a slot no solve has
+    /// fit (review round 4, CC1), so the export tags it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "rheon_core::humanfloat::opt_vec_f64_or_tag"
+    )]
+    pub coef: Option<Vec<f64>>,
+    /// `ew_cov(pca = r)`: the eigenvalues of this row's own `comoments`,
+    /// descending, and the loadings row-major `r * k`. Filled by the bank
+    /// as the row is queued, so the sign continuity is a function of queue
+    /// order alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eig_vals: Option<Vec<f64>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eig_vecs: Option<Vec<f64>>,
+    /// A `marginal` spec's pairs, in [`Bank::marginal`] order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pairs: Vec<PairRow>,
+    /// An `rcov` spec's block (docs/ENHANCEMENTS.md E57): the realised
+    /// covariance and correlation as `vech` of the upper triangle, the
+    /// effective return count, the estimator, and the noise diagnostics
+    /// behind an automatic bandwidth.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rcov: Option<RcovRow>,
+    /// Position of the closing row within the chunk that closed it: the
+    /// first row of the new session, or the first row of the greater key.
+    /// The queue's order, and not part of the row itself.
+    #[serde(skip)]
+    pub at: usize,
+}
+
+/// A `list[f64]` column: one list per row, `None` where the row has none,
+/// and null inside for a value that is not finite -- `coef`'s rule.
+fn list_f64(name: &str, rows: &[ClosedRow], f: impl Fn(&ClosedRow) -> Option<Vec<f64>>) -> Column {
+    list_f64_by(name, rows, f64::is_finite, f)
+}
+
+/// [`list_f64`] under `marginal()`'s rule: null inside only for NaN, the
+/// core's "undefined" (a constant column's `corr`), while `±inf` stays --
+/// `t` on a perfect fit is `±inf` there and must be `±inf` here.
+fn pair_f64(name: &str, rows: &[ClosedRow], f: impl Fn(&ClosedRow) -> Option<Vec<f64>>) -> Column {
+    list_f64_by(name, rows, |x| !x.is_nan(), f)
+}
+
+fn list_f64_by(
+    name: &str,
+    rows: &[ClosedRow],
+    keep: impl Fn(f64) -> bool,
+    f: impl Fn(&ClosedRow) -> Option<Vec<f64>>,
+) -> Column {
+    let mut b = ListPrimitiveChunkedBuilder::<Float64Type>::new(
+        name.into(),
+        rows.len(),
+        8,
+        DataType::Float64,
+    );
+    for r in rows {
+        match f(r) {
+            Some(v) => b.append_iter(v.iter().map(|x| keep(*x).then_some(*x))),
+            None => b.append_null(),
+        }
+    }
+    b.finish().into_series().into()
+}
+
+/// A `list[str]` column, as [`list_f64`].
+fn list_str(
+    name: &str,
+    rows: &[ClosedRow],
+    f: impl Fn(&ClosedRow) -> Option<Vec<String>>,
+) -> Column {
+    let mut b = ListStringChunkedBuilder::new(name.into(), rows.len(), 8);
+    for r in rows {
+        match f(r) {
+            Some(v) => b.append_values_iter(v.iter().map(String::as_str)),
+            None => b.append_null(),
+        }
+    }
+    b.finish().into_series().into()
+}
+
+/// A `list[list[f64]]` column: one list per row with one inner list per
+/// pair, `None` where the row has no such block, and null inside an inner
+/// list for NaN, as [`pair_f64`]. This is how a closed `marginal` row
+/// carries what [`Bank::marginal`] reports as a list column per pair -- the
+/// lag correlations and the bin histogram, whose inner lengths differ from
+/// pair to pair by design.
+fn list_list_f64<'a>(
+    name: &str,
+    rows: &'a [ClosedRow],
+    f: impl Fn(&'a ClosedRow) -> Option<Vec<&'a [f64]>>,
+) -> PolarsResult<Column> {
+    let inner = DataType::List(Box::new(DataType::Float64));
+    let mut b = AnonymousOwnedListBuilder::new(name.into(), rows.len(), Some(inner));
+    for r in rows {
+        match f(r) {
+            Some(lists) => {
+                let mut ib = ListPrimitiveChunkedBuilder::<Float64Type>::new(
+                    PlSmallStr::EMPTY,
+                    lists.len(),
+                    8,
+                    DataType::Float64,
+                );
+                for v in lists {
+                    ib.append_iter(v.iter().map(|x| (!x.is_nan()).then_some(*x)));
+                }
+                b.append_series(&ib.finish().into_series())?;
+            }
+            None => b.append_null(),
+        }
+    }
+    Ok(b.finish().into_series().into())
+}
+
+/// Whether a `marginal` spec asked for the lag block (E66).
+fn spec_lags(s: &Spec) -> bool {
+    matches!(&s.model, ModelKind::Marginal { lags: Some(l), .. } if !l.is_empty())
+}
+
+/// Whether a `marginal` spec with lags keeps a cross term at any of them:
+/// every lag unless `cross_lags` names fewer, and none under `[]` (E70).
+fn spec_cross_lags(s: &Spec) -> bool {
+    spec_lags(s)
+        && !matches!(
+            &s.model,
+            ModelKind::Marginal { cross_lags: Some(c), .. } if c.is_empty()
+        )
+}
+
+/// Whether a `marginal` spec asked for the binned block (E67), learned or
+/// given.
+fn spec_bins(s: &Spec) -> bool {
+    matches!(
+        &s.model,
+        ModelKind::Marginal { bins: Some(_), .. }
+            | ModelKind::Marginal {
+                bin_edges: Some(_),
+                ..
+            }
+    )
+}
+
+/// Whether a closed row read from a state file fits the bank's specs:
+/// everything [`closed_frame`] reads it by -- its spec, which must close
+/// groups, the targets its Gram names, and the Gram's shape, `k` columns of
+/// the spec's and one entry per named target in every per-target list.
+/// Checked at load, so a damaged file is refused there rather than loaded,
+/// saved again and found by a panic at the first drain (task 160, PA2).
+fn check_closed_row(specs: &[Spec], r: &ClosedRow) -> Result<(), String> {
+    let damaged = |what: String| {
+        Err(format!(
+            "state file: it is damaged, since a closed row of group {} {what}. Load an undamaged copy of the state file, or rebuild it from its input.",
+            r.group
+        ))
+    };
+    let Some(spec) = specs.get(r.spec) else {
+        return damaged(format!(
+            "belongs to spec {} of a bank of {}",
+            r.spec,
+            specs.len()
+        ));
+    };
+    if spec.group_close.is_none() {
+        return damaged(format!(
+            "belongs to spec {:?}, which closes no group",
+            spec.name
+        ));
+    }
+    let Some(g) = &r.gram else {
+        return Ok(());
+    };
+    if !matches!(
+        spec.model,
+        ModelKind::EwRidge { .. } | ModelKind::Lasso { .. } | ModelKind::EwCov { .. }
+    ) {
+        return damaged(format!(
+            "carries a Gram, and spec {:?} keeps none",
+            spec.name
+        ));
+    }
+    let (columns, targets) = gram_axes(spec);
+    let k = columns.len();
+    if g.k != k || g.means.len() != k || g.comoments.len() != k * k {
+        return damaged(format!(
+            "has a Gram of {} columns with {} means and {} co-moments, where spec {:?} has \
+             {k} columns",
+            g.k,
+            g.means.len(),
+            g.comoments.len(),
+            spec.name
+        ));
+    }
+    if let Some(j) = g.targets.iter().find(|&&j| j >= targets.len()) {
+        return damaged(format!(
+            "names target {j} of spec {:?}, which has {}",
+            spec.name,
+            targets.len()
+        ));
+    }
+    let m = g.targets.len();
+    let lists_fit = [&g.cross_moments, &g.means_by_target, &g.cross_centred]
+        .iter()
+        .all(|l| l.len() == m && l.iter().all(|v| v.len() == k))
+        && g.target_weights.len() == m
+        && g.target_means.as_ref().is_none_or(|v| v.len() == m)
+        && g.target_vars.as_ref().is_none_or(|v| v.len() == m)
+        && g.target_n_kish.as_ref().is_none_or(|v| v.len() == m);
+    if !lists_fit {
+        return damaged(format!(
+            "names {m} targets and carries per-target lists of another length"
+        ));
+    }
+    match (&g.lags, &g.lag_comoments) {
+        (None, None) => Ok(()),
+        (Some(l), Some(c)) if c.len() == l.len() * k * k => Ok(()),
+        _ => damaged(format!(
+            "carries lag co-moments that are not one {k} x {k} block per lag"
+        )),
+    }
+}
+
+/// The decay of `spec`'s instance named by its field suffix (`"@h500"`, or
+/// `""` for one instance) as `output_index` gives it: `(half_life, lam)`,
+/// both `None` for a model that takes no decay (`seqtest`, `rcov`,
+/// `corrchange`, `bocpd`, `audit`), and an infinite half-life as `inf`.
+pub(crate) fn instance_decay(spec: &Spec, instance: &str) -> (Option<f64>, Option<f64>) {
+    if spec.half_life.is_none() && spec.lam.is_none() {
+        return (None, None);
+    }
+    let decays = spec.decays().unwrap_or_default();
+    match decays.iter().find(|(s, _)| s == instance).map(|(_, d)| d) {
+        Some(rheon_core::Decay::Halflife(h)) => (Some(*h), None),
+        Some(rheon_core::Decay::Lam(l)) => (None, Some(*l)),
+        None => (None, None),
+    }
+}
+
+/// The frame [`Bank::closed_groups`] returns: the common columns always,
+/// and a kind's block when **any** spec of the bank closes groups and is of
+/// that kind, null on the rows of other kinds (docs/ENHANCEMENTS.md E54).
+///
+/// One schema per bank, not per call: a driver concatenating a run's drains
+/// needs every frame to have the same columns, whatever happened to close in
+/// that chunk. The clock range is in `clock`'s dtype, the clock column's own
+/// ([`ClockDtype::column`], review round 4, N18).
+fn closed_frame(
+    specs: &[Spec],
+    rows: &[ClosedRow],
+    clock: Option<&ClockDtype>,
+) -> PolarsResult<DataFrame> {
+    let closing: Vec<&Spec> = specs.iter().filter(|s| s.group_close.is_some()).collect();
+    let any = |f: fn(&Spec) -> bool| closing.iter().any(|s| f(s));
+    let has_gram = any(|s| {
+        matches!(
+            s.model,
+            ModelKind::EwRidge { .. } | ModelKind::Lasso { .. } | ModelKind::EwCov { .. }
+        )
+    });
+    let has_pca = any(|s| matches!(s.model, ModelKind::EwCov { pca: Some(_), .. }));
+    let has_pairs = any(|s| matches!(s.model, ModelKind::Marginal { .. }));
+    let has_lags = any(spec_lags);
+    let has_cross_lags = any(spec_cross_lags);
+    let has_bins = any(spec_bins);
+    let has_rcov = any(|s| matches!(s.model, ModelKind::Rcov { .. }));
+    let opt = |v: f64| v.is_finite().then_some(v);
+
+    let mut cols: Vec<Column> = vec![
+        Column::new(
+            "spec".into(),
+            rows.iter()
+                .map(|r| specs[r.spec].name.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "group".into(),
+            rows.iter().map(|r| r.group.as_str()).collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "instance".into(),
+            rows.iter().map(|r| r.instance.as_str()).collect::<Vec<_>>(),
+        ),
+        // The instance's decay beside its suffix, as `output_index` and
+        // `coef()` give it (task 244).
+        Column::new(
+            "half_life".into(),
+            rows.iter()
+                .map(|r| instance_decay(&specs[r.spec], &r.instance).0)
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "lam".into(),
+            rows.iter()
+                .map(|r| instance_decay(&specs[r.spec], &r.instance).1)
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "session".into(),
+            rows.iter()
+                .map(|r| r.session.as_deref())
+                .collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "weight_sum".into(),
+            rows.iter().map(|r| opt(r.n_eff)).collect::<Vec<_>>(),
+        ),
+        Column::new(
+            "n_kish".into(),
+            rows.iter()
+                .map(|r| r.n_kish.and_then(opt))
+                .collect::<Vec<_>>(),
+        ),
+        // An `Int64`, as every count of every frame (task 244): a count
+        // saturated at the top of a `u64` reads `i64::MAX`, never -1
+        // (`summary::count`; review round 4, PA3).
+        counts("rows_fed", rows.iter().map(|r| r.rows_fed)),
+        counts("rows_learned", rows.iter().map(|r| r.rows_learned)),
+        ClockDtype::column(
+            clock,
+            "clock_min",
+            &rows.iter().map(|r| r.clock_min).collect::<Vec<_>>(),
+        )?,
+        ClockDtype::column(
+            clock,
+            "clock_max",
+            &rows.iter().map(|r| r.clock_max).collect::<Vec<_>>(),
+        )?,
+    ];
+    if has_gram {
+        let axes = |r: &ClosedRow| gram_axes(&specs[r.spec]);
+        cols.push(list_str("columns", rows, |r| {
+            r.gram.as_ref().map(|_| axes(r).0)
+        }));
+        cols.push(list_f64("means", rows, |r| {
+            r.gram.as_ref().map(|g| g.means.clone())
+        }));
+        cols.push(list_f64("comoments", rows, |r| {
+            r.gram.as_ref().map(|g| vech(&g.comoments, g.k))
+        }));
+        cols.push(list_str("targets", rows, |r| {
+            r.gram.as_ref().map(|g| {
+                let names = axes(r).1;
+                g.targets.iter().map(|&j| names[j].clone()).collect()
+            })
+        }));
+        cols.push(list_f64("target_means", rows, |r| {
+            r.gram.as_ref().and_then(|g| g.target_means.clone())
+        }));
+        cols.push(list_f64("target_vars", rows, |r| {
+            r.gram.as_ref().and_then(|g| g.target_vars.clone())
+        }));
+        cols.push(list_f64("target_weights", rows, |r| {
+            r.gram.as_ref().map(|g| g.target_weights.clone())
+        }));
+        cols.push(list_f64("target_n_kish", rows, |r| {
+            r.gram.as_ref().and_then(|g| {
+                g.target_n_kish
+                    .as_ref()
+                    .map(|v| v.iter().map(|x| x.unwrap_or(f64::NAN)).collect())
+            })
+        }));
+        cols.push(list_f64("cross_moments", rows, |r| {
+            r.gram
+                .as_ref()
+                .map(|g| g.cross_moments.iter().flatten().copied().collect())
+        }));
+        cols.push(list_f64("means_by_target", rows, |r| {
+            r.gram
+                .as_ref()
+                .map(|g| g.means_by_target.iter().flatten().copied().collect())
+        }));
+        cols.push(list_f64("cross_centered", rows, |r| {
+            r.gram
+                .as_ref()
+                .map(|g| g.cross_centred.iter().flatten().copied().collect())
+        }));
+    }
+    if any(|s| matches!(s.model, ModelKind::EwCov { lags: Some(_), .. })) {
+        let mut b = ListPrimitiveChunkedBuilder::<Int64Type>::new(
+            "lags".into(),
+            rows.len(),
+            4,
+            DataType::Int64,
+        );
+        for r in rows {
+            match r.gram.as_ref().and_then(|g| g.lags.as_ref()) {
+                Some(v) => b.append_values_iter(v.iter().map(|&l| l as i64)),
+                None => b.append_null(),
+            }
+        }
+        cols.push(b.finish().into_series().into());
+        cols.push(list_f64("lag_comoments", rows, |r| {
+            r.gram.as_ref().and_then(|g| g.lag_comoments.clone())
+        }));
+    }
+    cols.push(list_f64("coef", rows, |r| r.coef.clone()));
+    if has_pca {
+        cols.push(list_f64("eig_vals", rows, |r| r.eig_vals.clone()));
+        cols.push(list_f64("eig_vecs", rows, |r| r.eig_vecs.clone()));
+    }
+    if has_pairs {
+        let empty = |r: &ClosedRow| r.pairs.is_empty();
+        cols.push(list_str("pair_feature", rows, |r| {
+            (!empty(r)).then(|| r.pairs.iter().map(|p| p.feature.clone()).collect())
+        }));
+        cols.push(list_str("pair_target", rows, |r| {
+            (!empty(r)).then(|| r.pairs.iter().map(|p| p.target.clone()).collect())
+        }));
+        for (name, f) in [
+            (
+                "pair_weight_sum",
+                (|p: &PairRow| p.n_eff) as fn(&PairRow) -> f64,
+            ),
+            ("pair_n_kish", |p| p.n_kish),
+            ("pair_mean_x", |p| p.mean_x),
+            ("pair_var_x", |p| p.var_x),
+            ("pair_mean_y", |p| p.mean_y),
+            ("pair_var_y", |p| p.var_y),
+            ("pair_cov", |p| p.cov),
+            ("pair_corr", |p| p.corr),
+            ("pair_beta", |p| p.beta),
+            ("pair_t_stat", |p| p.t_stat),
+        ] {
+            cols.push(pair_f64(name, rows, move |r| {
+                (!empty(r)).then(|| r.pairs.iter().map(f).collect())
+            }));
+        }
+        // The two optional blocks, in `marginal()`'s order and under its
+        // rule: present when any closing spec asked, and on a row whose
+        // spec did not ask, null -- the column `marginal()` would not have.
+        let asked = |r: &ClosedRow, f: fn(&Spec) -> bool| !empty(r) && f(&specs[r.spec]);
+        if has_lags {
+            for (name, f) in [
+                (
+                    "pair_lag_corr_xx",
+                    (|p: &PairRow| p.lag_corr_xx.as_slice()) as fn(&PairRow) -> &[f64],
+                ),
+                ("pair_lag_corr_yy", |p| p.lag_corr_yy.as_slice()),
+            ] {
+                cols.push(list_list_f64(name, rows, move |r| {
+                    asked(r, spec_lags).then(|| r.pairs.iter().map(f).collect())
+                })?);
+            }
+        }
+        // The cross pair under its own rule: absent when no closing spec
+        // keeps a cross term (`cross_lags = []`), as `marginal()` leaves it.
+        if has_cross_lags {
+            for (name, f) in [
+                (
+                    "pair_lag_corr_xy",
+                    (|p: &PairRow| p.lag_corr_xy.as_slice()) as fn(&PairRow) -> &[f64],
+                ),
+                ("pair_lag_corr_yx", |p| p.lag_corr_yx.as_slice()),
+            ] {
+                cols.push(list_list_f64(name, rows, move |r| {
+                    asked(r, spec_cross_lags).then(|| r.pairs.iter().map(f).collect())
+                })?);
+            }
+        }
+        if has_lags {
+            for (name, f) in [
+                (
+                    "pair_n_serial",
+                    (|p: &PairRow| p.n_serial) as fn(&PairRow) -> f64,
+                ),
+                ("pair_t_stat_serial", |p| p.t_serial),
+                ("pair_phi_x", |p| p.phi_x),
+                ("pair_phi_y", |p| p.phi_y),
+            ] {
+                cols.push(pair_f64(name, rows, move |r| {
+                    asked(r, spec_lags).then(|| r.pairs.iter().map(f).collect())
+                }));
+            }
+        }
+        if has_bins {
+            for (name, f) in [
+                (
+                    "pair_bin_edges",
+                    (|p: &PairRow| p.bin_edges.as_slice()) as fn(&PairRow) -> &[f64],
+                ),
+                ("pair_bin_n", |p| p.bin_n.as_slice()),
+                ("pair_bin_mean_y", |p| p.bin_mean_y.as_slice()),
+                ("pair_bin_var_y", |p| p.bin_var_y.as_slice()),
+            ] {
+                cols.push(list_list_f64(name, rows, move |r| {
+                    asked(r, spec_bins).then(|| r.pairs.iter().map(f).collect())
+                })?);
+            }
+            for (name, f) in [
+                (
+                    "pair_split_gain",
+                    (|p: &PairRow| p.split_gain) as fn(&PairRow) -> f64,
+                ),
+                ("pair_split_at", |p| p.split_at),
+                ("pair_split_gain_t", |p| p.split_gain_t),
+            ] {
+                cols.push(pair_f64(name, rows, move |r| {
+                    asked(r, spec_bins).then(|| r.pairs.iter().map(f).collect())
+                }));
+            }
+        }
+    }
+    if has_rcov {
+        let block =
+            |f: fn(&RcovRow) -> Option<Vec<f64>>| move |r: &ClosedRow| r.rcov.as_ref().and_then(f);
+        cols.push(list_f64("rcov", rows, block(|b| b.rcov.clone())));
+        cols.push(list_f64("rcorr", rows, block(|b| b.rcorr.clone())));
+        cols.push(Column::new(
+            "rcov_n".into(),
+            rows.iter()
+                .map(|r| r.rcov.as_ref().map(|b| b.n))
+                .collect::<Vec<_>>(),
+        ));
+        // An `Enum` over the estimators, in `RcovKind`'s order (task 244).
+        let kinds = [
+            rheon_core::RcovKind::Plain,
+            rheon_core::RcovKind::Kernel,
+            rheon_core::RcovKind::Preavg,
+        ]
+        .map(rheon_core::RcovKind::as_str);
+        cols.push(
+            Column::new(
+                "rcov_kind".into(),
+                rows.iter()
+                    .map(|r| r.rcov.as_ref().map(|b| b.kind.as_str()))
+                    .collect::<Vec<_>>(),
+            )
+            .cast(&DataType::from_frozen_categories(
+                FrozenCategories::new(kinds).expect("distinct names"),
+            ))?,
+        );
+        // Every column of the block carries the kind's prefix, as
+        // `marginal`'s block carries `pair_` (review round 4, PA13).
+        cols.push(Column::new(
+            "rcov_bandwidth_used".into(),
+            rows.iter()
+                .map(|r| r.rcov.as_ref().and_then(|b| b.bandwidth_used))
+                .collect::<Vec<_>>(),
+        ));
+        cols.push(list_f64("rcov_omega2", rows, block(|b| b.omega2.clone())));
+        cols.push(list_f64(
+            "rcov_iv_sparse",
+            rows,
+            block(|b| b.iv_sparse.clone()),
+        ));
+        cols.push(list_f64("rcov_iq", rows, block(|b| b.iq.clone())));
+        cols.push(Column::new(
+            "rcov_psd_repaired".into(),
+            rows.iter()
+                .map(|r| r.rcov.as_ref().and_then(|b| b.psd_repaired))
+                .collect::<Vec<_>>(),
+        ));
+    }
+    DataFrame::new(rows.len(), cols)
+}
+
+/// A closed `rcov` group's block, as the row carries it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RcovRow {
+    /// `vech` of the upper triangle with the diagonal, as `comoments` is.
+    pub rcov: Option<Vec<f64>>,
+    pub rcorr: Option<Vec<f64>>,
+    pub n: i64,
+    pub kind: String,
+    pub bandwidth_used: Option<i64>,
+    pub omega2: Option<Vec<f64>>,
+    pub iv_sparse: Option<Vec<f64>>,
+    pub iq: Option<Vec<f64>>,
+    /// `None` where the PSD repair could not run, as the core's estimate
+    /// says (review round 4, CE9).
+    pub psd_repaired: Option<bool>,
+}
+
+/// One decay instance's coefficients, from [`Bank::coef`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct Coef {
+    pub group: GroupKey,
+    /// The decay instance's suffix (`"@h500"`, or `""` for a single instance).
+    pub instance: String,
+    /// The accumulated weight behind the fit -- the next row's `n_eff`. The
+    /// solve schedule, not `min_weight`, decides when `coef` first appears,
+    /// so this is how a caller tells a warm fit from one over fewer rows
+    /// than `min_weight` asks for (`pred` waits for that; `coef` does not).
+    pub n_eff: f64,
+    /// The flat list the output's `coef` field reports, in
+    /// `rheon.spec.coef_index` order; `None` before the first solve.
+    pub coef: Option<Vec<f64>>,
+}
+
+/// One coefficient of a spec's output, from [`coef_fields`]: which `coef`
+/// list it sits in and where, and the flat column name it gets when the
+/// struct is unnested with the coefficients named
+/// (`rheon.spec.coef_fields`, `lf.online.unnest`).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CoefField {
+    /// The `coef` field holding the list (`coef`, or `coef@h500` per
+    /// instance).
+    pub field: String,
+    /// Position in that list.
+    pub position: usize,
+    /// `coef_{target}_{term}{combo}{instance}` -- the field grammar with the
+    /// term after the target, so `coef_y_x1__r0.5@h500` sits beside
+    /// `pred_y__r0.5@h500`. Prefixed, because a bare `x1` would collide with
+    /// the feature column of that name in the same frame.
+    pub name: String,
+    /// The target the slot fits, or `ew_class`'s label column, or a `deco`
+    /// slot (`rho`, a block, a pair of blocks); `None` for a `kmeans`
+    /// centre and an `hmm` state, which belong to no target.
+    pub target: Option<String>,
+    /// The instance's field suffix (`"@h500"`, or `""` for one instance).
+    pub instance: String,
+    pub half_life: Option<f64>,
+    pub lam: Option<f64>,
+    pub ridge: Option<f64>,
+    pub feature_set: Option<String>,
+    /// Lasso path point.
+    pub penalty: Option<f64>,
+    /// The `kmeans` centre the slot holds.
+    pub cluster: Option<usize>,
+    /// The `hmm` state whose means the slot holds.
+    pub state: Option<usize>,
+    /// The `ew_class` class whose means the slot holds.
+    pub class: Option<String>,
+    /// `intercept`, a feature name, or `level` / `trend` for `holt`.
+    pub term: String,
+}
+
+const BANK_MAGIC: &str = "polars-online-bank";
+
+/// The envelope of a [`BankFile`], read on its own first: a file from a newer
+/// build may carry keys this build's [`Spec`] refuses, and the version check
+/// has to run before that refusal can be mistaken for "not a bank file".
+#[derive(Deserialize)]
+struct BankHeader {
+    magic: String,
+    #[serde(default = "default_format_version")]
+    format_version: u32,
+    schema_version: u32,
+}
+
+mod file_encoding;
+#[cfg(test)]
+use file_encoding::near;
+use file_encoding::{LazyStates, json_is_faithful};
+
+/// The groups' states as a file holds them: per spec, `(key, state)` pairs.
+type FileStates = Vec<Vec<(GroupKey, StreamState)>>;
+
+#[derive(Serialize, Deserialize)]
+struct BankFile<S = FileStates> {
+    magic: String,
+    /// Bank file layout (see [`BANK_FORMAT_VERSION`]). Absent in v1 files.
+    #[serde(default = "default_format_version")]
+    format_version: u32,
+    /// Model state layout (`rheon_core::SCHEMA_VERSION`).
+    schema_version: u32,
+    package_version: String,
+    specs: Vec<Spec>,
+    /// Per spec: (group key, stream state) pairs.
+    states: S,
+    /// Rows fed over the bank's life. An optional field (the file is a map),
+    /// so a file without it still loads and reports the streams' own count.
+    #[serde(default)]
+    rows_fed: u64,
+    /// Closed rows nobody has drained yet (E54). A map key with a default,
+    /// so a file written without one still loads and a bank that closes
+    /// nothing writes the same bytes it always did.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    closed: Vec<ClosedRow>,
+    /// `(spec index, high-water key)` for the specs that have one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    high_water: Vec<(usize, GroupKey)>,
+    /// `(spec index, instance, components)` for the PCA sign continuity.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pca_prev: Vec<(usize, String, rheon_core::Pca)>,
+    /// The same, per group, for the specs that close on session, whose
+    /// continuity runs along one group's closes (review 2026-09-12, S20).
+    /// Skipped when empty, so no other file's bytes move.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pca_prev_by_group: Vec<(usize, GroupKey, String, rheon_core::Pca)>,
+    /// `(spec index, the clock column's type)`, for the specs that have
+    /// seen a chunk (task 152). Skipped when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    clock_dtypes: Vec<(usize, crate::stream::ClockDtype)>,
+    /// `(spec index, [group, session])`: the form of each key column a spec
+    /// reads, for the specs that have seen one (review round 4, N22). A
+    /// resume refuses a column of another form, and orders an integer
+    /// column's keys as numbers -- the high-water mark of a `"monotone"`
+    /// spec included, which `key_integer` kept alone before (E54,
+    /// docs/REVIEW-E54-E64.md G1). Skipped when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    key_dtypes: Vec<(usize, [Option<KeyDtype>; 2])>,
+    /// `(spec index, (group key, resolver state))` for the specs with a
+    /// formula target (docs/PLAN.md task 104): each group's window core
+    /// with the rows it holds, as `WindowsRun::save_bytes` writes it.
+    /// Skipped when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    resolvers: SavedResolvers,
+    /// `(spec index, bytes)`: the Huber refit buffers each spec's groups
+    /// have reserved against its `refit_budget` (docs/PLAN.md task 277),
+    /// for the specs that reserved any. Skipped when empty, so no other
+    /// file's bytes move.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    refit_reserved: Vec<(usize, f64)>,
+}
+
+pub struct Bank {
+    specs: Vec<Spec>,
+    clock_cfgs: Vec<ClockCfg>,
+    derived: Vec<SpecDerived>,
+    states: Vec<Streams>,
+    /// Per spec, the clock column's type as first seen (task 152).
+    clock_dtypes: Vec<Option<crate::stream::ClockDtype>>,
+    /// Rows fed so far. Kept at the bank level because a stream's `rows_seen`
+    /// goes with it when its group is dropped.
+    rows_fed: u64,
+    /// Rows of groups that have closed and not yet been read, oldest first
+    /// (docs/ENHANCEMENTS.md E54). Saved with the bank: a driver that saves
+    /// between chunks without draining would otherwise lose them silently.
+    closed: Vec<ClosedRow>,
+    /// Per spec under `group_close = "monotone"`: the largest key seen, past
+    /// which no group may reopen.
+    high_water: Vec<Option<GroupKey>>,
+    /// The last closed row's components per (spec, group, decay instance), so
+    /// an `ew_cov(pca = r)` row's loadings keep their sign across closes and
+    /// across a save/load. The group is `None` under `"monotone"`, where a
+    /// group closes once and continuity runs from one group to the next, and
+    /// the row's own group under `"session"`, where every group closes every
+    /// session. Keyed by (spec, instance) alone, one group's day-2 loadings
+    /// were signed against whichever group sorted last on day 1, so a
+    /// reflection between two groups read as a sign flip in one (review
+    /// 2026-09-12, S20).
+    pca_prev: HashMap<(usize, Option<GroupKey>, String), rheon_core::Pca, rheon_core::FixedState>,
+    /// Per spec, the form of its group and session columns, `[group,
+    /// session]`, as the first chunk to carry each gave it (review round 4,
+    /// N22), and kept in the state. A key is its value's text, so a column
+    /// of another form would start every group over, or cut every session,
+    /// in silence: [`Self::key_forms`] refuses it by name. An integer group
+    /// column's keys are ordered as numbers ([`Self::integer_keys`]) -- in
+    /// every frame, in the closed queue and against a `"monotone"` spec's
+    /// high-water mark (docs/REVIEW-E54-E64.md G1).
+    key_dtypes: Vec<[Option<KeyDtype>; 2]>,
+    /// Why the bank refuses to go on, once a chunk was refused after some
+    /// of its rows had been learned. A window past a refusing
+    /// `window_budget` is found before any row goes in, by the pre-pass
+    /// ([`Stream::window_prepass`], docs/PLAN.md task 115 (d)), except where
+    /// the pre-pass cannot see it -- `drift_action = "reset"` -- and there
+    /// it is found as the rows go in, so the streams hold rows whose output
+    /// was never returned (review 2026-09-12, P4). `fit_predict`, `predict`,
+    /// `save_bytes` and its JSON form `save_json_string` refuse (review
+    /// round 4, PA12: the export handed out the state the save refuses);
+    /// reading the state (`gram`, `summary`, `coef`) does not.
+    broken: Option<String>,
+    /// Whether a chunk's window rings are replayed before any stream runs it
+    /// ([`Stream::window_prepass`]): on, except in a test that holds the
+    /// replay's verdict to the ring's own. Not state.
+    window_prepass: bool,
+    /// The pool the bank's parallel work runs on ([`Self::set_threads`]):
+    /// the process default unless a count was given. Not state.
+    threads: crate::pool::Threads,
+    /// Readiness notices raised and not yet taken
+    /// ([`Self::take_notices`]); not state.
+    notices: Vec<String>,
+    /// Whether a call learned rows and then returned an error before it
+    /// took its streams' notices (an output it could not assemble), so that
+    /// streams outside the next call's chunk may hold some: the next call
+    /// that completes takes every stream's, not only its chunk's. Not
+    /// state: the notices such a call leaves are saved with their streams
+    /// (`Notified::pending`, schema 67), and a loaded bank starts with this
+    /// set, so its first completing call takes every stream's once, wherever
+    /// the file's streams held them.
+    notices_left: bool,
+    /// The next call returns an error once its streams have learned, in
+    /// place of its output: what no input reaches, made for the tests of
+    /// the notices such a call leaves ([`Self::fail_next_call_after_learning`]).
+    /// Not state.
+    fail_after_learning: bool,
+    /// Run buffers kept from earlier chunks for small runs to fill again
+    /// (task 270, G-1); not state.
+    spares: Spares,
+    /// Per spec, its formula targets' resolver (docs/PLAN.md task 104):
+    /// empty for a spec without one.
+    resolvers: Vec<TargetWindows>,
+    /// Per spec with a formula target whose longest forward window the
+    /// embargo does not cover: why `fit_predict` refuses to run it. A run
+    /// that keeps no prediction takes any embargo
+    /// ([`Self::fit_predict_arrow_with`]).
+    short_embargo: Vec<Option<String>>,
+    /// Per spec, the bytes its groups' Huber refit buffers have reserved
+    /// against its `refit_budget` (docs/PLAN.md task 277): each group as
+    /// the bank first sees it, in the order its rows first arrive, reserves
+    /// the most its buffers can hold, or, once that would pass the budget,
+    /// gives its refits up. A reservation is kept for the bank's life, so
+    /// which groups refit depends on that order alone, whatever the
+    /// chunking (hard rule 3), and the buffers never hold more than the
+    /// budget. State.
+    refit_reserved: Vec<f64>,
+    /// Per spec, whether the notice of a group's refits given up past the
+    /// budget has been raised; once a bank. Not state.
+    refit_noticed: Vec<bool>,
+}
+
+/// Everything `assemble` needs that follows from the `Spec` alone.
+///
+/// These used to be recomputed per chunk — `decays()` four times, `combos()`
+/// three, each re-running the validation that already passed at construction
+/// and each allocating (docs/SIMPLIFICATION.md S4). At the default 100k-row
+/// chunk that was noise; a caller feeding 1k-row chunks paid it 100x more
+/// often. Computed once here, it is not paid at all.
+pub struct SpecDerived {
+    /// Every output field, in struct order, with the buffer each reads from.
+    schema: Vec<FieldMeta>,
+    /// Grid-slot labels, for `emit_selected`'s `selected_<t>` column.
+    slot_labels: Vec<String>,
+    n_models: usize,
+    /// Combos per target.
+    nc: usize,
+    /// Targets.
+    m: usize,
+    /// Slots one instance owns: `m * nc`, or the statistic count for `ew_cov`.
+    per_model: usize,
+    /// For a `seqtest` that compares two specs: their indices in the bank,
+    /// `(a, b)`. Resolved once in [`Bank::new`], which also checks that the
+    /// residual fields the targets name exist on both.
+    compare: Option<(usize, usize)>,
+}
+
+impl SpecDerived {
+    fn new(spec: &Spec) -> Self {
+        let schema = output_index(spec);
+        let n_models = spec.decays().expect("validated").len();
+        let nc = crate::stream::combos(spec).len();
+        let m = spec.m();
+        // The models with no target prediction have as slots whatever rides
+        // in the `pred` buffer (statistics, an assignment and its distances,
+        // a class and its posteriors), which the schema says with
+        // `Source::Stat` / `Cluster` / `Id` / `Flag` / `Label`.
+        let per_model = if spec.model.predicts_no_target() {
+            schema
+                .iter()
+                .filter(|f| {
+                    matches!(
+                        f.src,
+                        Source::Stat(_) | Source::Id(_) | Source::Flag(_) | Source::Label(_)
+                    )
+                })
+                .count()
+                / n_models
+        } else {
+            m * nc
+        };
+        Self {
+            schema,
+            slot_labels: slot_labels(spec),
+            n_models,
+            nc,
+            m,
+            per_model,
+            compare: None,
+        }
+    }
+}
+
+/// The residual fields of a spec's output, for a comparison to name.
+fn resid_fields(spec: &Spec) -> Vec<String> {
+    output_fields(spec)
+        .into_iter()
+        .filter(|f| f.starts_with("resid_"))
+        .collect()
+}
+
+/// A key column's dtype, kept in the state as Polars' Rust display
+/// (`i64`, `str`), as a message names it: Polars' Python class name
+/// (`Int64`, `String`), the form [`crate::arrow::dtype_name`] gives. A
+/// display this does not know is said as it is.
+fn key_dtype_label(display: &str) -> String {
+    let name = match display {
+        "i8" => "Int8",
+        "i16" => "Int16",
+        "i32" => "Int32",
+        "i64" => "Int64",
+        "i128" => "Int128",
+        "u8" => "UInt8",
+        "u16" => "UInt16",
+        "u32" => "UInt32",
+        "u64" => "UInt64",
+        "u128" => "UInt128",
+        "f32" => "Float32",
+        "f64" => "Float64",
+        "str" => "String",
+        "bool" => "Boolean",
+        "cat" => "Categorical",
+        "date" => "Date",
+        other => other,
+    };
+    name.to_string()
+}
+
+/// The refusal of a spec index past the bank's specs, in the shape every
+/// message takes (WRITING §11).
+fn spec_index_out_of_range(si: usize, n: usize) -> String {
+    format!(
+        "spec: index {si} is out of range for a bank of {n} specs. Give an index below {n}, or \
+         the spec's name."
+    )
+}
+
+/// Resolve a `seqtest` comparison against the bank's specs: `a` and `b`
+/// must be specs of the bank, and every target `t` must name a residual
+/// field of both (`resid_<t>`, plus the side's grid suffix). The error names
+/// what is there instead.
+fn resolve_compare(specs: &[Spec], spec: &Spec) -> Result<Option<(usize, usize)>, String> {
+    let Some(cmp) = spec.model.compares() else {
+        return Ok(None);
+    };
+    let mut idx = [0; 2];
+    for (k, (side, name)) in [("a", cmp.a), ("b", cmp.b)].into_iter().enumerate() {
+        let Some(si) = specs.iter().position(|s| s.name == name) else {
+            let have: Vec<&str> = specs.iter().map(|s| s.name.as_str()).collect();
+            return Err(format!(
+                "spec {:?}: seqtest {side} = {name:?} names no spec of this bank, whose specs \
+                 are {have:?}. Set {side} to the name of one of those specs.",
+                spec.name
+            ));
+        };
+        if matches!(specs[si].model, ModelKind::SeqTest { .. }) {
+            return Err(format!(
+                "spec {:?}: seqtest {side} = {name:?} is itself a seqtest, which writes no \
+                 residuals to compare. Set {side} to a spec that predicts its targets.",
+                spec.name
+            ));
+        }
+        let resid = resid_fields(&specs[si]);
+        for t in &spec.targets {
+            let fields = cmp.fields(t);
+            let want = if k == 0 { fields.0 } else { fields.1 };
+            if !resid.contains(&want) {
+                return Err(format!(
+                    "spec {:?}: seqtest target {t:?} names no residual of {side} = {name:?}: \
+                     it has no field {want:?}, and its residual fields are {resid:?}. Name each \
+                     target as the part of a residual field after \"resid_\", and set \
+                     {side}_suffix to the grid part after that.",
+                    spec.name
+                ));
+            }
+        }
+        idx[k] = si;
+    }
+    Ok(Some((idx[0], idx[1])))
+}
+
+impl Bank {
+    /// A bank over `specs`, each validated and its models built eagerly, so
+    /// that every parameter problem is reported here and not on the first
+    /// chunk.
+    ///
+    /// # Errors
+    ///
+    /// No specs; two with the same name; a spec [`Spec::validate`] refuses
+    /// or whose model cannot be built from its parameters -- the message
+    /// names the spec and the parameter, as the Python builders' do.
+    pub fn new(mut specs: Vec<Spec>) -> Result<Self, String> {
+        if specs.is_empty() {
+            return Err(
+                "specs: the list of specs is empty, and a bank needs at least one. \
+                        Give at least one spec."
+                    .into(),
+            );
+        }
+        // What a spec may leave out, filled before anything reads it, so the
+        // bank -- and the state file it writes -- carries the same spec
+        // whichever surface wrote it (docs/ENHANCEMENTS.md E53).
+        // Filled, validated and built, as at every other door (`Spec::check`).
+        for s in specs.iter_mut() {
+            s.check()?;
+        }
+        let mut names = std::collections::HashSet::new();
+        for s in &specs {
+            if !names.insert(s.name.clone()) {
+                return Err(format!(
+                    "specs: two specs are named {:?}, but a spec's name names its output \
+                     column, so each must be unique. Rename one of them.",
+                    s.name
+                ));
+            }
+            // `Spec::check` refuses two outputs rendered to one field name;
+            // kept here as a tripwire for a spec built some other way.
+            if let Some(err) = duplicate_field(s) {
+                return Err(err);
+            }
+        }
+        let clock_cfgs = specs
+            .iter()
+            .map(|s| s.clock_cfg())
+            .collect::<Result<Vec<_>, _>>()?;
+        let derived = specs
+            .iter()
+            .map(|s| {
+                let mut d = SpecDerived::new(s);
+                d.compare = resolve_compare(&specs, s)?;
+                Ok(d)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let states = specs.iter().map(|_| Streams::default()).collect();
+        let high_water = specs.iter().map(|_| None).collect();
+        let key_dtypes = vec![[None, None]; specs.len()];
+        let clock_dtypes = vec![None; specs.len()];
+        let n_specs = specs.len();
+        // A formula target's window must close before any row it covers is
+        // scored from a state that learned it (docs/PLAN.md task 104): the
+        // embargo covers the longest forward window, or `fit_predict`
+        // refuses the spec. Checked here, said at the first `fit_predict`
+        // and by `RunConfig::validate` (`fit_predict_refusal`).
+        let short_embargo = specs
+            .iter()
+            .map(|s| {
+                let longest = TargetWindows::longest_forward_window(s)?;
+                let embargo = s.embargo.as_ref().map(crate::span::Span::value);
+                (embargo.unwrap_or(0.0) < longest.value()).then(|| {
+                    let has = s
+                        .embargo
+                        .as_ref()
+                        .map_or_else(|| "it has none".to_string(), |e| format!("it is {e}"));
+                    // As Python writes it: a duration is a string.
+                    let set = if longest.is_duration() {
+                        format!("{:?}", longest.label())
+                    } else {
+                        longest.label()
+                    };
+                    format!(
+                        "spec {:?}: fit_predict needs an embargo of at least {longest}, the \
+                         longest window_size among the look-ahead window operators of its \
+                         formula targets, but {has}. A row's target is known only once that \
+                         window closes, so a shorter embargo would predict the rows it covers \
+                         from a state that had learned them. Set embargo={set} or longer, or \
+                         learn without predicting with ModelBank.fit (or --no-output on the \
+                         command line), which takes any embargo.",
+                        s.name
+                    )
+                })
+            })
+            .collect();
+        // A clocked spec with an embargo and no horizon_rows: each diagnostic
+        // that reads the horizon says it has none, once per bank (task 232
+        // (3)); the first learning call surfaces it as the others are.
+        let notices = specs
+            .iter()
+            .flat_map(|s| {
+                s.horizon_notices()
+                    .into_iter()
+                    .chain(s.lag_cap_notices())
+                    .map(move |n| format!("spec {:?}: {n}", s.name))
+            })
+            .collect();
+        Ok(Self {
+            resolvers: specs.iter().map(|_| TargetWindows::default()).collect(),
+            short_embargo,
+            specs,
+            clock_cfgs,
+            derived,
+            states,
+            rows_fed: 0,
+            closed: Vec::new(),
+            high_water,
+            pca_prev: HashMap::default(),
+            key_dtypes,
+            clock_dtypes,
+            broken: None,
+            window_prepass: true,
+            threads: crate::pool::Threads::default(),
+            notices,
+            notices_left: false,
+            fail_after_learning: false,
+            spares: Spares::default(),
+            refit_reserved: vec![0.0; n_specs],
+            refit_noticed: vec![false; n_specs],
+        })
+    }
+
+    pub fn specs(&self) -> &[Spec] {
+        &self.specs
+    }
+
+    /// Run on a pool of `threads` threads, shared with every other holder
+    /// of that count, or on the process default for `None` (pool.rs). The
+    /// numbers the bank returns and the state it saves are the same at any
+    /// count; the count is not saved, so a loaded bank takes its own.
+    ///
+    /// # Errors
+    ///
+    /// `ComputeError` naming the argument for `Some(0)` or for a count the
+    /// system will not start threads for; the bank keeps its pool.
+    pub fn set_threads(&mut self, threads: Option<usize>) -> PolarsResult<()> {
+        self.threads = crate::pool::Threads::new(threads)?;
+        Ok(())
+    }
+
+    /// The pool the bank runs on ([`Self::set_threads`]).
+    pub fn threads(&self) -> &crate::pool::Threads {
+        &self.threads
+    }
+
+    /// The groups each spec holds state for, in key order ([`Self::sorted_keys`]):
+    /// `(key, rows processed, last clock value)`. Rows processed are the
+    /// group's rows the null policy did not skip -- the rows the stream's own
+    /// `max_rows_between_coefs` cadence counts. A group's state lives until
+    /// [`Self::drop_groups`] removes it, so this is how a long-running bank
+    /// finds the ones that have gone quiet (docs/IMPROVEMENTS.md U3). The
+    /// clock is the stream's own: a temporal one in integer nanoseconds,
+    /// which [`Self::groups_table`] gives in the column's dtype.
+    pub fn groups(&self) -> Vec<Vec<(GroupKey, u64, Option<ClockValue>)>> {
+        self.per_group(|s| (s.persisted.rows_seen, s.persisted.clock.last_clock()))
+            .into_iter()
+            .map(|v| v.into_iter().map(|(k, (n, c))| (k, n, c)).collect())
+            .collect()
+    }
+
+    /// [`Self::groups`] for `specs` as one frame -- `spec`, `group`,
+    /// `rows_fed`, `clock_last` -- the clock in the clock column's own
+    /// dtype, exactly ([`ClockDtype::column`], review round 4, N18).
+    /// `rows_fed` is `summary()`'s, the rows routed to the group, skipped
+    /// ones included (task 244: it was the processed rows, under another
+    /// name).
+    ///
+    /// # Errors
+    ///
+    /// A spec index out of range, or two specs whose clocks are of two
+    /// dtypes, which one column cannot hold.
+    pub fn groups_table(&self, specs: &[usize]) -> Result<DataFrame, String> {
+        let clock = self.frame_clock(specs)?;
+        let all = self.per_group(|s| {
+            (
+                s.summary().map(|d| d.rows_fed),
+                s.persisted.clock.last_clock(),
+            )
+        });
+        let (mut spec, mut group, mut rows, mut last) =
+            (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        for &si in specs {
+            for (k, (n, c)) in &all[si] {
+                spec.push(self.specs[si].name.as_str());
+                group.push(k.as_str());
+                rows.push(*n);
+                last.push(*c);
+            }
+        }
+        let cols = vec![
+            Column::new("spec".into(), spec),
+            Column::new("group".into(), group),
+            counts("rows_fed", rows),
+            ClockDtype::column(clock, "clock_last", &last).map_err(|e| e.to_string())?,
+        ];
+        DataFrame::new(last.len(), cols).map_err(|e| e.to_string())
+    }
+
+    /// The number of groups each spec holds state for.
+    pub fn group_counts(&self) -> Vec<usize> {
+        self.states.iter().map(Streams::len).collect()
+    }
+
+    /// Per spec, every group's last clock -- the value its stream last
+    /// stepped through, which the next row is measured from -- exactly as the
+    /// stream keeps it: a temporal clock in integer nanoseconds. `None`
+    /// before the first row and on a row-count clock. What
+    /// `ModelBank.skip_learned` compares a resumed input against (task 120).
+    pub fn last_clocks(&self) -> Vec<Vec<(GroupKey, Option<rheon_core::ClockValue>)>> {
+        self.per_group(|s| s.persisted.clock.last_clock())
+    }
+
+    /// `read` of every group's stream, per spec, in key order.
+    fn per_group<T>(&self, read: impl Fn(&Stream) -> T) -> Vec<Vec<(GroupKey, T)>> {
+        (0..self.specs.len())
+            .map(|si| {
+                self.sorted_keys(si, None)
+                    .expect("a spec of the bank")
+                    .into_iter()
+                    .map(|k| (k.clone(), read(&self.states[si][k])))
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// The dtype the clock columns of a frame over `specs` take (review
+    /// round 4, N18): the clock column's own, as the bank keeps it from the
+    /// first chunk (task 152), which every spec among them that reads a clock
+    /// and has seen a chunk shares, one column holding one type. `None`,
+    /// a `Float64` of nulls, where none has.
+    fn frame_clock(&self, specs: &[usize]) -> Result<Option<&ClockDtype>, String> {
+        if let Some(si) = specs.iter().find(|&&si| si >= self.specs.len()) {
+            return Err(spec_index_out_of_range(*si, self.specs.len()));
+        }
+        let mut found: Option<(usize, &ClockDtype)> = None;
+        for &si in specs {
+            let Some(d) = self.clock_dtypes[si]
+                .as_ref()
+                .filter(|d| **d != ClockDtype::Rows)
+            else {
+                continue;
+            };
+            match found {
+                Some((first, f)) if f != d => {
+                    return Err(format!(
+                        "spec: spec {:?} keeps its clock as {} and spec {:?} as {}, but one clock \
+                         column of the result holds one type. Read the two specs one at a time, \
+                         with spec=.",
+                        self.specs[first].name,
+                        crate::arrow::dtype_name(&f.dtype()),
+                        self.specs[si].name,
+                        crate::arrow::dtype_name(&d.dtype())
+                    ));
+                }
+                Some(_) => {}
+                None => found = Some((si, d)),
+            }
+        }
+        Ok(found.map(|(_, d)| d))
+    }
+
+    /// Forget the state of these groups -- in every spec, or in one -- and
+    /// return how many streams were dropped. A dropped group starts cold if it
+    /// appears again, exactly as a never-seen one would: its window core and
+    /// the PCA sign continuity it keeps under `group_close = "session"` go
+    /// with it, whether or not its stream was still held. A readiness notice
+    /// its stream raised and that was not yet taken stays for
+    /// [`Self::take_notices`]. `spec` is an index into [`Self::specs`]; the
+    /// caller keeps it in range.
+    pub fn drop_groups(&mut self, keys: &[GroupKey], spec: Option<usize>) -> Result<usize, String> {
+        if let Some(si) = spec
+            && si >= self.states.len()
+        {
+            return Err(spec_index_out_of_range(si, self.specs.len()));
+        }
+        let mut dropped = 0;
+        for (si, hm) in self.states.iter_mut().enumerate() {
+            if spec.is_some_and(|s| s != si) {
+                continue;
+            }
+            for key in keys {
+                // A stream holds notices not yet taken only after a call
+                // that learned and then failed (`notices_left`); they are
+                // said, not dropped with it (task 333).
+                if let Some(mut stream) = hm.swap_remove(key) {
+                    say_notices(&mut self.notices, &self.specs[si], key, &mut stream);
+                    dropped += 1;
+                }
+                // The group's window core goes with its stream, so a group
+                // that appears again starts cold there too (review R1, D1:
+                // a stale core refused the new rows, or held the old ones).
+                self.resolvers[si].runs.remove(key);
+                self.resolvers[si].saved.remove(key);
+            }
+            // So does the PCA sign continuity a group keeps under
+            // `group_close = "session"`, whose stream is gone at every close:
+            // kept, it grew by one entry per key ever seen, in the bank and
+            // in every file it saved (task 160, PA7).
+            if !self.pca_prev.is_empty() {
+                let gone: std::collections::HashSet<&GroupKey> = keys.iter().collect();
+                self.pca_prev.retain(|(s, g, _), _| {
+                    *s != si || g.as_ref().is_none_or(|g| !gone.contains(g))
+                });
+            }
+        }
+        Ok(dropped)
+    }
+
+    /// Rows fed so far, over every chunk and group: skipped rows and dropped
+    /// groups included, which is why it is not the sum of the groups'
+    /// `rows_fed` in [`Self::summary`]. `rows_seen` before review round 4
+    /// (PA11), a word the streams use for the rows they accept.
+    pub fn rows_fed(&self) -> u64 {
+        self.rows_fed
+    }
+
+    /// Run buffers kept from earlier chunks for small runs to fill again,
+    /// for a test that holds them to changing nothing. Not for use.
+    #[doc(hidden)]
+    pub fn spare_runs(&self) -> usize {
+        self.spares.outs.len()
+    }
+
+    /// Free the run buffers kept between chunks, so that what a bank holds is
+    /// its state alone. For the scaling harness. Not for use.
+    #[doc(hidden)]
+    pub fn drop_spares(&mut self) {
+        self.spares = Spares::default();
+    }
+
+    /// Jittered/failed factorizations so far, per spec, as `(group, count)`
+    /// pairs in key order (docs/PLAN.md §7: a solve never returns NaN
+    /// silently, so this is the only way to notice degenerate inputs).
+    pub fn solve_failures(&self) -> Vec<Vec<(GroupKey, u64)>> {
+        self.per_group(Stream::solve_failures)
+    }
+
+    /// The EW accumulators behind a spec's fit, per group and decay instance
+    /// (docs/ENHANCEMENTS.md E30).
+    ///
+    /// Returns one [`Gram`] per (group, instance), in key order
+    /// ([`Self::sorted_keys`]) then the spec's half-life order, narrowed to
+    /// `group`'s keys when given. `spec` is an index into [`Self::specs`].
+    ///
+    /// The point is that these are the *same* matrices the deployed model
+    /// solves against, at any point in the stream, from a single pass over data
+    /// that is never materialized — so an analysis built on them cannot
+    /// silently disagree with the model it is analysing. What they are not is a
+    /// speed claim: for one batch Gram over materialized data, BLAS `dgemm`
+    /// wins comfortably.
+    ///
+    /// Only the models that keep a co-moment matrix report: `ewridge`, `lasso`
+    /// and `ew_cov`. Everything else yields an empty vector, because there is
+    /// no such matrix to hand back — `rls` and `kalman` track an inverse, and
+    /// the gradient models track no second moment at all.
+    pub fn gram(&self, spec: usize, group: Option<&[GroupKey]>) -> Result<Vec<Gram>, String> {
+        let keys = self.sorted_keys(spec, group)?;
+        let states = &self.states[spec];
+        let mut out = Vec::new();
+        for key in keys {
+            for (label, model) in &states[key].models {
+                out.extend(gram_of(key, label, model));
+            }
+        }
+        Ok(out)
+    }
+
+    /// The pairs of a `marginal` spec (docs/ENHANCEMENTS.md E44), as a long
+    /// frame: one row per (group, decay instance, feature, target), sorted
+    /// by group, in spec order within one, with `group`, `instance` (the
+    /// half-life-grid suffix, `""` for a single instance), `feature`,
+    /// `target` (the target's name, which is its column unless a table
+    /// target gave one), `weight_sum` (the weight behind the target's pairs), `n_kish`
+    /// (Kish's effective sample size, `(Σw)²/Σw²`), `mean_x`, `var_x`,
+    /// `mean_y`, `var_y`, `cov`, `corr`, `beta` (the slope of the target on
+    /// the feature) and `t_stat` (the t-statistic of the correlation at
+    /// Kish's `n`; `t` before review round 4, CD13), as
+    /// [`rheon_core::Marginal::pair`] reads them from the state as it
+    /// stands, with the core's NaN -- `corr`, `beta` and `t_stat` below the
+    /// target's `min_weight` or undefined, `n_kish` before its first row --
+    /// as null. `min_settled_frac` withholds the same statistics, and the
+    /// split, while the instance is less settled than it ([`gated_pair`]).
+    ///
+    /// `group` narrows the frame to those keys, in key order
+    /// ([`Self::sorted_keys`]); a key the bank has never seen gives nothing,
+    /// not an error.
+    ///
+    /// # Errors
+    ///
+    /// `spec` out of range, or not a `marginal` spec.
+    pub fn marginal(&self, spec: usize, group: Option<&[GroupKey]>) -> Result<DataFrame, String> {
+        let keys = self.sorted_keys(spec, group)?;
+        let (s, states) = (&self.specs[spec], &self.states[spec]);
+        if !matches!(s.model, ModelKind::Marginal { .. }) {
+            return Err(format!(
+                "spec {:?}: its model is {:?}, not \"marginal\", and only a marginal spec keeps \
+                 its pairs. Name a marginal spec, or read an ew_cov spec's Gram with \
+                 ModelBank.gram.",
+                s.name,
+                s.model.kind_name()
+            ));
+        }
+        let mut group_col: Vec<Option<&str>> = Vec::new();
+        let mut instance: Vec<&str> = Vec::new();
+        let mut feature: Vec<&str> = Vec::new();
+        let mut target: Vec<&str> = Vec::new();
+        let mut pairs: Vec<rheon_core::MarginalPair> = Vec::new();
+        for key in keys {
+            let stream = &states[key];
+            for (i, (label, model)) in stream.models.iter().enumerate() {
+                let AnyModel::Marginal(m) = model else {
+                    unreachable!("a marginal spec builds marginal models");
+                };
+                let unsettled = stream.settled_withholds(s, i);
+                for (t_i, t) in s.targets.iter().enumerate() {
+                    for (j, f) in s.features.iter().enumerate() {
+                        group_col.push(key.as_str());
+                        instance.push(label.as_str());
+                        feature.push(f.as_str());
+                        target.push(t.as_str());
+                        pairs.push(gated_pair(m, t_i, j, unsettled));
+                    }
+                }
+            }
+        }
+        // NaN is the core's "undefined" (a constant column, too few rows);
+        // the frame says null, as the output structs do.
+        let num = |f: fn(&rheon_core::MarginalPair) -> f64| -> Vec<Option<f64>> {
+            pairs
+                .iter()
+                .map(f)
+                .map(|v| (!v.is_nan()).then_some(v))
+                .collect()
+        };
+        // The instance's decay beside its suffix, as `output_index` and
+        // `coef()` give it (task 244).
+        let decay: Vec<(Option<f64>, Option<f64>)> =
+            instance.iter().map(|i| instance_decay(s, i)).collect();
+        let mut cols = vec![
+            Column::new("spec".into(), vec![s.name.as_str(); pairs.len()]),
+            Column::new("group".into(), group_col),
+            Column::new("instance".into(), instance),
+            Column::new(
+                "half_life".into(),
+                decay.iter().map(|d| d.0).collect::<Vec<_>>(),
+            ),
+            Column::new("lam".into(), decay.iter().map(|d| d.1).collect::<Vec<_>>()),
+            Column::new("feature".into(), feature),
+            Column::new("target".into(), target),
+            Column::new("weight_sum".into(), num(|p| p.n_eff)),
+            Column::new("n_kish".into(), num(|p| p.n_kish)),
+            Column::new("mean_x".into(), num(|p| p.mean_x)),
+            Column::new("var_x".into(), num(|p| p.var_x)),
+            Column::new("mean_y".into(), num(|p| p.mean_y)),
+            Column::new("var_y".into(), num(|p| p.var_y)),
+            Column::new("cov".into(), num(|p| p.cov)),
+            Column::new("corr".into(), num(|p| p.corr)),
+            Column::new("beta".into(), num(|p| p.beta)),
+            Column::new("t_stat".into(), num(|p| p.t)),
+        ];
+        // A list column of one field, whose inner lengths may differ from
+        // row to row: bins are ragged by design, since a feature keeps only
+        // the edges it can support. NaN inside is null inside, as `num`
+        // says it is for the scalars.
+        let lists = |f: fn(&rheon_core::MarginalPair) -> &Vec<f64>| -> Column {
+            let mut b = ListPrimitiveChunkedBuilder::<Float64Type>::new(
+                "".into(),
+                pairs.len(),
+                pairs.first().map_or(0, |p| f(p).len()),
+                DataType::Float64,
+            );
+            for p in &pairs {
+                b.append_iter(f(p).iter().map(|v| (!v.is_nan()).then_some(*v)));
+            }
+            b.finish().into_column()
+        };
+        // Both optional blocks are the spec's to ask for, so the schema is
+        // the spec's: a bank with no groups yet, or a group narrowed to
+        // that the bank has not seen, gives the same columns as one that
+        // has learned -- a caller who asked for them should find them,
+        // holding nulls and empty lists, rather than discover that they
+        // appear later.
+        //
+        // E66: the lag family, one list column per orientation, plus the
+        // serial-dependence-corrected count and its statistic. Absent
+        // without `lags`, so a spec that does not ask for them gets the
+        // frame it always got.
+        if spec_lags(s) {
+            cols.push(lists(|p| &p.lag_corr_xx).with_name("lag_corr_xx".into()));
+            cols.push(lists(|p| &p.lag_corr_yy).with_name("lag_corr_yy".into()));
+            // Over `cross_lags`; absent under `cross_lags = []` (E70).
+            if spec_cross_lags(s) {
+                cols.push(lists(|p| &p.lag_corr_xy).with_name("lag_corr_xy".into()));
+                cols.push(lists(|p| &p.lag_corr_yx).with_name("lag_corr_yx".into()));
+            }
+            cols.push(Column::new("n_serial".into(), num(|p| p.n_serial)));
+            // `t_stat` again, at `n_serial`: the correlation's t keeps its
+            // conventional name, and this twin extends it (task 244).
+            cols.push(Column::new("t_stat_serial".into(), num(|p| p.t_serial)));
+            cols.push(Column::new("phi_x".into(), num(|p| p.phi_x)));
+            cols.push(Column::new("phi_y".into(), num(|p| p.phi_y)));
+        }
+        // E67: the binned view, empty lists and nulls until a group's
+        // warm-up has fixed its edges.
+        if spec_bins(s) {
+            cols.push(lists(|p| &p.bin_edges).with_name("bin_edges".into()));
+            cols.push(lists(|p| &p.bin_n).with_name("bin_n".into()));
+            cols.push(lists(|p| &p.bin_mean_y).with_name("bin_mean_y".into()));
+            cols.push(lists(|p| &p.bin_var_y).with_name("bin_var_y".into()));
+            cols.push(Column::new("split_gain".into(), num(|p| p.split_gain)));
+            cols.push(Column::new("split_at".into(), num(|p| p.split_at)));
+            cols.push(Column::new("split_gain_t".into(), num(|p| p.split_gain_t)));
+        }
+        DataFrame::new(pairs.len(), cols).map_err(|e| e.to_string())
+    }
+
+    /// The coefficients behind a spec's fit, per group and decay instance:
+    /// the flat list the output's `coef` field reports, as of the last row
+    /// each stream learned from -- `coef` on that row said the same, and
+    /// the next row's `pred` is computed from it. The layout is
+    /// `rheon.spec.coef_index`'s: (target x combo) slots, each with
+    /// its terms in order. `None` before a stream's first solve, and for a
+    /// model without coefficients (`ew_cov`, `seqtest`). The first solve is the solve
+    /// schedule's to decide (`solve_every`, `max_rows_between_solves`), not
+    /// `min_weight`: `pred` waits for `min_weight`, `coef` does not, so a
+    /// row's `n_eff` says how much weight is behind it.
+    ///
+    /// `group` narrows the list to those keys, in key order
+    /// ([`Self::sorted_keys`]); a key the bank has never seen gives nothing,
+    /// not an error.
+    ///
+    /// # Errors
+    ///
+    /// `spec` out of range.
+    pub fn coef(&self, spec: usize, group: Option<&[GroupKey]>) -> Result<Vec<Coef>, String> {
+        let keys = self.sorted_keys(spec, group)?;
+        let states = &self.states[spec];
+        let mut out = Vec::new();
+        for key in keys {
+            for (label, model) in &states[key].models {
+                out.push(Coef {
+                    group: key.clone(),
+                    instance: label.clone(),
+                    n_eff: model.n_eff(),
+                    coef: model
+                        .coefficients()
+                        .map(|c| c.into_iter().flatten().collect()),
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// The output struct as it stood on the last row each stream of a spec
+    /// learned from, per group (docs/PLAN.md task 34): the sorted group keys
+    /// and a struct column with one row for each, in that order -- the row
+    /// [`Bank::fit_predict`] reported for that row, field for field,
+    /// including `coef` when the row carried it. It travels with the state,
+    /// so a bank loaded from a file answers "how was this model doing?"
+    /// without the output frame, and a directory of files compares without
+    /// keeping the last row of each output. A group with no learned row
+    /// yet, or restored from a file written before this existed, is a row
+    /// of nulls. [`Bank::predict`] does not move it.
+    ///
+    /// `group` narrows the list to those keys, in key order
+    /// ([`Self::sorted_keys`]); a key the bank has never seen gives nothing,
+    /// not an error.
+    ///
+    /// # Errors
+    ///
+    /// `spec` out of range.
+    pub fn last_row(
+        &self,
+        spec: usize,
+        group: Option<&[GroupKey]>,
+    ) -> Result<(Vec<GroupKey>, Column), String> {
+        let keys = self.sorted_keys(spec, group)?;
+        let states = &self.states[spec];
+        let (s, d) = (&self.specs[spec], &self.derived[spec]);
+        let chunks: Vec<Box<ChunkOut>> = keys
+            .iter()
+            .enumerate()
+            .map(|(row, key)| {
+                let stream = &states[*key];
+                match stream.last_row() {
+                    Some(last) => last
+                        .to_chunk(s, stream.n_models(), stream.n_slots(), row)
+                        .map(Box::new),
+                    // One unprocessed row: every field null.
+                    None => {
+                        let mut out = ChunkOut::new(s, stream.n_models(), stream.n_slots(), 1);
+                        out.rows.push(row);
+                        Ok(Box::new(out))
+                    }
+                }
+            })
+            .collect::<Result<_, String>>()?;
+        let mut chunks = chunks;
+        let st = assemble(
+            s,
+            d,
+            keys.len(),
+            &mut chunks,
+            self.clock_dtypes[spec].as_ref(),
+        )
+        .map_err(|e| e.to_string())?;
+        let col = named_column(s, st).map_err(|e| e.to_string())?;
+        Ok((keys.into_iter().cloned().collect(), col))
+    }
+
+    /// What each group of `spec` has been fed (docs/PLAN.md task 35), one
+    /// row per group sorted by key: `group`, `rows_fed`, `rows_processed`,
+    /// `rows_skipped`, `rows_learned`, `rows_zero_weight`, `weight_sum`,
+    /// `clock_min`, `clock_max`, `last_clock`, `session_changes`,
+    /// `clock_backwards`, `resets`, and where each group stands on the
+    /// readiness statistics (docs/WARMUP-AND-CONVERGENCE.md §3):
+    /// `settled_frac`, `error_inflation`, `support_coef_min`,
+    /// `support_coef_min_feature` and `n_coef`. The counts are over every row routed to
+    /// the group since its state began, undecayed, and survive
+    /// [`Bank::save_bytes`] / [`Bank::load_bytes`]; a group restored from a
+    /// file written before the summary existed has `group`, `rows_processed`
+    /// and `last_clock` and nulls elsewhere. `clock_min`, `clock_max` and
+    /// `last_clock` are in the clock column's own dtype, exactly, and null on
+    /// a row-count clock ([`ClockDtype::column`], review round 4, N18).
+    /// [`Bank::predict`] moves none of it.
+    ///
+    /// `group` narrows the frame to those keys, in key order
+    /// ([`Self::sorted_keys`]); a key the bank has never seen gives nothing,
+    /// not an error.
+    ///
+    /// # Errors
+    ///
+    /// `spec` out of range.
+    pub fn summary(&self, spec: usize, group: Option<&[GroupKey]>) -> Result<DataFrame, String> {
+        let clock = self.frame_clock(&[spec])?;
+        self.summary_in(spec, group, clock)
+    }
+
+    /// [`Self::summary`] for `specs` as one frame, with a `spec` column in
+    /// front, the clock columns in the dtype the specs share
+    /// ([`Self::groups_table`]).
+    ///
+    /// # Errors
+    ///
+    /// A spec index out of range, or two specs whose clocks are of two
+    /// dtypes, which one column cannot hold.
+    pub fn summary_table(
+        &self,
+        specs: &[usize],
+        group: Option<&[GroupKey]>,
+    ) -> Result<DataFrame, String> {
+        let clock = self.frame_clock(specs)?;
+        let mut out: Option<DataFrame> = None;
+        for &si in specs {
+            let mut frame = self.summary_in(si, group, clock)?;
+            let name = vec![self.specs[si].name.as_str(); frame.height()];
+            frame
+                .insert_column(0, Column::new("spec".into(), name))
+                .map_err(|e| e.to_string())?;
+            match out.as_mut() {
+                Some(o) => {
+                    o.vstack_mut(&frame).map_err(|e| e.to_string())?;
+                }
+                None => out = Some(frame),
+            }
+        }
+        out.ok_or_else(|| {
+            "ModelBank.summary: the list of specs to summarize is empty. Name at least one spec."
+                .to_string()
+        })
+    }
+
+    /// [`Self::summary`] of one spec, its clock columns in `clock`'s dtype.
+    fn summary_in(
+        &self,
+        spec: usize,
+        group: Option<&[GroupKey]>,
+        clock: Option<&ClockDtype>,
+    ) -> Result<DataFrame, String> {
+        let keys = self.sorted_keys(spec, group)?;
+        let states = &self.states[spec];
+        let rows: Vec<SummaryRow<'_>> = keys
+            .iter()
+            .map(|k| {
+                let stream = &states[*k];
+                SummaryRow {
+                    group: k.as_str(),
+                    rows_processed: stream.persisted.rows_seen,
+                    last_clock: stream.persisted.clock.last_clock(),
+                    summary: stream.summary(),
+                    solve_failures: stream.solve_failures(),
+                    refit_given_up: stream.refits_given_up(),
+                    labels: (
+                        stream.persisted.labels_missing,
+                        stream.persisted.labels_dropped,
+                    ),
+                    readiness: Some(stream.readiness(&self.specs[spec])),
+                    fits: !self.specs[spec].model.reads_every_row(),
+                }
+            })
+            .collect();
+        summary_frame(&rows, clock).map_err(|e| e.to_string())
+    }
+
+    /// Per-column statistics of what each group of `spec` has been fed
+    /// (docs/PLAN.md task 35): one row per (group, input column) in spec
+    /// order -- features, then targets (a table target under its name),
+    /// then the weight column -- with
+    /// `group`, `column`, `role` (`"feature"`, `"target"`, `"weight"`),
+    /// `count`, `unusable_count`, `mean`, `std` (sample, `ddof = 1`; null
+    /// below two values), `min`, `max`. A value counts when finite and within
+    /// the input bound, as the models take it, and is unusable otherwise. A
+    /// formula target's value is the one its row is released to the models
+    /// with, counted at the release; the row is a null until then, and
+    /// stays one when the input ends first or the window is cut (review
+    /// round 4, PA9). An unsupervised model's targets are not listed (it
+    /// has none; the spec's mirror a feature), an `ew_class` label column
+    /// has its counts only, a comparison's targets are named as the spec
+    /// names them. A group restored from a file written before the summary
+    /// existed lists its columns with every number null.
+    ///
+    /// `group` narrows the frame to those keys, in key order
+    /// ([`Self::sorted_keys`]); a key the bank has never seen gives nothing,
+    /// not an error.
+    ///
+    /// # Errors
+    ///
+    /// `spec` out of range.
+    pub fn describe(&self, spec: usize, group: Option<&[GroupKey]>) -> Result<DataFrame, String> {
+        let keys = self.sorted_keys(spec, group)?;
+        let (s, states) = (&self.specs[spec], &self.states[spec]);
+        let layout = DataSummary::layout(s);
+        let keep = |_ci: usize, role: Role| -> Option<bool> {
+            match role {
+                Role::Target if s.model.is_unsupervised() => None,
+                Role::Target if matches!(s.model, ModelKind::EwClass { .. }) => Some(false),
+                _ => Some(true),
+            }
+        };
+        let streams: Vec<(Option<&str>, Option<&DataSummary>)> = keys
+            .iter()
+            .map(|k| (k.as_str(), states[*k].summary()))
+            .collect();
+        describe_frame(&layout, &keep, &streams).map_err(|e| e.to_string())
+    }
+
+    /// The keys of `spec`'s groups, narrowed to `group` when given -- the
+    /// null group among them, which a string could not name (review round
+    /// 4, PA10) -- in the order every reader lists them: an integer group
+    /// column's keys as numbers, any other's as text, the null group first
+    /// ([`key_cmp`]).
+    fn sorted_keys(
+        &self,
+        spec: usize,
+        group: Option<&[GroupKey]>,
+    ) -> Result<Vec<&GroupKey>, String> {
+        let states = self
+            .states
+            .get(spec)
+            .ok_or_else(|| spec_index_out_of_range(spec, self.specs.len()))?;
+        let integer = self.integer_keys(spec);
+        let mut keys: Vec<&GroupKey> = match group {
+            Some(want) => {
+                let want: std::collections::HashSet<&GroupKey> = want.iter().collect();
+                states.keys().filter(|k| want.contains(k)).collect()
+            }
+            None => states.keys().collect(),
+        };
+        keys.sort_by(|a, b| key_cmp(a, b, integer));
+        Ok(keys)
+    }
+
+    /// Outputs are attached with `with_column`, which replaces a column of
+    /// the same name, so a spec named like an input would silently eat the
+    /// input (the Python bank and the CLI runner both attach that way).
+    fn refuse_name_clash(&self, names: &[PlSmallStr]) -> PolarsResult<()> {
+        if let Some(spec) = self
+            .specs
+            .iter()
+            .find(|s| names.iter().any(|n| n.as_str() == s.name.as_str()))
+        {
+            polars_bail!(Duplicate:
+                "spec {:?}: it has the same name as an input column, and its output column \
+                 would replace that column. Rename the spec.",
+                spec.name
+            );
+        }
+        Ok(())
+    }
+
+    /// The readiness notices raised since the last call
+    /// (docs/WARMUP-AND-CONVERGENCE.md §3), each once per (spec, group,
+    /// instance) for the life of the stream: a coefficient more ridge than
+    /// data, named; the noise gate found unreachable at steady state, with
+    /// the way out. Learning raises them; scoring never does. And once per
+    /// bank, from its construction, each diagnostic of a clocked spec with
+    /// an `embargo` and no `horizon_rows` that has no horizon to read (task
+    /// 232 (3)). The notices a call's streams raise come by spec, then in
+    /// the order the groups' rows first arrive in its chunk, then by model
+    /// instance; a group whose session closed in the call says the closed
+    /// span's before the next span's. A group that closes in the call says
+    /// its notices as any other: which are said does not depend on where a
+    /// chunk ends. Each names its spec and group -- `spec "m" group "g": `
+    /// -- and under `group_close = "session"`, where each span of a group is
+    /// a fresh stream that says its notices once, the span's session value
+    /// too -- `spec "m" group "g" session "a": `, or `session null` -- so
+    /// two spans that raise the same notice say two texts (task 334).
+    pub fn take_notices(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notices)
+    }
+
+    /// Switch the window budget's pre-pass off, for a test that holds its
+    /// verdict to the ring's own (docs/PLAN.md task 115 (d)). Not for use: a
+    /// bank without it breaks on a chunk it would have refused whole.
+    #[doc(hidden)]
+    pub fn set_window_prepass(&mut self, on: bool) {
+        self.window_prepass = on;
+    }
+
+    /// Make the next learning call return an error once its streams have
+    /// learned, in place of its output, as a call whose output could not be
+    /// assembled does: its streams keep the notices its rows raised, to be
+    /// said by the next call that completes, or by a save and load. No
+    /// input reaches such a return, so the tests of what it leaves make one
+    /// here (`bank/notices_tests.rs`, and the frozen bank file that holds a
+    /// pending notice). Not for use.
+    #[doc(hidden)]
+    pub fn fail_next_call_after_learning(&mut self) {
+        self.fail_after_learning = true;
+    }
+
+    /// Refuse to go on from a chunk refused after some of it was learned
+    /// (the `broken` field).
+    fn refuse_if_broken(&self) -> PolarsResult<()> {
+        match &self.broken {
+            None => Ok(()),
+            Some(why) => {
+                // The first refusal's first sentence, which says what was
+                // wrong; its remedy reached the reader with it, on the call
+                // that broke the bank.
+                let first = why
+                    .char_indices()
+                    .find(|&(i, c)| {
+                        c == '.'
+                            && why[i + 1..].starts_with(' ')
+                            && why[i + 2..].starts_with(|n: char| n.is_ascii_uppercase())
+                    })
+                    .map_or(why.trim_end_matches('.'), |(i, _)| &why[..i]);
+                // Said behind the refusal's own where (`spec "m": ...`).
+                Err(polars_err!(ComputeError:
+                    "{first}. That refusal came after the bank had learned part of the chunk, so \
+                     its state holds rows whose output was never returned, and it cannot go on. \
+                     Fix what the refusal names, then load the bank's last saved state, or, where \
+                     the fix changes a spec or nothing was saved, build the bank again and fit it \
+                     from the start of its input."
+                ))
+            }
+        }
+    }
+
+    /// Run every spec over one chunk; returns one struct column per spec.
+    /// Chunks must arrive in stream order within each group.
+    ///
+    /// # Errors
+    ///
+    /// Each names the spec and the column: `ColumnNotFound` for a column a
+    /// spec reads that the frame has not got (and what it has);
+    /// `ComputeError` for a target, feature, clock or weight column that is
+    /// not numeric (a temporal column is refused in every role but the
+    /// clock, which reads it in integer nanoseconds, docs/PLAN.md task 88;
+    /// a time of day is no clock), a clock with a null or non-finite value, a finite
+    /// negative weight, or a group's clock running backwards with
+    /// `restart_after_step_back` unset; `Duplicate` for a spec named like an
+    /// input column, which its struct would replace; and a window whose
+    /// snapshots the chunk would take past a refusing `window_budget`
+    /// (`ComputeError`, naming the ring's size and its cadence), found by
+    /// replaying the chunk's clock schedule on the rings before any row is
+    /// learned. A refused chunk leaves the bank exactly as it was -- no state
+    /// is updated, no new group is kept -- so the corrected chunk can be
+    /// fed. The exception is a window past its budget under `drift_action =
+    /// "reset"`, whose resets the replay cannot foresee: that is found as
+    /// the rows are learned, so the chunk is refused after some of it has
+    /// been, and every later `fit_predict`, `predict` and `save_bytes` is
+    /// refused rather than go on from there. And, on the first call only, a
+    /// `POLARS_ONLINE_MAX_THREADS` that is not a count of threads.
+    pub fn fit_predict(&mut self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
+        self.fit_predict_from(df, 0)
+    }
+
+    /// [`Self::fit_predict`] for rows `row_base..` of a longer input: an
+    /// error names the input's row, not the chunk's (task 120). The chunked
+    /// surfaces -- the plan form, `fit`, the CLI -- pass the rows they have
+    /// fed before this chunk.
+    pub fn fit_predict_from(
+        &mut self,
+        df: &DataFrame,
+        row_base: usize,
+    ) -> PolarsResult<Vec<Column>> {
+        self.fit_predict_from_with(df, row_base, false)
+    }
+
+    /// [`Self::fit_predict_from`], with `learn_only` saying the run keeps
+    /// no prediction (`ModelBank.fit`, the command line's `--no-output`):
+    /// then a spec whose embargo does not cover its formula targets'
+    /// longest forward window runs, learning each row once its window
+    /// closes, where a run that keeps predictions refuses it (docs/PLAN.md
+    /// task 104). A parameter of the call, never state: a flag on the bank
+    /// could be left set when a concurrent `predict` held the bank (review
+    /// R2, P1).
+    pub fn fit_predict_from_with(
+        &mut self,
+        df: &DataFrame,
+        row_base: usize,
+        learn_only: bool,
+    ) -> PolarsResult<Vec<Column>> {
+        // Before the frame is cast: a broken bank refuses the chunk whatever
+        // is in it, and a column error would otherwise hide that and the cast
+        // would be work thrown away (review 2026-09-17, second pass).
+        self.refuse_if_broken()?;
+        let chunk = chunk_from_frame_at(df, &self.specs, row_base)?;
+        let arrays = self.fit_predict_arrow_with(&chunk, learn_only)?;
+        named_columns(&self.specs, arrays)
+    }
+
+    /// [`Self::fit_predict`] over Arrow, for a caller holding Arrow arrays
+    /// and no polars frame to put them in: one struct array per spec, in
+    /// spec order, with the same fields in the same order as the struct
+    /// column the polars pair returns. The models, the state and the values
+    /// are the same. [`Self::fit_predict`] is this method between
+    /// [`crate::chunk_from_frame`], where every dtype decision about a frame is
+    /// made, and naming each struct after its spec.
+    pub fn fit_predict_arrow(&mut self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
+        self.fit_predict_arrow_with(chunk, false)
+    }
+
+    /// Why a run that keeps its predictions would be refused before its
+    /// first row: a spec whose formula target looks further ahead than its
+    /// embargo covers (docs/PLAN.md task 104). `None` when every embargo
+    /// covers its longest forward window. A run that keeps no prediction,
+    /// and a scoring run, are never refused for it.
+    /// [`crate::RunConfig::validate`] asks, so a dry run says what the
+    /// first chunk would.
+    pub fn fit_predict_refusal(&self) -> Option<&str> {
+        self.short_embargo
+            .iter()
+            .flatten()
+            .next()
+            .map(String::as_str)
+    }
+
+    /// [`Self::fit_predict_arrow`] with `learn_only` as
+    /// [`Self::fit_predict_from_with`] takes it.
+    pub fn fit_predict_arrow_with(
+        &mut self,
+        chunk: &ArrowChunk,
+        learn_only: bool,
+    ) -> PolarsResult<Vec<StructArray>> {
+        if !learn_only && let Some(why) = self.fit_predict_refusal() {
+            polars_bail!(ComputeError: "{}", why);
+        }
+        // The clock column's type, as first seen: what the clock fields
+        // come out as, kept in the state for `last_row` (task 152), and
+        // another number type refused (task 200). Kept only once the chunk
+        // is taken: a refused chunk changes nothing.
+        let merged = self.clock_forms(chunk)?;
+        // The key columns' forms, refused if another, kept as the clock's is.
+        let keys = self.key_forms(chunk)?;
+        // Everything parallel below -- the `par_iter`s here and the
+        // per-instance ones in `Stream` -- runs on the bank's own pool
+        // (pool.rs, `threads`), never on rayon's global one, whichever
+        // thread calls.
+        // The pool is asked for even by a call that will not use it, so that
+        // a variable naming a size the system will not start is refused by
+        // the first call, whatever its size.
+        self.threads.pool()?;
+        let out = if self.runs_inline(chunk.height()) {
+            let _inline = crate::pool::Inline::enter();
+            self.fit_predict_on_pool(chunk, &merged, &keys)?
+        } else {
+            self.threads
+                .clone()
+                .install(|| self.fit_predict_on_pool(chunk, &merged, &keys))?
+        };
+        self.clock_dtypes = merged;
+        self.key_dtypes = keys;
+        Ok(out)
+    }
+
+    /// Each spec's clock column's type in `chunk`, against the one the bank
+    /// keeps from its first chunk (task 152): the types, with a spec's first
+    /// now known, or the refusal of a number type that reads the clock
+    /// another way (docs/PLAN.md task 200, [`crate::stream::ClockDtype::conflicts`])
+    /// -- an integer clock after a float one or the other way round, or an
+    /// integer clock of another width -- naming the spec, the column and
+    /// both dtypes, as a key column of another form is refused. A chunk
+    /// without the clock column says nothing here: its absence is another
+    /// check's to name.
+    fn clock_forms(
+        &self,
+        chunk: &ArrowChunk,
+    ) -> PolarsResult<Vec<Option<crate::stream::ClockDtype>>> {
+        self.specs
+            .iter()
+            .zip(&self.clock_dtypes)
+            .map(|(s, kept)| {
+                let now = crate::stream::ClockDtype::of(
+                    s.clock.is_some(),
+                    s.clock
+                        .as_deref()
+                        .and_then(|c| chunk.clock_dtype(c))
+                        .as_ref(),
+                );
+                match (kept, s.clock.as_deref()) {
+                    (Some(was), Some(c)) if chunk.has(c) && was.conflicts(&now) => {
+                        polars_bail!(ComputeError:
+                            "spec {:?}: clock column {:?} was {} and is now {}, but a stream \
+                             keeps the type its clock began with, since an integer clock steps in \
+                             integers and writes its fields in its own width, and a float clock \
+                             steps in doubles. Cast the column back to {}.",
+                            s.name,
+                            c,
+                            crate::arrow::dtype_name(&was.dtype()),
+                            crate::arrow::dtype_name(&now.dtype()),
+                            crate::arrow::dtype_name(&was.dtype())
+                        )
+                    }
+                    (Some(was), _) => Ok(Some(was.clone())),
+                    (None, _) => Ok(Some(now)),
+                }
+            })
+            .collect()
+    }
+
+    /// Each spec's key columns in `chunk`, against the forms the bank keeps
+    /// (review round 4, N22): the forms, with a column the bank has not seen
+    /// yet now known, or the refusal naming the spec, the column and both
+    /// dtypes. A column the chunk has not got -- a session `predict` may
+    /// leave out -- or one of nulls with no type of its own says nothing.
+    fn key_forms(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<[Option<KeyDtype>; 2]>> {
+        self.specs
+            .iter()
+            .zip(&self.key_dtypes)
+            .map(|(spec, kept)| {
+                let mut forms = kept.clone();
+                let roles = [
+                    (
+                        "group",
+                        spec.group.as_deref(),
+                        "read some keys as other groups, or order them differently",
+                    ),
+                    (
+                        "session",
+                        spec.session.as_deref(),
+                        "read some values as other sessions, and cut a session there",
+                    ),
+                ];
+                for (slot, (role, column, cost)) in forms.iter_mut().zip(roles) {
+                    let Some(now) = column.and_then(|c| chunk.key_form(c)) else {
+                        continue;
+                    };
+                    match slot {
+                        Some(was) if was.form != now.form => polars_bail!(ComputeError:
+                            "spec {:?}: {} column {:?} was {} and is now {}, but the bank reads \
+                             each value as its text, so 1 in an integer column and 1.0 in a \
+                             float one differ, and a column of another type would {}. Cast the \
+                             column back to {}.",
+                            spec.name,
+                            role,
+                            column.unwrap_or(""),
+                            key_dtype_label(&was.dtype),
+                            key_dtype_label(&now.dtype),
+                            cost,
+                            key_dtype_label(&was.dtype)
+                        ),
+                        Some(_) => {}
+                        None => *slot = Some(now),
+                    }
+                }
+                Ok(forms)
+            })
+            .collect()
+    }
+
+    /// Whether spec `si`'s group keys are integers, ordered as numbers by
+    /// [`key_cmp`]: its group column's form, as the bank keeps it (N22).
+    fn integer_keys(&self, si: usize) -> bool {
+        integer_form(&self.key_dtypes[si])
+    }
+
+    fn fit_predict_on_pool(
+        &mut self,
+        chunk: &ArrowChunk,
+        clock_dtypes: &[Option<crate::stream::ClockDtype>],
+        key_dtypes: &[[Option<KeyDtype>; 2]],
+    ) -> PolarsResult<Vec<StructArray>> {
+        // Section timings to stderr under POLARS_ONLINE_TIMING=1, read from
+        // the environment once a process. This is how docs/PERFORMANCE.md's
+        // numbers are made.
+        let timing = crate::timing::timing_on();
+        let t0 = std::time::Instant::now();
+        let n = chunk.height();
+        self.refuse_if_broken()?;
+        self.refuse_name_clash(chunk.names())?;
+        // Independent per spec, and each is a full pass over its columns, so
+        // they run in parallel with each other (docs/records/PERFORMANCE-LOG.md P3). The
+        // groups come first because they decide the layout the columns are
+        // extracted in (P9).
+        let groups: Vec<Groups<'_>> =
+            map_maybe_par::<_, _, PolarsResult<_>>(&self.specs, par(), |s| {
+                group_indices(chunk, s)
+            })?;
+        // `group_close = "monotone"` reads the keys in the column's own
+        // order, not `GroupKey`'s lexicographic one, and refuses a chunk
+        // whose keys are out of order -- before any model is touched, beside
+        // the clock check below (E54). The order is the group column's form
+        // (N22), which a mark is read in too: a column of another form, under
+        // which `"9" > "10"` would let a closed group reopen, is refused
+        // before here by `key_forms` (docs/REVIEW-E54-E64.md G1).
+        let integer_keys: Vec<bool> = key_dtypes.iter().map(integer_form).collect();
+        for (si, spec) in self.specs.iter().enumerate() {
+            if spec.closes_monotone() {
+                check_monotone(
+                    spec,
+                    &groups[si],
+                    n,
+                    integer_keys[si],
+                    matches!(&key_dtypes[si][0], Some(k) if k.form == KeyForm::Text),
+                    self.high_water[si].as_ref(),
+                    chunk.row_base(),
+                )?;
+            }
+        }
+        let layouts: Vec<Option<&[usize]>> = groups.iter().map(Groups::layout).collect();
+        let t_group = t0.elapsed();
+        let t1 = std::time::Instant::now();
+        let par_transpose = transposes_in_parallel(&self.specs);
+        let mut cols: Vec<SpecColumns> =
+            map_range_maybe_par::<_, PolarsResult<_>>(self.specs.len(), par(), |i| {
+                extract(chunk, &self.specs[i], false, layouts[i], par_transpose)
+            })?;
+        let t_extract = t1.elapsed();
+        let t2 = std::time::Instant::now();
+
+        // Materialize missing streams, then fan out over (spec x group).
+        // `fresh` remembers which, so that a refused chunk can take them
+        // away again.
+        let mut fresh: Vec<(usize, GroupKey)> = Vec::new();
+        // The reservations as they stood, the once-a-bank notice's flags and
+        // the notices waiting, for a refused chunk to restore: the groups it
+        // created are forgotten, and a notice naming one, or a flag that
+        // kept the next chunk's crossing group from being named, outlived
+        // them (review round 10, S7-5).
+        let refits_before = RefitsBefore {
+            reserved: self.refit_reserved.clone(),
+            noticed: self.refit_noticed.clone(),
+            notices: self.notices.len(),
+        };
+        // Each group's place in its spec's streams, found once for every use
+        // below: a stream is added at the end, so the places of the others
+        // stay as they are.
+        let mut places: Vec<Vec<usize>> = Vec::with_capacity(self.specs.len());
+        for (si, spec) in self.specs.iter().enumerate() {
+            let mut at_of = Vec::with_capacity(groups[si].len());
+            // In the order the group's rows first arrive (`group_indices`).
+            for g in 0..groups[si].len() {
+                let raw = groups[si].key(g);
+                let at = match place_of(&self.states[si], raw) {
+                    Some(at) => at,
+                    None => {
+                        let key = raw.to_key();
+                        let mut stream =
+                            Stream::new(spec).map_err(|e| polars_err!(ComputeError: "{}", e))?;
+                        reserve_refits(
+                            spec,
+                            &key,
+                            &mut stream,
+                            &mut self.refit_reserved[si],
+                            &mut self.refit_noticed[si],
+                            &mut self.notices,
+                        );
+                        let (at, _) = self.states[si].insert_full(key.clone(), stream);
+                        fresh.push((si, key));
+                        at
+                    }
+                };
+                at_of.push(at);
+            }
+            places.push(at_of);
+        }
+
+        // One flat task pool over (spec x group), not a loop of per-spec pools
+        // (docs/records/PERFORMANCE-LOG.md P2). A bank of N single-group specs used to run
+        // on one core at a time; now every stream in the bank is one task.
+        let specs = &self.specs;
+        let derived = &self.derived;
+        let cfgs = &self.clock_cfgs;
+        // Each task owns a disjoint `&mut Stream`, so the borrow checker needs
+        // them pulled out of the maps up front: the chunk's groups' alone,
+        // whatever the groups seen. `base` is where the group's run starts in
+        // the laid-out columns.
+        let mut work: Vec<(usize, &GroupKey, &[usize], usize, &mut Stream)> = Vec::new();
+        for (si, hm) in self.states.iter_mut().enumerate() {
+            let mut base = 0;
+            for (g, (key, stream)) in chunk_streams(hm, &places[si]).enumerate() {
+                let idx = groups[si].rows(g);
+                work.push((si, key, idx, base, stream));
+                base += idx.len();
+            }
+        }
+        // Longest stream first: with a few big groups and many small ones,
+        // starting the big ones last leaves cores idle at the tail.
+        work.sort_by_key(|(_, _, idx, _, _)| std::cmp::Reverse(idx.len()));
+
+        // A step back the policy refuses refuses the chunk as a whole: every
+        // stream checks its clock schedule on a copy before any model is
+        // touched (docs/IMPROVEMENTS.md C3), so the bank is left exactly as it
+        // was -- the streams the chunk would have created included, so that
+        // `groups()` lists what the bank has learned from -- and the corrected
+        // chunk can be fed. A no-op where nothing can refuse: a row-count
+        // clock, or `"reset_state"` with a minimum of 0.
+        let check =
+            |(si, _, idx, base, stream): &(usize, &GroupKey, &[usize], usize, &mut Stream)| {
+                let sc = &cols[*si];
+                // A step that is not a number of clock units, refused by row as
+                // a clock value that is not a number is (review 2026-10-06, PB7).
+                stream
+                    .check_steps(sc.clock.as_ref(), idx, *base)
+                    .map_err(|refusal| non_finite_step(&specs[*si], refusal, chunk.row_base()))?;
+                stream
+                    .check_clock(
+                        &cfgs[*si],
+                        sc.clock.as_ref(),
+                        sc.session.as_deref(),
+                        idx,
+                        *base,
+                    )
+                    .map_err(|refusal| backwards_clock(&specs[*si], refusal, chunk.row_base()))?;
+                // Under `label_clock`, a label time before its row, or a buffer
+                // past its bound (task 341). Asked only of a spec with one: the
+                // call is ten arguments a group (task 375, P32).
+                if specs[*si].label_clock.is_none() {
+                    return Ok(());
+                }
+                stream
+                .check_labels(
+                    &specs[*si],
+                    &cfgs[*si],
+                    &sc.features,
+                    sc.clock.as_ref(),
+                    sc.label.as_ref(),
+                    sc.session.as_deref(),
+                    sc.weight.as_deref(),
+                    idx,
+                    *base,
+                )
+                .map_err(
+                    |r| polars_err!(ComputeError: "{}", r.message(&specs[*si], chunk.row_base())),
+                )
+            };
+        let checked = if par() {
+            work.par_iter().try_for_each(check)
+        } else {
+            work.iter().try_for_each(check)
+        };
+        if let Err(e) = checked {
+            drop(work);
+            forget(&mut self.states, &fresh);
+            refits_before.restore(
+                &mut self.refit_reserved,
+                &mut self.refit_noticed,
+                &mut self.notices,
+            );
+            return Err(e);
+        }
+
+        // ---- the formula targets (docs/PLAN.md task 104) ----
+        // Each spec's window core takes the chunk's rows in chunk order,
+        // after the clock check and before anything learns, and says which
+        // held rows it resolved and at which row. What can refuse before a
+        // row goes in -- a column the chunk has not got, a core that cannot
+        // be built or resumed -- is done for every spec first; what can
+        // refuse after -- a formula whose strict cast fails on the resolved
+        // rows, the window pre-pass -- is covered by a snapshot of the cores,
+        // taken only where such a refusal is possible: a formula with a
+        // cast, a second spec with formula targets (its own early refusals
+        // come after the first was fed), or a ring that could refuse (R1 D5,
+        // R2 F1). The clock check has run, so the cores refuse no row.
+        let mut formulas: Vec<Option<FormulaBundle>> = specs.iter().map(|_| None).collect();
+        let formula_specs: Vec<usize> = (0..specs.len())
+            .filter(|&si| specs[si].targets.any_formula())
+            .collect();
+        // The resolvers take their groups as key and rows pairs: built for
+        // the specs with formula targets alone.
+        let formula_groups: Vec<Vec<(GroupKey, Vec<usize>)>> = (0..specs.len())
+            .map(|si| {
+                if specs[si].targets.any_formula() {
+                    groups[si].pairs()
+                } else {
+                    Vec::new()
+                }
+            })
+            .collect();
+        let mut frames: Vec<Option<DataFrame>> = specs.iter().map(|_| None).collect();
+        for &si in &formula_specs {
+            match prepare_targets(
+                &specs[si],
+                &mut self.resolvers[si],
+                chunk,
+                &formula_groups[si],
+                self.rows_fed,
+            ) {
+                Ok(f) => frames[si] = Some(f),
+                Err(e) => {
+                    drop(work);
+                    forget(&mut self.states, &fresh);
+                    refits_before.restore(
+                        &mut self.refit_reserved,
+                        &mut self.refit_noticed,
+                        &mut self.notices,
+                    );
+                    return Err(e);
+                }
+            }
+        }
+        let needs_snapshot = !formula_specs.is_empty()
+            && (formula_specs.len() > 1
+                || formula_specs.iter().any(|&si| {
+                    specs[si]
+                        .targets
+                        .defs()
+                        .iter()
+                        .any(|t| t.formula.as_ref().is_some_and(|f| f.contains_call("cast")))
+                })
+                || (self.window_prepass
+                    && work.iter().any(|(si, _, idx, _, stream)| {
+                        specs[*si].model.keeps_window_ring()
+                            && stream.could_refuse_window(idx.len())
+                    })));
+        // Only the cores of the chunk's groups are fed, so only those are kept.
+        let snapshot: Vec<(usize, Vec<(GroupKey, WindowsRun)>)> = if needs_snapshot {
+            formula_specs
+                .iter()
+                .map(|&si| (si, self.resolvers[si].snapshot(&formula_groups[si])))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let mut resolved: Result<(), PolarsError> = Ok(());
+        for &si in &formula_specs {
+            match resolve_targets(
+                &specs[si],
+                &mut self.resolvers[si],
+                frames[si].as_ref().expect("prepared above"),
+                &formula_groups[si],
+                layouts[si],
+                self.rows_fed,
+            ) {
+                Ok(b) => formulas[si] = Some(b),
+                Err(e) => {
+                    resolved = Err(e);
+                    break;
+                }
+            }
+        }
+        if let Err(e) = resolved {
+            drop(work);
+            for (si, cores) in snapshot {
+                self.resolvers[si].restore(cores);
+            }
+            forget(&mut self.states, &fresh);
+            refits_before.restore(
+                &mut self.refit_reserved,
+                &mut self.refit_noticed,
+                &mut self.notices,
+            );
+            return Err(e);
+        }
+
+        // A ring the chunk would take past a refusing `window_budget` refuses
+        // it whole as well: every stream replays its schedule on shadows of
+        // its rings before any stream runs (docs/PLAN.md task 115 (d)), so
+        // the bank is left as it was, where it used to find the overrun with
+        // the chunk half learned and refuse every call after. A session close
+        // starts a fresh stream within the chunk, as `process` does.
+        // Only a spec that keeps a ring has one to replay: for any other the
+        // pass was a vector and a session scan a task (task 270, G-1).
+        if self.window_prepass && specs.iter().any(|s| s.model.keeps_window_ring()) {
+            let replay = |(si, key, idx, base, stream): &(
+                usize,
+                &GroupKey,
+                &[usize],
+                usize,
+                &mut Stream,
+            )| {
+                let (spec, sc) = (&specs[*si], &cols[*si]);
+                let bounds = match (spec.closes_on_session(), sc.session.as_deref()) {
+                    (true, Some(sess)) => session_bounds(stream, sess, idx.len(), *base),
+                    _ => Vec::new(),
+                };
+                let mut starts = vec![0];
+                starts.extend_from_slice(&bounds);
+                let mut spare: Option<Stream> = None;
+                for (seg, &start) in starts.iter().enumerate() {
+                    let end = starts.get(seg + 1).copied().unwrap_or(idx.len());
+                    let s: &Stream = if seg == 0 {
+                        stream
+                    } else {
+                        spare.insert(Stream::new(spec).ok()?)
+                    };
+                    let run = &idx[start..end];
+                    if let Some((bytes, cadence)) = s.window_prepass(
+                        spec,
+                        &cfgs[*si],
+                        &sc.features,
+                        &sc.targets,
+                        sc.clock.as_ref(),
+                        sc.label.as_ref(),
+                        sc.session.as_deref(),
+                        sc.weight.as_deref(),
+                        run,
+                        *base + start,
+                        formulas[*si].as_ref().map(|b| b.targets(key)),
+                    ) {
+                        return Some(over_budget(spec, key, bytes, cadence, false));
+                    }
+                }
+                None
+            };
+            let keeps = |(si, ..): &(usize, &GroupKey, &[usize], usize, &mut Stream)| {
+                specs[*si].model.keeps_window_ring()
+            };
+            let over = if par() {
+                work.par_iter().filter(|w| keeps(w)).find_map_first(replay)
+            } else {
+                work.iter().filter(|w| keeps(w)).find_map(replay)
+            };
+            if let Some(e) = over {
+                drop(work);
+                for (si, cores) in snapshot {
+                    self.resolvers[si].restore(cores);
+                }
+                forget(&mut self.states, &fresh);
+                refits_before.restore(
+                    &mut self.refit_reserved,
+                    &mut self.refit_noticed,
+                    &mut self.notices,
+                );
+                return Err(e);
+            }
+        }
+
+        // Two phases: a `seqtest` that compares two specs reads the residuals
+        // they report for this chunk, so those run and assemble first, and
+        // the comparisons after (docs/ENHANCEMENTS.md E42). The two checks
+        // above covered both. What can still refuse the chunk is found as the
+        // rows go in -- a window past a refusing `window_budget` the pre-pass
+        // cannot see, under `drift_action = "reset"` (review 2026-09-12, P4)
+        // -- by which time the streams have learned part of it: the `forget`
+        // paths below drop the streams the chunk created, and the bank marks
+        // itself `broken` rather than go on from there.
+        let (work2, work1): (Vec<_>, Vec<_>) = work
+            .into_iter()
+            .partition(|(si, ..)| derived[*si].compare.is_some());
+        let mut out: Vec<Option<StructArray>> = specs.iter().map(|_| None).collect();
+        let mut per_spec_rows: Vec<Vec<Box<ChunkOut>>> =
+            (0..specs.len()).map(|_| Vec::new()).collect();
+        let mut closed: Vec<ClosedRow> = Vec::new();
+        // From here the streams learn, and raise their notices as they do:
+        // a return before the end leaves them in the streams
+        // (`notices_left`).
+        let notices_left = std::mem::replace(&mut self.notices_left, true);
+        let sinks1 = sinks(work1.iter().map(|w| w.0), specs, derived, n, clock_dtypes);
+        let (rows1, closed1, filled1, left1) = process(
+            work1,
+            specs,
+            cfgs,
+            &cols,
+            &formulas,
+            chunk.row_base(),
+            sinks1,
+            &mut self.spares,
+        );
+        closed.extend(closed1);
+        for out in left1 {
+            self.spares.give(out);
+        }
+        for (si, r) in rows1.into_iter().flatten() {
+            match r {
+                Ok(o) => per_spec_rows[si].push(o),
+                Err(e) => {
+                    drop(work2);
+                    forget(&mut self.states, &fresh);
+                    refits_before.restore(
+                        &mut self.refit_reserved,
+                        &mut self.refit_noticed,
+                        &mut self.notices,
+                    );
+                    self.broken = Some(e.to_string());
+                    return Err(e);
+                }
+            }
+        }
+        // A return here leaves the notices the rows raised in their streams,
+        // as an output that cannot be assembled below would.
+        if std::mem::take(&mut self.fail_after_learning) {
+            return Err(polars_err!(ComputeError:
+                "bank: a failure after learning, which a test asked for. Turn off \
+                 fail_next_call_after_learning to learn without it."
+            ));
+        }
+        let mut t_process = t2.elapsed();
+        let t3 = std::time::Instant::now();
+        finish_sinks(filled1, &mut out)?;
+        // Specs assemble independently (docs/records/PERFORMANCE-LOG.md P4).
+        assemble_phase(
+            specs,
+            derived,
+            n,
+            &mut per_spec_rows,
+            &mut out,
+            clock_dtypes,
+            |si| derived[si].compare.is_none(),
+            &mut self.spares,
+        )?;
+        let mut t_assemble = t3.elapsed();
+        if !work2.is_empty() {
+            let t4 = std::time::Instant::now();
+            for (si, d) in derived.iter().enumerate() {
+                if let Some(ab) = d.compare {
+                    cols[si].targets = compare_targets(&specs[si], ab, &out, layouts[si])?;
+                }
+            }
+            let sinks2 = sinks(work2.iter().map(|w| w.0), specs, derived, n, clock_dtypes);
+            let (rows2, closed2, filled2, left2) = process(
+                work2,
+                specs,
+                cfgs,
+                &cols,
+                &formulas,
+                chunk.row_base(),
+                sinks2,
+                &mut self.spares,
+            );
+            closed.extend(closed2);
+            for out in left2 {
+                self.spares.give(out);
+            }
+            for (si, r) in rows2.into_iter().flatten() {
+                match r {
+                    Ok(o) => per_spec_rows[si].push(o),
+                    Err(e) => {
+                        forget(&mut self.states, &fresh);
+                        refits_before.restore(
+                            &mut self.refit_reserved,
+                            &mut self.refit_noticed,
+                            &mut self.notices,
+                        );
+                        self.broken = Some(e.to_string());
+                        return Err(e);
+                    }
+                }
+            }
+            t_process += t4.elapsed();
+            let t6 = std::time::Instant::now();
+            finish_sinks(filled2, &mut out)?;
+            t_assemble += t6.elapsed();
+        }
+        // Assembled whether or not a row reached them, as the first phase's
+        // are: a chunk of no rows has no work for a grouped spec, and a
+        // comparison left out of the assembly panicked below ("every spec is
+        // assembled"; found by the dry run's frame of no rows, review round
+        // 4, SF2).
+        let t5 = std::time::Instant::now();
+        assemble_phase(
+            specs,
+            derived,
+            n,
+            &mut per_spec_rows,
+            &mut out,
+            clock_dtypes,
+            |si| derived[si].compare.is_some(),
+            &mut self.spares,
+        )?;
+        t_assemble += t5.elapsed();
+        // The readiness notices the chunk raised (docs/WARMUP-AND-CONVERGENCE.md
+        // §3), each once per (spec, group, instance), named by both, for
+        // the caller to surface as it sees fit -- a warning in Python, a
+        // line on stderr from the runner. A stream raises them only as it
+        // learns, and every call that completes takes them, so only the
+        // chunk's groups can hold any (task 332), taken by spec and then in
+        // the order their rows first arrive. Taken before the monotone close
+        // below removes the groups it finishes: taken after it, a notice
+        // raised in the call that closed its group was lost, and said only
+        // where a chunk ended between the group and the next (task 333).
+        // After a call that learned and returned early, every stream's; and
+        // on the first call a loaded bank completes, since a file's streams
+        // keep what such a call left them (task 340).
+        for (si, hm) in self.states.iter_mut().enumerate() {
+            let spec = &self.specs[si];
+            if notices_left {
+                for (key, stream) in hm.iter_mut() {
+                    say_notices(&mut self.notices, spec, key, stream);
+                }
+            } else {
+                for &at in &places[si] {
+                    if let Some((key, stream)) = hm.get_index_mut(at) {
+                        say_notices(&mut self.notices, spec, key, stream);
+                    }
+                }
+            }
+        }
+        self.notices_left = false;
+        // ---- the monotone close batch (E54) ----
+        // After both phases and in key order: every group below the chunk's
+        // largest key is finished, whatever the chunking, because every row
+        // of it precedes the first row of a greater key.
+        for si in 0..self.specs.len() {
+            if !self.specs[si].closes_monotone() {
+                continue;
+            }
+            if groups[si].is_empty() {
+                continue;
+            }
+            let integer = integer_keys[si];
+            let starts: Vec<(GroupKey, usize)> = groups[si]
+                .iter()
+                .map(|(k, idx)| (k.to_key(), idx[0]))
+                .collect();
+            let max_key = starts.last().expect("the chunk has a group").0.clone();
+            let mut closing: Vec<GroupKey> = self.states[si]
+                .keys()
+                .filter(|k| key_cmp(k, &max_key, integer) == std::cmp::Ordering::Less)
+                .cloned()
+                .collect();
+            closing.sort_by(|a, b| key_cmp(a, b, integer));
+            for key in closing {
+                // The closing row is the first row of the first greater key
+                // in this chunk; a group closed without a row of its own here
+                // closes at the chunk's first row.
+                let at = starts.partition_point(|(k, _)| {
+                    key_cmp(k, &key, integer) != std::cmp::Ordering::Greater
+                });
+                let at = starts.get(at).map_or(0, |(_, r)| *r);
+                let stream = self.states[si]
+                    .swap_remove(&key)
+                    .expect("key came from the map");
+                closed.extend(close_rows(si, &self.specs[si], &key, &stream, at));
+            }
+            self.high_water[si] = Some(max_key);
+        }
+        self.queue_closed(closed, &integer_keys);
+
+        if timing {
+            let total = t0.elapsed();
+            eprintln!(
+                "POLARS_ONLINE_TIMING rows={n} extract={:.1}ms group={:.1}ms process={:.1}ms \
+                 assemble={:.1}ms total={:.1}ms ({:.0} rows/s)",
+                t_extract.as_secs_f64() * 1e3,
+                t_group.as_secs_f64() * 1e3,
+                t_process.as_secs_f64() * 1e3,
+                t_assemble.as_secs_f64() * 1e3,
+                total.as_secs_f64() * 1e3,
+                n as f64 / total.as_secs_f64()
+            );
+        }
+        // Saturating: a count a state file carries at the top of its range
+        // wrapped to the chunk's size in a release build (task 160, PA2).
+        self.rows_fed = self.rows_fed.saturating_add(n as u64);
+        Ok(out
+            .into_iter()
+            .map(|c| c.expect("every spec is assembled in one of the two phases"))
+            .collect())
+    }
+
+    /// Score one chunk against the bank as it stands, learning nothing
+    /// (docs/ENHANCEMENTS.md E31): for every row, the struct
+    /// [`Self::fit_predict`] would produce for it as the next row of its
+    /// group's stream. The bank is not touched -- not the models, the clocks,
+    /// the diagnostics or the row counts -- so the call is `&self` and any
+    /// number of them can run at once, and row order does not matter.
+    /// Under an `embargo` it releases nothing: a held row whose delay has
+    /// passed by a scored row's clock stays held, for the next
+    /// [`Self::fit_predict`] to learn, so every row is scored against the
+    /// models as the last one left them (review round 4, PB3).
+    ///
+    /// The frame needs each spec's feature and clock columns. A target
+    /// column is optional and yields `resid` where present; the session
+    /// column is optional and feeds `session_gap`; a weight column is not
+    /// read. Rows of a group the bank has never seen are null throughout,
+    /// like a skipped row. Per field, see [`Stream::predict_chunk`].
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::fit_predict`]'s, less a missing target, which is not one.
+    pub fn predict(&self, df: &DataFrame) -> PolarsResult<Vec<Column>> {
+        self.predict_from(df, 0)
+    }
+
+    /// [`Self::predict`] for rows `row_base..` of a longer input, as
+    /// [`Self::fit_predict_from`] is to [`Self::fit_predict`].
+    pub fn predict_from(&self, df: &DataFrame, row_base: usize) -> PolarsResult<Vec<Column>> {
+        self.refuse_if_broken()?;
+        let chunk = chunk_from_frame_at(df, &self.specs, row_base)?;
+        let arrays = self.predict_arrow(&chunk)?;
+        named_columns(&self.specs, arrays)
+    }
+
+    /// [`Self::predict`] over Arrow, as [`Self::fit_predict_arrow`] is to
+    /// [`Self::fit_predict`].
+    pub fn predict_arrow(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
+        self.threads.pool()?;
+        if self.runs_inline(chunk.height()) {
+            let _inline = crate::pool::Inline::enter();
+            self.predict_on_pool(chunk)
+        } else {
+            self.threads.install(|| self.predict_on_pool(chunk))
+        }
+    }
+
+    fn predict_on_pool(&self, chunk: &ArrowChunk) -> PolarsResult<Vec<StructArray>> {
+        // Scoring changes nothing, so a type the bank has not seen is read
+        // off the chunk and not kept (task 152); another number type than
+        // the bank's is refused, as in a learning run (task 200).
+        let clock_dtypes = self.clock_forms(chunk)?;
+        let n = chunk.height();
+        self.refuse_if_broken()?;
+        self.refuse_name_clash(chunk.names())?;
+        // A key column of another form names no group the bank holds, and
+        // would score every row as a stream never seen (N22).
+        self.key_forms(chunk)?;
+        let groups: Vec<Groups<'_>> =
+            map_maybe_par::<_, _, PolarsResult<_>>(&self.specs, par(), |s| {
+                group_indices(chunk, s)
+            })?;
+        let layouts: Vec<Option<&[usize]>> = groups.iter().map(Groups::layout).collect();
+        let par_transpose = transposes_in_parallel(&self.specs);
+        let mut cols: Vec<SpecColumns> =
+            map_range_maybe_par::<_, PolarsResult<_>>(self.specs.len(), par(), |i| {
+                extract(chunk, &self.specs[i], true, layouts[i], par_transpose)
+            })?;
+
+        let specs = &self.specs;
+        let derived = &self.derived;
+        let cfgs = &self.clock_cfgs;
+        let mut work: Vec<(usize, &[usize], usize, &Stream)> = Vec::new();
+        for (si, hm) in self.states.iter().enumerate() {
+            let mut base = 0;
+            for (key, idx) in groups[si].iter() {
+                if let Some(at) = place_of(hm, key) {
+                    work.push((si, idx, base, &hm[at]));
+                }
+                base += idx.len();
+            }
+        }
+        work.sort_by_key(|(_, idx, _, _)| std::cmp::Reverse(idx.len()));
+        // The same two phases as `fit_predict`: a comparison scores the
+        // residuals its two sides report for this chunk.
+        let (work2, work1): (Vec<_>, Vec<_>) = work
+            .into_iter()
+            .partition(|(si, ..)| derived[*si].compare.is_some());
+        let mut out: Vec<Option<StructArray>> = specs.iter().map(|_| None).collect();
+        let mut per_spec_rows: Vec<Vec<Box<ChunkOut>>> =
+            (0..specs.len()).map(|_| Vec::new()).collect();
+        // Scoring keeps no run buffers between calls: these go when it ends.
+        let mut spares = Spares::default();
+        for (si, r) in score(work1, specs, cfgs, &cols) {
+            per_spec_rows[si].push(r?);
+        }
+        assemble_phase(
+            specs,
+            derived,
+            n,
+            &mut per_spec_rows,
+            &mut out,
+            &clock_dtypes,
+            |si| derived[si].compare.is_none(),
+            &mut spares,
+        )?;
+        if !work2.is_empty() {
+            for (si, d) in derived.iter().enumerate() {
+                if let Some(ab) = d.compare {
+                    cols[si].targets = compare_targets(&specs[si], ab, &out, layouts[si])?;
+                }
+            }
+            for (si, r) in score(work2, specs, cfgs, &cols) {
+                per_spec_rows[si].push(r?);
+            }
+        }
+        // Whether or not a stream scored, as in `fit_predict`: a fresh bank,
+        // a chunk of unseen groups or of no rows has no work for a
+        // comparison, and it panicked below (review round 4, SF2).
+        assemble_phase(
+            specs,
+            derived,
+            n,
+            &mut per_spec_rows,
+            &mut out,
+            &clock_dtypes,
+            |si| derived[si].compare.is_some(),
+            &mut spares,
+        )?;
+        Ok(out
+            .into_iter()
+            .map(|c| c.expect("every spec is assembled in one of the two phases"))
+            .collect())
+    }
+
+    /// Append a chunk's closed rows to the queue in the one order row order
+    /// implies: by the row that closed them, then by key, then by instance
+    /// (docs/ENHANCEMENTS.md E54). Streams are processed in parallel, so
+    /// this sort is what makes the queue a function of the data alone.
+    ///
+    /// The `ew_cov(pca = r)` block is computed here rather than at the
+    /// close, for the same reason: the loadings are signed for continuity
+    /// with the previous closed row of the same (spec, instance), and
+    /// "previous" has to mean previous in the queue.
+    fn queue_closed(&mut self, mut rows: Vec<ClosedRow>, integer_keys: &[bool]) {
+        if rows.is_empty() {
+            return;
+        }
+        rows.sort_by(|a, b| {
+            // Only rows of one spec ever reach the key comparison, the tuple
+            // above having separated the specs, so one spec's flag decides.
+            let integer = integer_keys[a.spec];
+            (a.at, a.spec)
+                .cmp(&(b.at, b.spec))
+                .then_with(|| key_cmp(&a.group, &b.group, integer))
+                .then_with(|| a.instance.cmp(&b.instance))
+        });
+        for row in rows.iter_mut() {
+            let ModelKind::EwCov { pca: Some(r), .. } = self.specs[row.spec].model else {
+                continue;
+            };
+            let Some(g) = &row.gram else { continue };
+            let group = self.specs[row.spec]
+                .closes_on_session()
+                .then(|| row.group.clone());
+            let key = (row.spec, group, row.instance.clone());
+            let prev = self.pca_prev.get(&key);
+            if let Some(p) = rheon_core::Pca::of(&g.comoments, g.k, r, prev) {
+                row.eig_vals = Some(p.eig.clone());
+                row.eig_vecs = Some(p.loadings.clone());
+                self.pca_prev.insert(key, p);
+            }
+        }
+        self.closed.extend(rows);
+    }
+
+    /// The groups that have closed and not been read (docs/ENHANCEMENTS.md
+    /// E54), oldest first, as one long frame; see [`ClosedRow`] and
+    /// `docs/PLAN.md` §11a for the schema. `spec` narrows it to one spec's
+    /// rows. `drop` removes what it returns from the queue -- the ordinary
+    /// use, a drain per chunk -- and `false` peeks at it.
+    ///
+    /// A bank whose specs have no `group_close` never queues anything and
+    /// always answers with an empty frame of the schema.
+    ///
+    /// # Errors
+    ///
+    /// `spec` out of range, or a frame the columns cannot make.
+    pub fn closed_groups(&mut self, spec: Option<usize>, drop: bool) -> Result<DataFrame, String> {
+        if let Some(si) = spec
+            && si >= self.specs.len()
+        {
+            return Err(spec_index_out_of_range(si, self.specs.len()));
+        }
+        // Before anything is taken: a frame the clock columns cannot make
+        // drains nothing.
+        let closing: Vec<usize> = match spec {
+            Some(si) => vec![si],
+            None => (0..self.specs.len())
+                .filter(|&si| self.specs[si].group_close.is_some())
+                .collect(),
+        };
+        let clock = self.frame_clock(&closing)?.cloned();
+        let taken: Vec<ClosedRow> = if drop {
+            let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.closed)
+                .into_iter()
+                .partition(|r| spec.is_none_or(|si| r.spec == si));
+            self.closed = rest;
+            mine
+        } else {
+            self.closed
+                .iter()
+                .filter(|r| spec.is_none_or(|si| r.spec == si))
+                .cloned()
+                .collect()
+        };
+        closed_frame(&self.specs, &taken, clock.as_ref()).map_err(|e| e.to_string())
+    }
+
+    /// The state as the struct every encoding writes. One builder, so the
+    /// msgpack and JSON forms cannot drift apart.
+    fn to_file(&self) -> Result<BankFile, String> {
+        let states = self
+            .states
+            .iter()
+            .map(|hm| {
+                let mut v: Vec<(GroupKey, StreamState)> =
+                    hm.iter().map(|(k, s)| (k.clone(), s.save())).collect();
+                v.sort_by(|a, b| a.0.cmp(&b.0));
+                v
+            })
+            .collect();
+        self.to_file_with(states)
+    }
+
+    /// [`Self::to_file`] with the states given: the msgpack encoder passes
+    /// them lazily ([`LazyStates`]), so no copy of all of them is made.
+    fn to_file_with<S>(&self, states: S) -> Result<BankFile<S>, String> {
+        let mut resolvers: SavedResolvers = Vec::new();
+        for (si, r) in self.resolvers.iter().enumerate() {
+            let groups = r.save()?;
+            if !groups.is_empty() {
+                resolvers.push((si, groups));
+            }
+        }
+        Ok(BankFile {
+            resolvers,
+            refit_reserved: self
+                .refit_reserved
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| **b > 0.0)
+                .map(|(si, b)| (si, *b))
+                .collect(),
+            magic: BANK_MAGIC.to_string(),
+            format_version: format_version_for(&self.specs),
+            rows_fed: self.rows_fed,
+            schema_version: rheon_core::SCHEMA_VERSION,
+            package_version: env!("CARGO_PKG_VERSION").to_string(),
+            specs: self.specs.clone(),
+            states,
+            closed: self.closed.clone(),
+            high_water: self
+                .high_water
+                .iter()
+                .enumerate()
+                .filter_map(|(si, k)| k.clone().map(|k| (si, k)))
+                .collect(),
+            clock_dtypes: self
+                .clock_dtypes
+                .iter()
+                .enumerate()
+                .filter_map(|(si, d)| d.clone().map(|d| (si, d)))
+                .collect(),
+            pca_prev: {
+                let mut v: Vec<(usize, String, rheon_core::Pca)> = self
+                    .pca_prev
+                    .iter()
+                    .filter(|((_, g, _), _)| g.is_none())
+                    .map(|((si, _, inst), p)| (*si, inst.clone(), p.clone()))
+                    .collect();
+                v.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+                v
+            },
+            pca_prev_by_group: {
+                let mut v: Vec<(usize, GroupKey, String, rheon_core::Pca)> = self
+                    .pca_prev
+                    .iter()
+                    .filter_map(|((si, g, inst), p)| {
+                        g.as_ref()
+                            .map(|g| (*si, g.clone(), inst.clone(), p.clone()))
+                    })
+                    .collect();
+                v.sort_by(|a, b| (a.0, &a.1, &a.2).cmp(&(b.0, &b.1, &b.2)));
+                v
+            },
+            key_dtypes: self
+                .key_dtypes
+                .iter()
+                .enumerate()
+                .filter(|(_, k)| k.iter().any(Option::is_some))
+                .map(|(si, k)| (si, k.clone()))
+                .collect(),
+        })
+    }
+
+    /// The bank as versioned msgpack: the specs, every group's state and the
+    /// row count, behind a magic string and two version numbers
+    /// (`BANK_FORMAT_VERSION` for this envelope, `rheon_core::SCHEMA_VERSION`
+    /// for the states). Refused for a bank a chunk broke (the `broken`
+    /// field); otherwise fails only if serialization does, which a bank
+    /// built by this crate cannot make happen.
+    pub fn save_bytes(&self) -> Result<Vec<u8>, String> {
+        self.refuse_if_broken().map_err(|e| e.to_string())?;
+        let mut out = Vec::new();
+        self.write_msgpack(&mut out)?;
+        Ok(out)
+    }
+
+    /// The msgpack [`Bank::save_bytes`] returns, written to `out` as it is
+    /// encoded, one group's snapshot at a time.
+    fn write_msgpack<W: std::io::Write>(&self, out: &mut W) -> Result<(), String> {
+        let file = self.to_file_with(LazyStates(self))?;
+        rmp_serde::encode::write_named(out, &file).map_err(|e| e.to_string())
+    }
+
+    /// [`Self::write_msgpack`] for a file: a failed write keeps the
+    /// filesystem's own error, its kind and OS code, which the encoder's
+    /// message would lose.
+    fn write_msgpack_io<W: std::io::Write>(&self, out: &mut W) -> std::io::Result<()> {
+        let mut stash = file_encoding::Stash::new(out);
+        match self.write_msgpack(&mut stash) {
+            Ok(()) => Ok(()),
+            Err(msg) => Err(stash
+                .take_error()
+                .unwrap_or_else(|| std::io::Error::other(msg))),
+        }
+    }
+
+    /// The same state as JSON, for reading rather than for loading: a state
+    /// file is msgpack and only msgpack ([`Bank::load_bytes`] takes nothing
+    /// else), so this is an export.
+    ///
+    /// Faithful, including the values JSON has no literal for. A non-finite
+    /// `f64` is written as `"inf"`, `"-inf"` or `"nan"` -- the spelling
+    /// [`crate::spec::Num`] already uses, so a spec's `half_life` and a
+    /// stream's `decay` read the same way -- rather than as the `null`
+    /// `serde_json` would write unasked. See [`FiniteOrTag`].
+    ///
+    /// Refused, as [`Bank::save_bytes`] is, for a bank a chunk broke (the
+    /// `broken` field): its streams hold rows whose output was never
+    /// returned. One rule in one place (review round 4, PA12); the Python
+    /// wrapper encoded the whole state as msgpack first to ask.
+    pub fn save_json_string(&self, pretty: bool) -> Result<String, String> {
+        self.refuse_if_broken().map_err(|e| e.to_string())?;
+        let file = self.to_file()?;
+        let text = if pretty {
+            serde_json::to_string_pretty(&file)
+        } else {
+            serde_json::to_string(&file)
+        }
+        .map_err(|e| e.to_string())?;
+        json_is_faithful(&file, &text)?;
+        Ok(text)
+    }
+
+    /// A bank from what [`Bank::save_bytes`] wrote, on this or any other OS.
+    /// Refused, with the reason: bytes that are not a bank file (with
+    /// `rmp_serde`'s message when they do not even parse), a file written by
+    /// a newer build of this crate (envelope version) or of `rheon-core`
+    /// (schema version), and, when `expected_specs` is given, specs that
+    /// differ from the file's -- the state would not be the state of the bank
+    /// the caller has in mind.
+    pub fn load_bytes(bytes: &[u8], expected_specs: Option<&[Spec]>) -> Result<Self, String> {
+        // The decoder's own text names the file's fields and MessagePack
+        // markers, words of the code: the header's failure is said whole.
+        let header: BankHeader = rmp_serde::from_slice(bytes).map_err(|_| {
+            "state file: these bytes are not a polars-online bank state file, or the file is \
+             cut short. Load a whole file that ModelBank.save or the command line's save_state \
+             wrote."
+                .to_string()
+        })?;
+        if header.magic != BANK_MAGIC {
+            return Err(
+                "state file: these bytes are not a polars-online bank state file. Load a \
+                        file that ModelBank.save or the command line's save_state wrote."
+                    .into(),
+            );
+        }
+        if header.format_version > BANK_FORMAT_VERSION {
+            return Err(format!(
+                "state file: its format version is {}, newer than the {} this build of \
+                 polars-online reads. Upgrade polars-online to load it.",
+                header.format_version, BANK_FORMAT_VERSION
+            ));
+        }
+        // A newer build's file is told to upgrade, not to refit (PA2).
+        let (found, reads) = (header.schema_version, rheon_core::SCHEMA_VERSION);
+        if found > reads {
+            return Err(
+                "state file: it was written by a newer version of polars-online than \
+                 this one reads. Upgrade polars-online to load it."
+                    .into(),
+            );
+        }
+        if found < MIN_BANK_SCHEMA_VERSION {
+            return Err(
+                "state file: it was written by a version of polars-online older than \
+                 this one reads, and keeps settings and diagnostics this version no longer has. \
+                 Build the bank again from its specs and fit it on its input."
+                    .into(),
+            );
+        }
+        // Past the header, the bytes are a bank file of a version this build
+        // reads, so a refusal is damage. A model's own refusal (a `try_from`
+        // of its saved form, which rmp-serde shows bare) already says what to
+        // do; any other is said with the remedy here, so the text has one.
+        let mut file: BankFile = rmp_serde::from_slice(bytes).map_err(|e| {
+            use rmp_serde::decode::Error as De;
+            // The decoder's own failures in plain words: its text names
+            // MessagePack markers, a word of the code.
+            // serde's own refusals arrive as `Syntax` too, in its words.
+            const KIND: &str = "a value is not of the kind the file holds there";
+            const KNOWN: &str = "a value it must hold is missing, or it holds one this build \
+                                 does not know";
+            let plain = match &e {
+                De::InvalidMarkerRead(_) | De::InvalidDataRead(_) => Some("it is cut short"),
+                De::TypeMismatch(_)
+                | De::OutOfRange
+                | De::LengthMismatch(_)
+                | De::Uncategorized(_) => Some(KIND),
+                De::Utf8Error(_) => Some("a text value is not valid text"),
+                De::DepthLimitExceeded => {
+                    Some("its values nest deeper than a state file's values ever do")
+                }
+                De::Syntax(m)
+                    if ["invalid type", "invalid value", "invalid length"]
+                        .iter()
+                        .any(|p| m.starts_with(p)) =>
+                {
+                    Some(KIND)
+                }
+                De::Syntax(m)
+                    if [
+                        "missing field",
+                        "unknown field",
+                        "unknown variant",
+                        "duplicate field",
+                    ]
+                    .iter()
+                    .any(|p| m.starts_with(p)) =>
+                {
+                    Some(KNOWN)
+                }
+                De::Syntax(_) => None,
+            };
+            if let Some(what) = plain {
+                return format!(
+                    "state file: it is damaged ({what}). Load an undamaged copy of the state \
+                     file, or rebuild it from its input."
+                );
+            }
+            let body = e.to_string();
+            if body.ends_with("rebuild it from its input.") {
+                format!("state file: it is damaged: {body}")
+            } else {
+                // Its first sentence only: a refusal written for another
+                // reader, such as a formula's for the command line's TOML,
+                // ends with a remedy that cannot mend a state file.
+                let cut = [". ", "; "].iter().filter_map(|sep| body.find(sep)).min();
+                let what =
+                    cut.map_or_else(|| body.strip_suffix('.').unwrap_or(&body), |at| &body[..at]);
+                format!(
+                    "state file: it is damaged ({what}). Load an undamaged copy of the state \
+                     file, or rebuild it from its input."
+                )
+            }
+        })?;
+        if let Some(exp) = expected_specs {
+            // Both sides filled, since filling is what a bank does to its
+            // specs before it runs them: a caller who wrote the spec in TOML
+            // without a target for an unsupervised model, or without
+            // `drift_action`, is handing over the same spec (E53) -- and a
+            // file written before the filling existed carries the unfilled
+            // form.
+            let fill = |s: &Spec| {
+                let mut s = s.clone();
+                s.fill_defaults();
+                s
+            };
+            // `shards` is a setting, not state (docs/PLAN.md task 126): the
+            // count given here is the one the bank runs with, whatever the
+            // file was saved under, so it is left out of the comparison
+            // (review 2026-09-26, F3: it was compared, and a bank could not
+            // resume under another count). `gram_threads` is the same kind of
+            // setting (task 225: the same bits at every count), and was
+            // compared until review 6 (D-1).
+            let unsharded = |mut s: Spec| {
+                match &mut s.model {
+                    ModelKind::Marginal { shards, .. } => *shards = None,
+                    ModelKind::EwRidge { gram_threads, .. }
+                    | ModelKind::EwCov { gram_threads, .. } => *gram_threads = None,
+                    _ => {}
+                }
+                s
+            };
+            let exp_filled: Vec<Spec> = exp.iter().map(fill).map(unsharded).collect();
+            let saved: Vec<Spec> = file.specs.iter().map(fill).map(unsharded).collect();
+            if exp_filled != saved {
+                // Which spec, and in what (review 2026-10-06, PA6): a resuming
+                // job of ten specs was told only that they differ.
+                let canon = |s: Spec| unsharded(fill(&s));
+                return Err(format!(
+                    "state file: its specs do not match the bank's specs: {}. Load the state \
+                     with the specs it was saved with.",
+                    crate::spec_diff::spec_difference(&saved, &exp_filled, canon)
+                ));
+            }
+        }
+        // The caller's specs where given, the file's otherwise: the same
+        // specs but for the shard and thread counts, which are the caller's
+        // to set.
+        let specs = expected_specs.map_or_else(|| file.specs.clone(), <[Spec]>::to_vec);
+        // One list of groups per spec. A file with another count was read
+        // by index and panicked, or lost every group of a spec it had no
+        // list for (task 160, PA1).
+        if file.states.len() != file.specs.len() || file.specs.len() != specs.len() {
+            return Err(format!(
+                "state file: it is damaged, since it holds group states for {} specs, names {} \
+                 specs, and the bank has {}. Load an undamaged copy of the state file, or rebuild it from its input.",
+                file.states.len(),
+                file.specs.len(),
+                specs.len()
+            ));
+        }
+        // What `closed_groups` reads a row by, checked here: a row that does
+        // not fit its spec loaded, was saved again, and panicked at the
+        // first drain (task 160, PA2).
+        for row in &file.closed {
+            check_closed_row(&specs, row)?;
+        }
+        // And every other per-spec entry: one past the specs was dropped in
+        // silence, or kept and saved again for ever (review 2026-10-06, PA8).
+        let past = [
+            (
+                "the last group key it closed",
+                file.high_water.iter().map(|e| e.0).max(),
+            ),
+            (
+                "the clock type it kept",
+                file.clock_dtypes.iter().map(|e| e.0).max(),
+            ),
+            (
+                "the key column types it kept",
+                file.key_dtypes.iter().map(|e| e.0).max(),
+            ),
+            (
+                "what it holds for formula targets",
+                file.resolvers.iter().map(|e| e.0).max(),
+            ),
+            (
+                "the PCA signs it kept",
+                file.pca_prev.iter().map(|e| e.0).max(),
+            ),
+            (
+                "the PCA signs it kept for a group",
+                file.pca_prev_by_group.iter().map(|e| e.0).max(),
+            ),
+        ];
+        if let Some((what, Some(si))) = past.into_iter().find(|(_, si)| *si >= Some(specs.len())) {
+            return Err(format!(
+                "state file: it is damaged, since {what} names spec {si} (counting from 0), and it \
+                 has {} specs. Load an undamaged copy of the state file, or rebuild it from its input.",
+                specs.len()
+            ));
+        }
+        let specs_len = specs.len();
+        let mut bank = Bank::new(specs)?;
+        // A stream saved after a call that learned and then failed keeps the
+        // notices that call raised (`Notified::pending`), in any group of any
+        // spec: the first call that completes takes every stream's, as the
+        // next call after such a failure does in the bank that failed.
+        bank.notices_left = true;
+        // The caller's spec may write a half-life grid another way, `"600s"`
+        // for `"10m"`: the same instances, a duration being its length, under
+        // other labels. Each stream is restored under the bank's spec, so its
+        // instances carry the labels a new stream's do, and what the file keys
+        // by label -- the PCA sign continuity, the closed rows queued --
+        // takes the bank's label for the same instance of the grid. Restored
+        // under the file's spec, a stream kept the saved labels, and a stream
+        // begun after the load looked the continuity up under its own, found
+        // nothing and signed its loadings afresh (task 160, PC3b).
+        let relabel: Vec<HashMap<String, String>> = file
+            .specs
+            .iter()
+            .zip(&bank.specs)
+            .map(|(saved, now)| {
+                Ok(saved
+                    .decays()?
+                    .into_iter()
+                    .zip(now.decays()?)
+                    .filter(|((was, _), (is, _))| was != is)
+                    .map(|((was, _), (is, _))| (was, is))
+                    .collect())
+            })
+            .collect::<Result<_, String>>()?;
+        let label = |si: usize, l: &str| -> String {
+            relabel
+                .get(si)
+                .and_then(|m| m.get(l))
+                .map_or_else(|| l.to_string(), Clone::clone)
+        };
+        // Each group's decoded state is consumed as its stream is made, so
+        // the decoded states and the streams are not all held at once.
+        let states = std::mem::take(&mut file.states);
+        for (si, groups) in states.into_iter().enumerate() {
+            for (key, st) in groups {
+                let stream = Stream::restore_owned(&bank.specs[si], st).map_err(|e| {
+                    // The where of every refusal a stream's restore says.
+                    let spec = &bank.specs[si];
+                    let group = match (&spec.group, key.as_str()) {
+                        (None, _) => String::new(),
+                        (Some(_), Some(g)) => format!(" group {g:?}"),
+                        (Some(_), None) => " group null".to_string(),
+                    };
+                    let prefix = format!("state file: spec {:?}{group}", spec.name);
+                    format!("{prefix}: {e}")
+                })?;
+                bank.states[si].insert(key, stream);
+            }
+        }
+        bank.closed = file
+            .closed
+            .iter()
+            .map(|r| ClosedRow {
+                instance: label(r.spec, &r.instance),
+                ..r.clone()
+            })
+            .collect();
+        for (si, key) in &file.high_water {
+            // A key stored under a column dtype the bank no longer has is a
+            // different key: `"10"` orders after `"9"` as an integer and
+            // before it as a string, so the mark would let through exactly
+            // the groups it exists to refuse.
+            if let Some(slot) = bank.high_water.get_mut(*si) {
+                *slot = Some(key.clone());
+            }
+        }
+        for (si, dt) in &file.clock_dtypes {
+            if let Some(slot) = bank.clock_dtypes.get_mut(*si) {
+                *slot = Some(dt.clone());
+            }
+        }
+        for (si, inst, pca) in &file.pca_prev {
+            bank.pca_prev
+                .insert((*si, None, label(*si, inst)), pca.clone());
+        }
+        for (si, group, inst, pca) in &file.pca_prev_by_group {
+            bank.pca_prev
+                .insert((*si, Some(group.clone()), label(*si, inst)), pca.clone());
+        }
+        for (si, forms) in &file.key_dtypes {
+            if let Some(slot) = bank.key_dtypes.get_mut(*si) {
+                slot.clone_from(forms);
+            }
+        }
+        // A resolver's cores resume at each group's first chunk, which
+        // says what the columns are (docs/PLAN.md task 104).
+        for (si, groups) in &file.resolvers {
+            if let Some(slot) = bank.resolvers.get_mut(*si) {
+                for (key, bytes) in groups {
+                    slot.saved.insert(key.clone(), bytes.clone());
+                }
+            }
+        }
+        // The refit reservations (docs/PLAN.md task 277): one a spec, of the
+        // caller's specs; a file written before them reserved nothing, as
+        // its groups hold no buffer.
+        for &(si, bytes) in &file.refit_reserved {
+            match bank.refit_reserved.get_mut(si) {
+                Some(slot) if bytes.is_finite() && bytes >= 0.0 => *slot = bytes,
+                Some(_) => {
+                    return Err(format!(
+                        "state file: it is damaged, since the memory it reserved for spec {:?}'s \
+                         refits is {bytes} bytes, which is not a size. Load an undamaged copy of \
+                         the state file, or rebuild it from its input.",
+                        bank.specs[si].name
+                    ));
+                }
+                None => {
+                    return Err(format!(
+                        "state file: it is damaged, since the memory it reserved for refits names \
+                         spec {si} (counting from 0), and it has {specs_len} specs. Load an \
+                         undamaged copy of the state file, or rebuild it from its input."
+                    ));
+                }
+            }
+        }
+        // A file from before the counter existed: every spec sees every row,
+        // so the first spec's streams have the count, less any dropped group
+        // and less the rows the null policy skipped. Saturating, as every
+        // count the bank keeps is (task 160, PA2).
+        bank.rows_fed = if file.rows_fed > 0 {
+            file.rows_fed
+        } else {
+            bank.states.first().map_or(0, |hm| {
+                hm.values()
+                    .map(|s| s.persisted.rows_seen)
+                    .fold(0, u64::saturating_add)
+            })
+        };
+        Ok(bank)
+    }
+
+    /// Write the state to `path`, atomically: a temporary sibling, then a
+    /// rename over the destination (`crate::atomic`). An interrupted save
+    /// used to leave a truncated file and take the last good state with it,
+    /// which is a resume loop starting the stream over.
+    ///
+    /// The error is the filesystem's, without the path: the caller names it,
+    /// and keeps the kind (the Python side raises `FileNotFoundError` for a
+    /// directory that is not there, `PermissionError` for one it cannot
+    /// write, ... from it).
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        self.refuse_if_broken()
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+        let (file, pending) = crate::atomic::AtomicFile::create(path)?;
+        let mut w = std::io::BufWriter::with_capacity(1 << 20, file);
+        self.write_msgpack_io(&mut w)?;
+        // Flushed, then closed, so `commit` reopens exactly one handle to sync.
+        w.into_inner().map_err(|e| e.into_error())?;
+        pending.commit()
+    }
+
+    /// [`Bank::load_bytes`] over a file. The error is a message, whichever
+    /// step failed; a caller who needs to tell the two apart -- a file that
+    /// could not be read from a file that is not a bank -- does the read
+    /// itself (`RunConfig::open_bank`, the Python `ModelBank.load`).
+    pub fn load(path: &Path, expected_specs: Option<&[Spec]>) -> Result<Self, String> {
+        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        Self::load_bytes(&bytes, expected_specs)
+    }
+}
+
+mod fields;
+pub use fields::{
+    FieldMeta, coef_fields, coef_fields_frame, duplicate_field, output_fields, output_index,
+    output_index_frame,
+};
+use fields::{Source, slot_labels};
+
+mod learned;
+pub use learned::Learned;
+
+mod audit;
+pub use audit::AuditTable;
+
+mod arrays;
+use arrays::{coef_list_array, named_column, named_columns, opt_bool_array, opt_f64_array};
+
+mod assembly;
+mod groups;
+use assembly::{Sink, assemble};
+use groups::{Groups, KeyRef, group_indices};
+
+#[cfg(test)]
+mod over_budget_tests;
+
+#[cfg(test)]
+mod envelope_tests;
+
+#[cfg(test)]
+mod readiness_settle_tests;
+
+#[cfg(test)]
+mod damaged_file_tests;
+
+#[cfg(test)]
+mod ring_restore_tests;
+
+#[cfg(test)]
+mod threads_tests;
+
+#[cfg(test)]
+mod notices_tests;
+
+#[cfg(test)]
+mod kept_buffers_tests;

@@ -34,8 +34,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
 import reference
+import rheon as po
 
 TIER = "mixed"
 
@@ -895,7 +895,7 @@ class TestRefusals:
         ):
             po.eval.unpack(out, "m")
 
-    def test_the_cli_runs_it(self, tmp_path, online_cli):
+    def test_the_cli_runs_it(self, tmp_path, rheon_cli):
         import subprocess
 
         X, lab = gaussians(300, seed=28, **THREE)
@@ -923,7 +923,7 @@ class TestRefusals:
             ),
             encoding="utf-8",
         )
-        subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
+        subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         got = unnested(pl.read_parquet(dst))
         want = unnested(
             po.ModelBank([spec(covariance_type="tied")]).fit_predict(frame(X, lab, null_every=7))

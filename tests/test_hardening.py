@@ -25,7 +25,7 @@ import polars as pl
 import pytest
 
 import child
-import polars_online as po
+import rheon as po
 from conftest import run_online
 
 TIER = "mixed"
@@ -176,7 +176,7 @@ class TestKitchenSinkAtScale:
         data = tmp_path / "ks.parquet"
         frame.write_parquet(data)
         script.write_text(
-            "import sys, hashlib, polars as pl, polars_online as po\n"
+            "import sys, hashlib, polars as pl, rheon as po\n"
             "sys.path.insert(0, sys.argv[2])\n"
             "from test_hardening import kitchen_sink_spec, run_chunked, drop_coef\n"
             "df = pl.read_parquet(sys.argv[1])\n"
@@ -433,11 +433,11 @@ class TestRunnerErrorPaths:
             "m", targets=["y0"], features=["x0"], half_life=100.0, min_weight=3.0
         )
 
-    def test_corrupt_input_errors_cleanly(self, tmp_path, online_cli):
+    def test_corrupt_input_errors_cleanly(self, tmp_path, rheon_cli):
         bad = tmp_path / "bad.parquet"
         bad.write_bytes(b"PAR1 this is not really a parquet file")
         res = run_online(
-            online_cli,
+            rheon_cli,
             tmp_path,
             [self._spec()],
             input=bad,
@@ -447,7 +447,7 @@ class TestRunnerErrorPaths:
         assert res.returncode != 0
         assert re.search("(?i)parquet|deserialize|read", res.stderr), res.stderr
 
-    def test_a_bank_error_mid_stream_errors_cleanly(self, tmp_path, online_cli):
+    def test_a_bank_error_mid_stream_errors_cleanly(self, tmp_path, rheon_cli):
         """The consumer errors while the reader is a chunk ahead: the
         rejection (a negative weight, row named) must propagate, and the
         reader must be shut down rather than left blocked on `send`."""
@@ -467,7 +467,7 @@ class TestRunnerErrorPaths:
             weight="w",
         )
         res = run_online(
-            online_cli,
+            rheon_cli,
             tmp_path,
             [spec],
             input=src,
@@ -478,7 +478,7 @@ class TestRunnerErrorPaths:
         assert res.returncode != 0
         assert "but a weight must be at least 0" in res.stderr, res.stderr
 
-    def test_a_failed_run_leaves_the_previous_output_intact(self, tmp_path, online_cli):
+    def test_a_failed_run_leaves_the_previous_output_intact(self, tmp_path, rheon_cli):
         """The output is written to a temporary and renamed into place, so a
         run that dies on chunk eight does not replace yesterday's output with
         seven chunks and no footer (IMPROVEMENTS C6)."""
@@ -487,7 +487,7 @@ class TestRunnerErrorPaths:
         good = pl.DataFrame({"x0": rng.standard_normal(n), "y0": rng.standard_normal(n)})
         src, out = tmp_path / "in.parquet", tmp_path / "out.parquet"
         good.write_parquet(src)
-        run_online(online_cli, tmp_path, [self._spec()], input=src, output=out, chunk_size=500)
+        run_online(rheon_cli, tmp_path, [self._spec()], input=src, output=out, chunk_size=500)
         before = out.read_bytes()
 
         w = np.ones(n)
@@ -498,7 +498,7 @@ class TestRunnerErrorPaths:
             "m", targets=["y0"], features=["x0"], half_life=100.0, min_weight=3.0, weight="w"
         )
         res = run_online(
-            online_cli, tmp_path, [spec], input=src, output=out, chunk_size=500, check=False
+            rheon_cli, tmp_path, [spec], input=src, output=out, chunk_size=500, check=False
         )
         assert res.returncode != 0
         assert "but a weight must be at least 0" in res.stderr, res.stderr

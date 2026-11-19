@@ -181,7 +181,7 @@ jobs:
       # `--release`, as every workflow and the gate build it: what is tested
       # is what ships (tests/test_dev_loop.py).
       - name: build the extension
-        run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+        run: uv run maturin develop --release -m crates/rheon-py/Cargo.toml
 
       - name: pytest, this shard
         # The `datasets` job put every set in place, so a grid skipped as

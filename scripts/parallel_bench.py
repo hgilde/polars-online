@@ -32,7 +32,7 @@ import numpy as np
 import polars as pl
 
 GRID = """
-import time, polars as pl, polars_online as po
+import time, polars as pl, rheon as po
 from itertools import product
 factors = {{"mkt": ["x0"], "mkt-sz": ["x0", "x1"], "mkt-sz-val": ["x0", "x1", "x2"]}}
 def spec(name, features, standardize):
@@ -48,7 +48,7 @@ print(time.perf_counter() - t0)
 """
 
 EIGHT = """
-import time, numpy as np, polars as pl, polars_online as po
+import time, numpy as np, polars as pl, rheon as po
 rng = np.random.default_rng(0)
 rows, k = 300_000, 20
 d = {"t": np.arange(float(rows))}
@@ -71,7 +71,7 @@ print(best_one, best_each)
 """
 
 KNOBS = """
-import time, polars as pl, polars_online as po
+import time, polars as pl, rheon as po
 spec = po.spec.ewridge("m", targets=["y"], features=["x0", "x1", "x2", "x3"], clock="t",
                        gap_cap=10.0, half_life=[1000.0, 5000.0], group="stock_id")
 t0 = time.perf_counter()

@@ -18,7 +18,7 @@ import polars as pl
 import pytest
 
 import ledger
-import polars_online as po
+import rheon as po
 from data import synthetic
 from reference import NORMAL_Q3, ftrl_ref, kalman_ref, lasso_ref, robust_ref
 

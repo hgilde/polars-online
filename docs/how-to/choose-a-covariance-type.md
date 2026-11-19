@@ -48,7 +48,7 @@ three shapes on the last 5,000 rows of each:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 rng = np.random.default_rng(8)
 n = 6_000
@@ -102,7 +102,7 @@ spec that weighs every row against one that keeps the last 500:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # Two classes on either side of 0 in x, which trade places at row 3,000.
 rng = np.random.default_rng(8)
@@ -185,4 +185,4 @@ probability, `p_<class>`.
 
 The fields are defined in [OUTPUTS.md](../OUTPUTS.md#ew_class), and every
 parameter, with the work each shape takes a row, in `ew_class`'s
-[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_class).
+[docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.ew_class).

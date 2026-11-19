@@ -25,7 +25,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
-import polars_online as po  # noqa: E402
+import rheon as po  # noqa: E402
 from test_model_registry import MINIMAL, _build  # noqa: E402
 
 #: The keywords `_build` gives every model before `MINIMAL`'s own.
@@ -402,18 +402,18 @@ OPTIONAL: list[tuple[str, str]] = [
         "`ew_cov`'s extra `stats`, its `lags` (`lag_corr_l<l>_<a>_<b>`), `pca` (`pc<j>_*`) and "
         "`mahal_quantiles` (`mahal_q<p>`)",
         "its own [section](MODELS.md#ew_cov--exponentially-weighted-moments) and its "
-        "[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ew_cov)",
+        "[docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.ew_cov)",
     ),
     (
         "`seqtest`'s `a` and `b`, which replace its four fields with `log_e_a_<t>`, "
         "`log_e_b_<t>`, `wins_a_<t>` and `wins_b_<t>`",
         "its own [section](MODELS.md#seqtest--a-sequential-test-of-a-sign-by-betting) and its "
-        "[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.seqtest)",
+        "[docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.seqtest)",
     ),
     (
         "`deco`'s named blocks, which turn `u` and `rho` into one field per block and pair of "
         "blocks",
-        "its [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.deco)",
+        "its [docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.deco)",
     ),
 ]
 CLOCK_FIELDS: list[tuple[str, str, str]] = [
@@ -483,7 +483,7 @@ DTYPES: list[tuple[str, str]] = [
 
 #: The recipe in *The fields of your own spec*: run here, so the page shows what it prints.
 RECIPE = """\
-import polars_online as po
+import rheon as po
 
 grid = po.spec.ewridge(
     "ridge", targets=["y"], features=["x0", "x1"],

@@ -18,7 +18,7 @@ import polars as pl
 import pytest
 from polars.io.plugins import register_io_source
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 

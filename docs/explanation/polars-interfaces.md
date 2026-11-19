@@ -101,7 +101,7 @@ absence of `PySeries._export` is why `ModelBank` alone needs py-polars
 of its contract is unwritten.** Polars hands a Python source the columns
 the query needs, a filter and a row limit (from a `select`, a `filter` and
 a `head`), and does not apply them again to what the source returns. So
-the source applies all three itself (`python/polars_online/_frame.py`, and `python/polars_online/stream.py` for
+the source applies all three itself (`python/rheon/_frame.py`, and `python/rheon/stream.py` for
 `with_windows` and `refresh_time`). `tests/test_frame.py` checks every
 one of the three against the frame the query returns, in both orders, and the weekly run
 on the newest Polars runs those tests.
@@ -110,7 +110,7 @@ on the newest Polars runs those tests.
 node kinds are read, when the formula is taken, under the caller's own
 Polars, and an unknown node is refused. Python and Rust then
 rebuild the formula through Polars' public builders
-(`python/polars_online/_formula.py`).
+(`python/rheon/_formula.py`).
 
 ## Why the range is 1.37.0 to 3
 

@@ -35,7 +35,7 @@ checked against. That page opens with the notation the update equations share.
    case** in the last column.
 4. **Look the model up in [MODELS.md](../MODELS.md)** for its parameters,
    and in its builder's reference page, such as the one for
-   [`po.spec.ewridge`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge), for its keywords and their defaults.
+   [`po.spec.ewridge`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.ewridge), for its keywords and their defaults.
 
 | your question | the family | start with | change to another when |
 |---|---|---|---|
@@ -166,7 +166,7 @@ dates each switch, and `hmm` says which regime each row is in:
 
 ```python
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # Make the data, and save it with its truth.
 sim = po.sim.regimes(                                         # two series, and the regime each row was drawn in

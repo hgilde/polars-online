@@ -26,9 +26,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from conftest import run_online
-from polars_online import stream
+from rheon import stream
 from test_model_registry import MINIMAL
 
 TIER = "mixed"
@@ -668,13 +668,13 @@ class TestTheSurfaces:
         lazy = df.lazy().online.fit_predict([s]).collect()
         assert lazy.select("m").unnest("m").equals(bank.select("m").unnest("m"), null_equal=True)
 
-    def test_the_cli(self, tmp_path, online_cli):
+    def test_the_cli(self, tmp_path, rheon_cli):
         df = frame(n=300, seed=12)
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
         s = spec(embargo=6.0)
         out = tmp_path / "out.parquet"
-        run_online(online_cli, tmp_path, [s], input=src, output=out, chunk_size=64)
+        run_online(rheon_cli, tmp_path, [s], input=src, output=out, chunk_size=64)
 
         # `coef` rides the chunk cadence, as everywhere; every value is
         # compared.
@@ -708,7 +708,7 @@ max_rows_between_solves = 1
 """,
             encoding="utf-8",
         )
-        subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
+        subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         assert fields(pl.read_parquet(cli_out)).equals(want, null_equal=True)
 
 

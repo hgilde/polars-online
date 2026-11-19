@@ -61,7 +61,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
 # two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is

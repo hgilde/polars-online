@@ -15,7 +15,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -182,7 +182,7 @@ def test_an_instant_nanoseconds_cannot_hold_is_kept_for_the_bank_to_refuse():
         bank.fit_predict(kept)
 
 
-def test_the_command_line_is_told_its_own_way_out(online_cli, tmp_path):
+def test_the_command_line_is_told_its_own_way_out(rheon_cli, tmp_path):
     """The refusal names each surface's way out: `ModelBank.skip_learned` in
     Python and `--skip-learned` on the command line (docs/PLAN.md task 196,
     N26), where it said to filter the input by hand, the command line having
@@ -196,7 +196,7 @@ def test_the_command_line_is_told_its_own_way_out(online_cli, tmp_path):
     specs = [spec(group="g")]
     state = tmp_path / "bank.state"
     run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         specs,
         input=tmp_path / "first.parquet",
@@ -204,7 +204,7 @@ def test_the_command_line_is_told_its_own_way_out(online_cli, tmp_path):
         save_state=state,
     )
     res = run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         specs,
         input=tmp_path / "rerun.parquet",
@@ -216,7 +216,7 @@ def test_the_command_line_is_told_its_own_way_out(online_cli, tmp_path):
     assert "skip_learned" in res.stderr
     assert "(or --skip-learned)" in res.stderr, res.stderr
     run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         specs,
         input=tmp_path / "rerun.parquet",

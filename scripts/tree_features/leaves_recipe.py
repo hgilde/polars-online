@@ -13,7 +13,7 @@ import numpy as np  # noqa: E402
 import polars as pl  # noqa: E402
 from leafrefit import synth, train_trees  # noqa: E402
 
-import polars_online as po  # noqa: E402
+import rheon as po  # noqa: E402
 
 clock, X, y = synth(0)
 S = clock.max() + 1

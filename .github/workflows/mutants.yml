@@ -11,11 +11,11 @@ name: Mutants
 # name: new code should come with a test that would notice it breaking. A
 # first job, `changed-list`, lists its mutants and sizes it, so every mutant
 # a push lists is tested however large the push (task 219). `weekly` runs
-# all of online-core, and its report lists the survivors without failing on
+# all of rheon-core, and its report lists the survivors without failing on
 # them.
 #
 # Every run skips the doctests and stops a mutant at ten times the
-# baseline's test time (docs/PLAN.md task 155). A test run of online-core
+# baseline's test time (docs/PLAN.md task 155). A test run of rheon-core
 # took 67 seconds, 39 of them its three doctests, which CI and the gate still
 # run. The baseline runs alone, but a mutant shares the runner's cores with
 # the other jobs, and a survivor runs the whole suite: nineteen survivors took
@@ -71,9 +71,9 @@ name: Mutants
 # job, however large the diff: a larger diff makes more shards, not larger
 # ones. Each step prints the disk before the run and the most it used.
 #
-# Scope: online-core, and online-polars' span.rs, whose duration parser its own
+# Scope: rheon-core, and rheon-polars' span.rs, whose duration parser its own
 # Rust tests pin. cargo-mutants runs the Rust tests only, so the rest of
-# online-polars and online-py, which the pytest suite covers through the
+# rheon-polars and rheon-py, which the pytest suite covers through the
 # extension, would report most mutants as survivors when they are not.
 #
 # COST POLICY (ci.yml): the weekly pass is ninety-six shards of up to six
@@ -125,8 +125,8 @@ env:
   # cannot drift apart. Each job reads them with `read -ra`, which splits on
   # spaces and expands no glob, so `**` reaches cargo-mutants as written.
   CHANGED_SCOPE: >-
-    --in-diff changed.diff --package online-core --package online-polars
-    --file crates/online-core/src/** --file crates/online-polars/src/span.rs
+    --in-diff changed.diff --package rheon-core --package rheon-polars
+    --file crates/rheon-core/src/** --file crates/rheon-polars/src/span.rs
 
 jobs:
   # The memory scope every run uses, proven on the runner it runs on: inside
@@ -151,7 +151,7 @@ jobs:
   # pass from the count: a shard for every thirty (scripts/mutants_shards.py).
   # At least one, so a change with nothing to mutate still reports; at most
   # 256, GitHub's limit on a matrix, so past 7,680 mutants a shard is dealt
-  # more (all of online-core, 11,138, would be 44 a shard). It needs neither
+  # more (all of rheon-core, 11,138, would be 44 a shard). It needs neither
   # the disk prep nor a build of the workspace: cargo-mutants lists from
   # `cargo metadata --no-deps` and the source, and the cache keeps
   # cargo-mutants' own build.
@@ -245,7 +245,7 @@ jobs:
           fi
           git diff "$BASE" HEAD -- crates/ > changed.diff
           echo "$(grep -c '^+[^+]' changed.diff || true) added lines under crates/ since $BASE"
-      # online-polars pulls in Polars, whose build does not fit the runner's
+      # rheon-polars pulls in Polars, whose build does not fit the runner's
       # disk as it comes: the same step, in the same place, as ci.yml's test
       # job (before the cache restore and before anything compiles).
       - name: free disk and use a leaner linker
@@ -326,7 +326,7 @@ jobs:
           --fail-on-missed --fail-on-incomplete
 
   weekly:
-    name: mutants, online-core, shard ${{ matrix.shard }} of 96
+    name: mutants, rheon-core, shard ${{ matrix.shard }} of 96
     if: >-
       (github.event_name == 'schedule' && github.event.repository.private == false)
       || (github.event_name == 'workflow_dispatch' && inputs.base == '')
@@ -369,7 +369,7 @@ jobs:
       - name: cargo mutants, this shard
         run: |
           set +e
-          args=(--package online-core --shard ${{ matrix.shard }}/96 --sharding round-robin)
+          args=(--package rheon-core --shard ${{ matrix.shard }}/96 --sharding round-robin)
           # The build copies on the runner's disk, not in /tmp (see the
           # top of this file).
           export TMPDIR="$RUNNER_TEMP/mutants-tmp"
@@ -400,7 +400,7 @@ jobs:
           if-no-files-found: ignore
 
   weekly-report:
-    name: mutants, online-core, the week's report
+    name: mutants, rheon-core, the week's report
     needs: weekly
     if: always() && needs.weekly.result != 'skipped'
     runs-on: ubuntu-latest

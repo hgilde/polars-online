@@ -29,7 +29,7 @@ import polars as pl
 import pytest
 from polars.io.plugins import register_io_source
 
-import polars_online as po
+import rheon as po
 from polars_version import needs_polars
 
 TIER = "essential"
@@ -207,7 +207,7 @@ def test_explain_does_not_consume_the_stream():
 
 def test_a_python_scan_with_rows_is_recognised_and_a_parquet_scan_is_not(tmp_path):
     """The discriminator itself, on the plan shapes it must separate."""
-    from polars_online._frame import _is_python_scan
+    from rheon._frame import _is_python_scan
 
     path = tmp_path / "rows.parquet"
     _frame().write_parquet(path)
@@ -237,7 +237,7 @@ def test_both_spellings_of_a_python_scan_are_recognised(line):
     over a DuckDB relation both still read ``PYTHON SCAN``, unnamed, so the
     spent-stream guard went on working there and only our own plan form was
     misread. Pinned as text so both spellings hold without a 2.0 install."""
-    from polars_online._frame import _PYTHON_SCAN
+    from rheon._frame import _PYTHON_SCAN
 
     assert _PYTHON_SCAN.search(line)
 
@@ -254,14 +254,14 @@ def test_a_source_that_is_not_a_python_scan_is_not_matched(line):
     """The pattern must not widen into "anything with SCAN in it": an
     in-memory frame and a parquet scan are both reusable, and warning on them
     would be the false positive the guard is built to avoid."""
-    from polars_online._frame import _PYTHON_SCAN
+    from rheon._frame import _PYTHON_SCAN
 
     assert not _PYTHON_SCAN.search(line)
 
 
 def test_a_plan_that_cannot_be_explained_is_let_through(monkeypatch):
     """Best-effort: a plan the guard cannot read is never a reason to fail."""
-    from polars_online import _frame as frame_mod
+    from rheon import _frame as frame_mod
 
     def boom(self, **kwargs):  # noqa: ANN001, ANN202, ARG001
         raise RuntimeError("no plan for you")

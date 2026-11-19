@@ -109,7 +109,7 @@ these five steps are done for it.
    inside the range. To move it, run
    `uv lock --upgrade-package polars --upgrade-package polars-runtime-32`,
    then `uv sync` and
-   `uv run maturin develop --release -m crates/online-py/Cargo.toml`.
+   `uv run maturin develop --release -m crates/rheon-py/Cargo.toml`.
    Then regenerate `docs/VALIDATION.md` with
    `uv run python scripts/validate.py > docs/VALIDATION.md`, and set
    `BUILT_AGAINST` in `tests/test_scaffold.py` to the version the lock

@@ -28,7 +28,7 @@ import sys
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 SPEC = po.spec.ewridge(
     "ridge",

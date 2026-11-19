@@ -1,0 +1,523 @@
+//! An `audit` spec through the bank (docs/PLAN.md task 223 (b)): a null and
+//! a NaN counted apart through Arrow's validity, every row read whatever its
+//! columns hold, a restart that keeps the counts, and the same frames from 1,
+//! 7 and 600 chunks (hard rule 3). The statistics' own oracles are the core's
+//! (`audit/tests.rs`) and scipy's and statsmodels' (`tests/test_audit.py`).
+
+use polars::prelude::*;
+use rheon_polars::{AuditTable, Bank, Spec};
+
+fn spec(extra: &str) -> Spec {
+    serde_json::from_str(&format!(
+        r#"{{"name": "a", "model": {{"type": "audit", "pairs": true}}, "targets": ["x"],
+            "features": ["x", "z"], "clock": "t", "gap_cap": 5.0{extra}}}"#
+    ))
+    .unwrap()
+}
+
+/// 1,200 rows: `x` null on every 10th and NaN on every 25th (one row both
+/// ways counts as null, the validity winning), `z` infinite on every 40th,
+/// a duplicate stamp every 50th row and a gap every 300th.
+fn frame() -> DataFrame {
+    let n = 1200;
+    let x: Vec<Option<f64>> = (0..n)
+        .map(|i| {
+            if i % 10 == 3 {
+                None
+            } else if i % 25 == 7 {
+                Some(f64::NAN)
+            } else {
+                Some(((i * 7919) % 1000) as f64 / 100.0)
+            }
+        })
+        .collect();
+    let z: Vec<f64> = (0..n)
+        .map(|i| {
+            if i % 40 == 9 {
+                f64::INFINITY
+            } else {
+                ((i * 104_729) % 977) as f64
+            }
+        })
+        .collect();
+    let mut t = 0.0;
+    let ts: Vec<f64> = (0..n)
+        .map(|i| {
+            t += match i {
+                0 => 0.0,
+                _ if i % 300 == 0 => 20.0,
+                _ if i % 50 == 0 => 0.0,
+                _ => 1.0,
+            };
+            t
+        })
+        .collect();
+    let s: Vec<i64> = (0..n).map(|i| i as i64 / 400).collect();
+    df!("t" => ts, "x" => x, "z" => z, "s" => s).unwrap()
+}
+
+fn feed(bank: &mut Bank, df: &DataFrame, chunks: usize) {
+    let size = df.height().div_ceil(chunks);
+    let mut at = 0;
+    while at < df.height() {
+        bank.fit_predict(&df.slice(at as i64, size)).unwrap();
+        at += size;
+    }
+}
+
+fn read(bank: &Bank, table: AuditTable) -> DataFrame {
+    bank.audit(0, None, table, false).unwrap()
+}
+
+/// A count, an `Int64` as every count of every frame, as a `u64`.
+fn count(f: &DataFrame, col: &str, row: usize) -> u64 {
+    u64::try_from(f.column(col).unwrap().i64().unwrap().get(row).unwrap())
+        .expect("a count is never negative")
+}
+
+#[test]
+fn a_null_and_a_nan_are_counted_apart_and_every_row_is_read() {
+    let df = frame();
+    let mut bank = Bank::new(vec![spec("")]).unwrap();
+    feed(&mut bank, &df, 1);
+    let cols = read(&bank, AuditTable::Columns);
+    let n = df.height() as u64;
+    let nulls = (0..n).filter(|i| i % 10 == 3).count() as u64;
+    let nans = (0..n).filter(|i| i % 10 != 3 && i % 25 == 7).count() as u64;
+    let infs = (0..n).filter(|i| i % 40 == 9).count() as u64;
+    assert_eq!(
+        (
+            count(&cols, "rows_fed", 0),
+            count(&cols, "null_count", 0),
+            count(&cols, "nan_count", 0)
+        ),
+        (n, nulls, nans)
+    );
+    assert_eq!(count(&cols, "count", 0), n - nulls - nans);
+    assert_eq!(
+        (
+            count(&cols, "pos_inf_count", 1),
+            count(&cols, "null_count", 1)
+        ),
+        (infs, 0)
+    );
+    // Every row was read: the summary processed rows a feature's null
+    // would have skipped for any other model.
+    let summary = bank.summary(0, None).unwrap();
+    assert_eq!(count(&summary, "rows_processed", 0), n);
+    let pairs = read(&bank, AuditTable::Pairs);
+    let both = (0..n)
+        .filter(|i| i % 10 != 3 && i % 25 != 7 && i % 40 != 9)
+        .count() as u64;
+    assert_eq!(count(&pairs, "count", 0), both);
+    let clock = read(&bank, AuditTable::Clock);
+    let gaps = (1..n).filter(|i| i % 300 == 0).count() as u64;
+    let dups = (1..n).filter(|i| i % 300 != 0 && i % 50 == 0).count() as u64;
+    assert_eq!(count(&clock, "steps", 0), n - 1);
+    assert_eq!(
+        (count(&clock, "gaps", 0), count(&clock, "duplicates", 0)),
+        (gaps, dups)
+    );
+    // The largest step is the gap as it elapsed, 20, not the 5 `gap_cap`
+    // ages a model by (review 6, C-5).
+    let max_step = clock.column("step_max").unwrap().f64().unwrap().get(0);
+    assert_eq!(max_step, Some(20.0));
+}
+
+/// A temporal clock's steps come back as `Duration`s in the column's unit,
+/// the step as it elapsed (review 6, C-5): five minutes a row, and a gap of
+/// two hours past a `gap_cap` of one.
+#[test]
+fn a_temporal_clocks_steps_are_durations_as_they_elapsed() {
+    let minute = 60_000_000_000i64;
+    let ts: Vec<i64> = (0..10)
+        .map(|i| i * 5 * minute + if i >= 6 { 120 * minute } else { 0 })
+        .collect();
+    for unit in [
+        TimeUnit::Milliseconds,
+        TimeUnit::Microseconds,
+        TimeUnit::Nanoseconds,
+    ] {
+        let t = Series::new("t".into(), ts.clone())
+            .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
+            .unwrap()
+            .cast(&DataType::Datetime(unit, None))
+            .unwrap();
+        let df = DataFrame::new(
+            10,
+            vec![
+                t.into(),
+                Column::new("x".into(), (0..10).map(f64::from).collect::<Vec<_>>()),
+                Column::new("z".into(), vec![1.0; 10]),
+            ],
+        )
+        .unwrap();
+        let spec: Spec = serde_json::from_str(
+            r#"{"name": "a", "model": {"type": "audit"}, "targets": ["x"],
+                "features": ["x", "z"], "clock": "t", "gap_cap": "1h"}"#,
+        )
+        .unwrap();
+        let mut bank = Bank::new(vec![spec]).unwrap();
+        bank.fit_predict(&df).unwrap();
+        let clock = read(&bank, AuditTable::Clock);
+        let per_unit = match unit {
+            TimeUnit::Milliseconds => 1_000_000,
+            TimeUnit::Microseconds => 1_000,
+            TimeUnit::Nanoseconds => 1,
+        };
+        for (col, want) in [("step_max", 125 * minute), ("step_mean", 5 * minute)] {
+            let c = clock.column(col).unwrap();
+            assert_eq!(c.dtype(), &DataType::Duration(unit), "{col}");
+            let got = c.cast(&DataType::Int64).unwrap().i64().unwrap().get(0);
+            assert_eq!(got, Some(want / per_unit), "{col} in {unit:?}");
+        }
+        assert_eq!(count(&clock, "gaps", 0), 1);
+    }
+}
+
+#[test]
+fn the_frames_are_the_same_from_one_chunk_or_many() {
+    let df = frame();
+    let mut one = Bank::new(vec![spec("")]).unwrap();
+    feed(&mut one, &df, 1);
+    for chunks in [7, 600] {
+        let mut many = Bank::new(vec![spec("")]).unwrap();
+        feed(&mut many, &df, chunks);
+        for table in [AuditTable::Columns, AuditTable::Pairs, AuditTable::Clock] {
+            assert!(
+                read(&many, table).equals_missing(&read(&one, table)),
+                "{chunks} chunks, {table:?}"
+            );
+        }
+    }
+}
+
+/// A restart -- a session that resets -- starts the run and the clock over
+/// and keeps every count: the audit reads 1,200 rows, not the last session's.
+#[test]
+fn a_restart_keeps_the_counts() {
+    let df = frame();
+    let mut bank = Bank::new(vec![spec(r#", "session": "s", "session_gap": "reset""#)]).unwrap();
+    feed(&mut bank, &df, 3);
+    let cols = read(&bank, AuditTable::Columns);
+    assert_eq!(count(&cols, "rows_fed", 0), df.height() as u64);
+    let summary = bank.summary(0, None).unwrap();
+    assert_eq!(count(&summary, "resets", 0), 2);
+    // Two restarts: two steps fewer than rows less one.
+    let clock = read(&bank, AuditTable::Clock);
+    assert_eq!(count(&clock, "steps", 0), df.height() as u64 - 3);
+}
+
+#[test]
+fn a_spec_that_is_not_an_audit_and_pairs_not_kept_are_refused() {
+    let ridge: Spec = serde_json::from_str(
+        r#"{"name": "r", "model": {"type": "ewridge"}, "targets": ["x"], "features": ["z"],
+            "half_life": 10.0}"#,
+    )
+    .unwrap();
+    let no_pairs: Spec = serde_json::from_str(
+        r#"{"name": "a", "model": {"type": "audit"}, "targets": ["x"], "features": ["x", "z"]}"#,
+    )
+    .unwrap();
+    let bank = Bank::new(vec![ridge, no_pairs]).unwrap();
+    let e = bank.audit(0, None, AuditTable::Columns, false).unwrap_err();
+    assert!(e.contains("not \"audit\""), "{e}");
+    let e = bank.audit(1, None, AuditTable::Pairs, false).unwrap_err();
+    assert!(e.contains("pairs=True"), "{e}");
+    assert!(
+        bank.audit(1, None, AuditTable::Clock, false)
+            .unwrap()
+            .height()
+            == 0
+    );
+    assert!(AuditTable::parse("rows").is_err());
+}
+
+// --- a clock reset, beside a spec that skips rows and holds them -----------
+
+/// Rows of the clock-reset case.
+const N_RESET: usize = 600;
+/// The row whose clock steps back 50: a clock reset under
+/// `restart_after_step_back = 0`.
+const AT: usize = 300;
+
+/// `x` on a coarse grid with a run of 7.0 over rows `AT − 5 ..= AT + 5`
+/// that the reset cuts in two, and null on every 37th row; `z` null on the
+/// two rows before the reset, which a spec reading `z` skips, and on every
+/// 53rd; `y` a line in both with noise of 0.1, whose slopes flip and level
+/// moves by 6 at row 450, which a drift detector fires on. The clock steps by 1, by 0 every 50th row (a
+/// duplicate stamp), by 20 every 97th (a gap past `gap_cap`), and back by
+/// 50 at [`AT`]; `monotone` keeps the step of 1 there instead.
+fn reset_frame(monotone: bool) -> DataFrame {
+    let x: Vec<Option<f64>> = (0..N_RESET)
+        .map(|i| {
+            if (AT - 5..=AT + 5).contains(&i) {
+                Some(7.0)
+            } else if i % 37 == 11 {
+                None
+            } else {
+                Some(((i * 7919) % 13) as f64 / 2.0)
+            }
+        })
+        .collect();
+    let z: Vec<Option<f64>> = (0..N_RESET)
+        .map(|i| {
+            if i == AT - 2 || i == AT - 1 || i % 53 == 17 {
+                None
+            } else {
+                Some(((i * 104_729) % 977) as f64 / 100.0)
+            }
+        })
+        .collect();
+    let mut s = 7u64;
+    let y: Vec<f64> = (0..N_RESET)
+        .map(|i| {
+            let xi = x[i].unwrap_or(0.0);
+            let zi = z[i].unwrap_or(0.0);
+            let (level, sign) = if i < 450 { (0.3, 1.0) } else { (6.3, -1.0) };
+            s = s
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let noise = ((s >> 11) as f64 / (1u64 << 53) as f64) * 2.0 - 1.0;
+            level + sign * (0.5 * xi - 0.25 * zi) + 0.1 * noise
+        })
+        .collect();
+    let mut t = 0.0;
+    let ts: Vec<f64> = (0..N_RESET)
+        .map(|i| {
+            t += match i {
+                0 => 0.0,
+                _ if i == AT && !monotone => -50.0,
+                _ if i % 97 == 0 => 20.0,
+                _ if i % 50 == 0 => 0.0,
+                _ => 1.0,
+            };
+            t
+        })
+        .collect();
+    df!("t" => ts, "x" => x, "z" => z, "y" => y).unwrap()
+}
+
+/// The audit, restarted at a step back: every row read, nothing decayed.
+fn reset_audit() -> Spec {
+    spec(r#", "restart_after_step_back": 0.0"#)
+}
+
+/// A spec beside the audit that skips the rows whose `z` is null, holds its
+/// rows under an `embargo`, and restarts on drift and at the step back.
+fn reset_rls() -> Spec {
+    serde_json::from_str(
+        r#"{"name": "r", "model": {"type": "rls"}, "targets": ["y"], "features": ["x", "z"],
+            "clock": "t", "gap_cap": 5.0, "half_life": 200.0, "min_weight": 10.0,
+            "embargo": 3.0, "emit_sigma": true,
+            "emit_drift": true, "drift_threshold": 20.0, "drift_action": "reset",
+            "restart_after_step_back": 0.0}"#,
+    )
+    .unwrap()
+}
+
+/// The audit's three tables, from the spec at `index`.
+fn tables(bank: &Bank, index: usize) -> Vec<DataFrame> {
+    [AuditTable::Columns, AuditTable::Pairs, AuditTable::Clock]
+        .into_iter()
+        .map(|t| bank.audit(index, None, t, false).unwrap())
+        .collect()
+}
+
+/// `df` through `bank`, cut at each row of `cuts`; the outputs.
+fn feed_cut(bank: &mut Bank, df: &DataFrame, cuts: &[usize]) -> Vec<DataFrame> {
+    let mut edges = vec![0];
+    edges.extend_from_slice(cuts);
+    edges.push(df.height());
+    edges
+        .windows(2)
+        .map(|w| {
+            let piece = df.slice(w[0] as i64, w[1] - w[0]);
+            DataFrame::new(piece.height(), bank.fit_predict(&piece).unwrap()).unwrap()
+        })
+        .collect()
+}
+
+/// A column's runs, counted by hand from its values: `breaks` are the rows
+/// with no row before them (the first, and a restart), and a null ends a
+/// run. The longest run of one value, the rows equal to the row before,
+/// and the rows whose row before was usable too.
+fn runs_by_hand(v: &[Option<f64>], breaks: &[usize]) -> (u64, u64, u64) {
+    let (mut longest, mut equal, mut adjacent, mut run) = (0u64, 0u64, 0u64, 0u64);
+    for (i, x) in v.iter().enumerate() {
+        let prev = if breaks.contains(&i) { None } else { v[i - 1] };
+        match (x, prev) {
+            (Some(a), Some(b)) => {
+                adjacent += 1;
+                if *a == b {
+                    equal += 1;
+                    run += 1;
+                } else {
+                    run = 1;
+                }
+            }
+            (Some(_), None) => run = 1,
+            (None, _) => run = 0,
+        }
+        longest = longest.max(run);
+    }
+    (longest, equal, adjacent)
+}
+
+/// The audit's early return in a restart (`Instance::reset`): an audit
+/// restarted by a clock reset breaks its runs and its clock steps and
+/// keeps every count, and skips what a rebuilt model's restart sets -- the
+/// decay clock, the restart mark, the rows learned since, the readiness
+/// waits and the residual diagnostics -- none of which an audit reads
+/// (task 316, the user's). Held, with the clock stepping back at row
+/// `AT`, after two rows the spec beside it skips:
+///
+/// - against counts by hand: every row fed, the nulls, the runs and the
+///   rows equal to the row before cut at the reset, and the clock's steps,
+///   duplicates and gaps with no step at the reset;
+/// - against an audit of the same rows on a clock that does not step back:
+///   every count and every moment the same to the bit, and only the runs,
+///   the lag pairs and the clock's steps differ;
+/// - beside a spec that skips the rows before the reset, holds rows under
+///   an `embargo`, restarts on drift (which fires) and at the step back:
+///   the same tables as an audit alone;
+/// - across a chunk boundary at the reset and right after it, and a save
+///   and a load there: the same tables as one chunk.
+#[test]
+fn a_clock_reset_breaks_the_runs_and_steps_and_keeps_the_counts() {
+    let df = reset_frame(false);
+    let mut alone = Bank::new(vec![reset_audit()]).unwrap();
+    feed_cut(&mut alone, &df, &[]);
+    let [cols, pairs, clock] = <[DataFrame; 3]>::try_from(tables(&alone, 0)).unwrap();
+    let summary = alone.summary(0, None).unwrap();
+    assert_eq!(
+        count(&summary, "resets", 0),
+        1,
+        "the step back restarted it"
+    );
+
+    // By hand.
+    let values = |name: &str| -> Vec<Option<f64>> {
+        df.column(name).unwrap().f64().unwrap().iter().collect()
+    };
+    for (row, name) in [(0, "x"), (1, "z")] {
+        let v = values(name);
+        let nulls = v.iter().filter(|x| x.is_none()).count() as u64;
+        assert_eq!(count(&cols, "rows_fed", row), N_RESET as u64, "{name}");
+        assert_eq!(count(&cols, "null_count", row), nulls, "{name}");
+        assert_eq!(count(&cols, "count", row), N_RESET as u64 - nulls, "{name}");
+        let (longest, equal, adjacent) = runs_by_hand(&v, &[0, AT]);
+        assert_eq!(
+            (
+                count(&cols, "longest_run", row),
+                count(&cols, "equal_prev", row),
+                count(&cols, "adjacent", row)
+            ),
+            (longest, equal, adjacent),
+            "{name}: the runs, cut at the reset"
+        );
+    }
+    // The run of 7.0 the reset cuts: 11 rows whole, 6 after the reset.
+    assert_eq!(runs_by_hand(&values("x"), &[0]).0, 11);
+    assert_eq!(count(&cols, "longest_run", 0), 6);
+    let both = (0..N_RESET)
+        .filter(|&i| values("x")[i].is_some() && values("z")[i].is_some())
+        .count() as u64;
+    assert_eq!(count(&pairs, "count", 0), both);
+    let stepped: Vec<usize> = (1..N_RESET).filter(|&i| i != AT).collect();
+    let gaps = stepped.iter().filter(|&&i| i % 97 == 0).count() as u64;
+    let dups = stepped
+        .iter()
+        .filter(|&&i| i % 97 != 0 && i % 50 == 0)
+        .count() as u64;
+    assert_eq!(count(&clock, "steps", 0), stepped.len() as u64);
+    assert_eq!(
+        (count(&clock, "gaps", 0), count(&clock, "duplicates", 0)),
+        (gaps, dups)
+    );
+    assert_eq!(
+        count(&clock, "regular", 0),
+        stepped.len() as u64 - gaps - dups
+    );
+    let max_step = clock.column("step_max").unwrap().f64().unwrap().get(0);
+    assert_eq!(max_step, Some(20.0));
+
+    // Against the same rows on a clock that does not step back: every count
+    // and moment to the bit; the runs, the lag pairs and the steps apart.
+    let mut flat = Bank::new(vec![reset_audit()]).unwrap();
+    feed_cut(&mut flat, &reset_frame(true), &[]);
+    let [fcols, fpairs, fclock] = <[DataFrame; 3]>::try_from(tables(&flat, 0)).unwrap();
+    assert_eq!(count(&flat.summary(0, None).unwrap(), "resets", 0), 0);
+    let lagged = [
+        "longest_run",
+        "equal_prev",
+        "adjacent",
+        "min_change",
+        "min_change_count",
+        "autocorr",
+        "unit_root_t",
+    ];
+    for c in cols.columns() {
+        if lagged.contains(&c.name().as_str()) {
+            continue;
+        }
+        assert!(
+            c.as_materialized_series()
+                .equals_missing(fcols.column(c.name()).unwrap().as_materialized_series()),
+            "{}: moved by the restart",
+            c.name()
+        );
+    }
+    // The lag pairs: one fewer where the pair across the reset was usable.
+    assert_eq!(
+        count(&cols, "adjacent", 0) + 1,
+        count(&fcols, "adjacent", 0)
+    );
+    assert!(pairs.equals_missing(&fpairs), "the pairs moved");
+    assert_eq!(count(&fclock, "steps", 0), N_RESET as u64 - 1);
+
+    // Beside a spec that skips rows, holds them and restarts on drift.
+    let mut beside = Bank::new(vec![reset_rls(), reset_audit()]).unwrap();
+    let out = feed_cut(&mut beside, &df, &[]).remove(0);
+    let fired = out
+        .column("r")
+        .unwrap()
+        .struct_()
+        .unwrap()
+        .field_by_name("drift_y")
+        .unwrap()
+        .bool()
+        .unwrap()
+        .iter()
+        .any(|v| v == Some(true));
+    assert!(fired, "the drift detector never fired: no drift reset ran");
+    assert_eq!(count(&beside.summary(0, None).unwrap(), "resets", 0), 1);
+    let want = tables(&alone, 0);
+    for (i, got) in tables(&beside, 1).iter().enumerate() {
+        assert!(
+            got.equals_missing(&want[i]),
+            "table {i} beside the rls spec"
+        );
+    }
+
+    // Across a chunk boundary at the reset and right after it, and a save
+    // and a load at it.
+    for cuts in [vec![AT], vec![AT + 1], vec![AT - 1, AT, AT + 1]] {
+        let mut cut = Bank::new(vec![reset_rls(), reset_audit()]).unwrap();
+        feed_cut(&mut cut, &df, &cuts);
+        for (i, got) in tables(&cut, 1).iter().enumerate() {
+            assert!(got.equals_missing(&want[i]), "table {i}, cut at {cuts:?}");
+        }
+    }
+    for at in [AT, AT + 1] {
+        let specs = vec![reset_rls(), reset_audit()];
+        let mut head = Bank::new(specs.clone()).unwrap();
+        feed_cut(&mut head, &df.slice(0, at), &[]);
+        let bytes = head.save_bytes().unwrap();
+        let mut back = Bank::load_bytes(&bytes, Some(&specs)).unwrap();
+        feed_cut(&mut back, &df.slice(at as i64, N_RESET - at), &[]);
+        for (i, got) in tables(&back, 1).iter().enumerate() {
+            assert!(got.equals_missing(&want[i]), "table {i}, saved at {at}");
+        }
+    }
+}

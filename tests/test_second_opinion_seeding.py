@@ -39,7 +39,7 @@ from scipy.stats import ks_2samp, kstwo
 from sklearn.cluster import KMeans, kmeans_plusplus
 
 import ledger
-import polars_online as po
+import rheon as po
 
 TIER = "mixed"
 

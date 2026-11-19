@@ -10,8 +10,8 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online._formula import PREFIX, FormulaError, from_tree, to_tree
+import rheon as po
+from rheon._formula import PREFIX, FormulaError, from_tree, to_tree
 
 TIER = "essential"
 

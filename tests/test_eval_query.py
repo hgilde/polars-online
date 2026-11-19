@@ -39,9 +39,9 @@ import polars as pl
 import pytest
 
 import child
-import polars_online as po
-from polars_online import _frame
+import rheon as po
 from polars_version import needs_polars
+from rheon import _frame
 
 TIER = "mixed"
 
@@ -579,7 +579,7 @@ def test_the_whole_frame_cases_are_all_counted(pair):
 CHILD = textwrap.dedent(
     """
     import gc, json, os, sys, threading, time
-    import polars as pl, polars_online as po, psutil
+    import polars as pl, rheon as po, psutil
 
     proc = psutil.Process()
     case, src = sys.argv[1], sys.argv[2]

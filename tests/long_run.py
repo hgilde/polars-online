@@ -51,7 +51,7 @@ import numpy as np
 import polars as pl
 import statsmodels.api as sm
 
-import polars_online as po
+import rheon as po
 
 CHUNK = 200_000
 

@@ -4,7 +4,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from conftest import run_online
 
 TIER = "mixed"
@@ -189,7 +189,7 @@ def test_bad_config_rejected():
 
 
 @pytest.mark.parametrize("c", [0.5, float("inf")])
-def test_c_beside_the_mode_that_reads_none_is_refused(c, tmp_path, online_cli):
+def test_c_beside_the_mode_that_reads_none_is_refused(c, tmp_path, rheon_cli):
     """``c`` is ``"pa1"``'s cap and ``"pa2"``'s damping, and ``"pa"`` reads
     neither: it took a ``c`` without a word. A parameter whose switch is off
     is refused, as ``sgd`` refuses ``power`` beside a schedule that does not
@@ -208,7 +208,7 @@ def test_c_beside_the_mode_that_reads_none_is_refused(c, tmp_path, online_cli):
         po.ModelBank([raw])
     _linear(n=50).write_parquet(tmp_path / "in.parquet")
     res = run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [raw],
         input=tmp_path / "in.parquet",

@@ -15,7 +15,7 @@
 # Why not `prlimit --data` on each test process, as before: RLIMIT_DATA
 # counts a process's private writable *virtual* mappings, which glibc keeps
 # after a free (its arenas, the heap it retains), not what is resident. The
-# suite's resident peak was measured on macOS at 497 MiB for online-core's
+# suite's resident peak was measured on macOS at 497 MiB for rheon-core's
 # largest test binary, and a cap of 6 GiB of "data" still killed it on Linux
 # (`memory allocation of 545259520 bytes failed` in the baseline of 4 of the
 # 32 shards of run 38205650365), depending on which tests shared a process.

@@ -14,7 +14,7 @@ declares, or a regression, whose cause then gets a test.
 The released version is installed from PyPI into a cached venv under
 `.cache/release-compare/`, beside the Polars this environment has, and
 `scripts/release_probe.py` runs under both builds. Each run reports which
-`polars_online` it imported, so the comparison cannot quietly compare a
+package it imported, so the comparison cannot quietly compare a
 build with itself. A spec the released version refuses is listed as not
 comparable, not as a difference.
 """

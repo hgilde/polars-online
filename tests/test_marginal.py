@@ -16,7 +16,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -372,7 +372,7 @@ class TestMinSettledFrac:
 
 
 class TestPlumbing:
-    def test_every_surface_runs_it(self, tmp_path, online_cli):
+    def test_every_surface_runs_it(self, tmp_path, rheon_cli):
         df = frame(n=500, null_target_every=7, weights=True, clock=True, seed=10)
         s = spec(weight="w", clock="t", gap_cap=10.0, half_life=40.0)
         ref = po.ModelBank([s])
@@ -410,7 +410,7 @@ class TestPlumbing:
             ),
             encoding="utf-8",
         )
-        subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
+        subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         assert pl.read_parquet(cli_dst).select("m").unnest("m").equals(one, null_equal=True)
         assert po.ModelBank.load(cli_state).marginal("m").equals(pairs, null_equal=True)
 

@@ -18,7 +18,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -414,7 +414,7 @@ def test_m11_an_aliased_col_target_is_po_target():
 
 
 def test_m13_renamed_and_deprecated_members_are_marked():
-    from polars_online._renamed import is_renamed
+    from rheon._renamed import is_renamed
 
     for name in ("rows_seen", "to_json", "save_json"):
         assert is_renamed(getattr(po.ModelBank, name)), name

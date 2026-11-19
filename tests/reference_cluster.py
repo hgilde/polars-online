@@ -4,7 +4,7 @@
 clustering models are held tighter, because their arithmetic is a hard
 assignment followed by a mean-form update, and a hard assignment that flips
 on a 1-ulp tie moves a whole row from one centre to another. So this module
-mirrors `crates/online-core/src/cluster/` operation for operation -- the
+mirrors `crates/rheon-core/src/cluster/` operation for operation -- the
 same sums in the same order, the same guards, the same `splitmix64` behind
 the random seeding rules -- in plain Python floats (IEEE doubles, like
 Rust's `f64`; numpy's pairwise `sum` would *not* reproduce the Rust loops)
@@ -468,7 +468,7 @@ def seed_centres(
 
 @dataclass
 class KMeansRef:
-    """`online_core::KMeans`, operation for operation."""
+    """`rheon_core::KMeans`, operation for operation."""
 
     p: int
     k: int
@@ -514,7 +514,7 @@ class KMeansRef:
             return self.lam**d
         if math.isinf(self.half_life):
             return 1.0
-        # `exp2(-x)`, as `online_core::Decay::factor` spells it (LLVM
+        # `exp2(-x)`, as `rheon_core::Decay::factor` spells it (LLVM
         # compiles `0.5.powf(x)` to exactly this; libm's `pow` can differ
         # from it in the last bit).
         return math.exp2(-(d / self.half_life))
@@ -851,7 +851,7 @@ class MicroCluster:
 
 @dataclass
 class MicroRef:
-    """`online_core::Micro`, operation for operation (docs/CLUSTERING.md
+    """`rheon_core::Micro`, operation for operation (docs/CLUSTERING.md
     section 6.5): DenStream-style micro-clusters on the shared summary, a
     linkage macro step at each checkpoint."""
 

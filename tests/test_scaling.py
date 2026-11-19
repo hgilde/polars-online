@@ -1,10 +1,10 @@
 """How the Python surfaces' cost grows with the specs on one stream and with
 the stream's length (docs/PERFORMANCE.md, "How cost grows with size").
 
-The Rust cells (``crates/online-bench/tests/scaling.rs``) hold the bank, the
+The Rust cells (``crates/rheon-bench/tests/scaling.rs``) hold the bank, the
 runner and the models by their allocations and saved bytes as well as their
 time. What the Python surfaces add on top is their own per-call work: the
-chunked :class:`~polars_online.ModelBank` call, and the IO source behind
+chunked :class:`~rheon.ModelBank` call, and the IO source behind
 ``LazyFrame.online.fit_predict``, which reads the plan's batches and builds
 each output frame. Each case here times one workload at several sizes, the
 least of several rounds interleaved, in CPU time. A stream's length is held
@@ -30,7 +30,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "extended"
 pytestmark = pytest.mark.extended(reason="timing: each case runs two sizes five times")

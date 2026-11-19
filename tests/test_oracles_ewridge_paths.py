@@ -22,7 +22,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from reference_paths import ewridge_paths_ref
 from test_oracles_lasso_paths import FEATURES, TARGETS, _stream
 
@@ -176,7 +176,7 @@ class TestTheSchedule:
     runs on the documented schedule."""
 
     # The 0.5 slot is ridge-dominated on purpose, which ReadinessWarning says.
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     def test_the_default_cadence_over_a_grid_of_ridges_and_sets(self):
         """No ``solve_every``: a solve once the weight learned since the last
         reaches ``ln 2 / 50`` of the weight the fit holds (task 115 (b); in
@@ -215,7 +215,7 @@ class TestTheSchedule:
         _check(df, 40.0)
 
     # The 0.5 slot is ridge-dominated on purpose, which ReadinessWarning says.
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     def test_blocked_grams_keep_the_schedule(self):
         """``gram_block_rows = 8`` beside a row cap of 8 and a clock cadence
         of 5: the blocked sums solve to the same fits."""
@@ -232,7 +232,7 @@ class TestTheSchedule:
 
 class TestGrids:
     # The 0.5 slot is ridge-dominated on purpose, which ReadinessWarning says.
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     def test_standardized_ridges_read_pairwise(self):
         """Two ridges on the correlation scale, ``pairwise`` gaps and a row
         cap of 4 in place of a clock cadence."""
@@ -255,7 +255,7 @@ class TestGrids:
 
 class TestWithoutAnIntercept:
     # The 0.3 slot is ridge-dominated on purpose, which ReadinessWarning says.
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     @pytest.mark.parametrize("standardize", [False, True])
     def test_nothing_is_centred(self, standardize):
         """Features at levels an intercept would absorb; the ridge is on

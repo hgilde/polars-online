@@ -19,7 +19,7 @@ from pathlib import Path
 
 import polars as pl
 
-import polars_online as po
+import rheon as po
 import test_api_surface
 import test_budgets_memory
 import test_edge_cases
@@ -27,14 +27,14 @@ import test_golden_pipeline
 import test_kwargs_typing
 import test_portability
 import test_semantics_all_models
-from polars_online import _polars_online as _native
-from polars_online import _spec
+from rheon import _rheon as _native
+from rheon import _spec
 
 TIER = "essential"
 
 ROOT = Path(__file__).resolve().parent.parent
 README = ROOT / "README.md"
-CORE_GOLDEN = ROOT / "crates" / "online-core" / "tests" / "golden.rs"
+CORE_GOLDEN = ROOT / "crates" / "rheon-core" / "tests" / "golden.rs"
 
 #: Builder -> the least it needs beyond targets/features/half-life to be
 #: constructible; ``None`` drops that argument. A new builder goes here first,
@@ -180,7 +180,7 @@ def fullest(name: str) -> dict:
     return builder("m", **kw)
 
 
-#: What ``polars_online.spec`` exports besides builders.
+#: What ``rheon.spec`` exports besides builders.
 HELPERS = {"output_fields", "coef_fields", "coef_index", "output_index"}
 
 
@@ -350,7 +350,7 @@ def test_every_kind_reports_back_the_dict_its_builder_made():
     """A bank's ``specs`` are the dicts that built it, for every kind. The
     ``marginal`` builder wrote eleven optional keys as ``None``, which the
     Rust spec skips when absent, on purpose: a key written as null moves
-    every spec's bytes (``crates/online-polars/src/spec.rs``, above
+    every spec's bytes (``crates/rheon-polars/src/spec.rs``, above
     ``lags``). So ``ModelBank([s]).specs[0] != s``, and a state saved and
     loaded compared unequal to its own spec (review 2026-10-05, the TB5
     leg in ``tests/test_properties_temporal.py``)."""
@@ -466,7 +466,7 @@ def test_every_builder_has_a_per_model_test_file():
 
 
 def test_the_core_golden_file_pins_every_model():
-    """`crates/online-core/tests/golden.rs` pins the core arithmetic of a
+    """`crates/rheon-core/tests/golden.rs` pins the core arithmetic of a
     model with a `fn <kind>_golden()`, so that a divergence the pipeline
     check above reports can be placed in the core or above it. It went four
     models without one (`sgd`, `pa`, `holt`, `ew_cov`) before this check."""
@@ -477,12 +477,12 @@ def test_the_core_golden_file_pins_every_model():
 
 
 def test_the_cross_os_hand_off_holds_every_kind():
-    """`crates/online-polars/tests/state_portability.rs` writes the state
+    """`crates/rheon-polars/tests/state_portability.rs` writes the state
     `release.yml` hands from macOS to Windows and Linux, and hard rule 5
     promises every kind's state loads on both. Its bank held one `ewridge`
     spec (review 2026-10-06, TA2); it holds each builder's kind by name
     now, each spec named after its builder, and this keeps it so."""
-    text = (ROOT / "crates" / "online-polars" / "tests" / "state_portability.rs").read_text(
+    text = (ROOT / "crates" / "rheon-polars" / "tests" / "state_portability.rs").read_text(
         encoding="utf-8"
     )
     table = text.split("const SPECS", 1)[1].split("];", 1)[0]
@@ -606,12 +606,12 @@ def test_every_builders_output_rubric_names_the_fields_its_plainest_spec_writes(
 
 def test_the_field_grammar_names_every_field_a_grid_writes():
     """Review 2026-10-05 (YA10): the grammar block of
-    :mod:`polars_online.spec` left out the per-instance ``settled_frac``,
+    :mod:`rheon.spec` left out the per-instance ``settled_frac``,
     ``withheld_reason`` and ``support_coef`` a half-life grid writes. And
     review 2026-10-06 (YA7): it left out what a lasso path and a selection
     write, ``penalty_selected_<t>`` and ``selected_<t>``, so the grid below
     holds a lasso path with both switches on, beside the ridge grid."""
-    from polars_online import spec as spec_module
+    from rheon import spec as spec_module
 
     block = re.search(
         r"^A grid writes one set of fields per instance.*?code-block:: text\n\n(.*?)\n\n",

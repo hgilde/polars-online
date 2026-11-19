@@ -1,0 +1,682 @@
+//! Task 221's diagnostics for one model instance: the accumulators that keep
+//! a memory of their own, defaulting to a multiple of the instance's
+//! half-life ([`Spec::memory_multiple`]: 4 for the calibration, 1 for the
+//! others), `inf` the run-once form (docs/PLAN.md task 221).
+//!
+//! Each reads the row's out-of-sample prediction and residual as the other
+//! residual diagnostics do -- before the row folds into it, so a field never
+//! includes the row it describes -- and each folds the row only when the
+//! row is learned: under `embargo` at its release, with the prediction the
+//! row was scored with. And only once the instance is ready (task 232 (1);
+//! review round 6, F-1): a row the gates withheld has no residual, and
+//! beside a fit that forgets the stream must also be 95% settled on the
+//! fit's memory, and a standardizing `sgd` or `pa` past its scaler's
+//! warm-up. Folded from the first prediction, `rls`'s warm-up residuals on
+//! a target at 5,000 -- the prior's bias, thousands of noise sds -- held
+//! Jarque and Bera's statistic past its 5% value on 81% of rows 1,000-2,000
+//! at a half-life of 50; from readiness, on 4.9%. The twin fits and the
+//! feature health read no prediction, and fold every row. Their per-slot values ride in one output buffer,
+//! [`crate::ChunkOut::checks`], [`value_names`]' count of them per slot.
+
+use rheon_core::{
+    Breaks, Calibration, Coverage, Decay, FeatureHealth, Influence, Sandwich, Specification, Tails,
+    TwinFit,
+};
+use serde::{Deserialize, Serialize};
+
+use crate::spec::diagnostics::half_life_of;
+use crate::spec::{ModelKind, Spec};
+
+/// The values one slot writes, in their order in the `checks` buffer, with
+/// the field each becomes (`<name>_<slot>`).
+pub fn value_names(spec: &Spec) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if spec.emit_calibration {
+        if spec.quantile_level().is_some() {
+            // A quantile fit's calibration is its coverage (task 232 (6)).
+            out.extend(["calibration_coverage", "calibration_wald"]);
+        } else {
+            out.extend([
+                "calibration_slope",
+                "calibration_intercept",
+                "calibration_wald",
+            ]);
+        }
+    }
+    if spec.emit_breaks {
+        out.extend(["studentized", "cusum", "cusum_sq", "break_wald"]);
+    }
+    if spec.emit_specification {
+        // Ramsey's RESET by its author's name: `reset` alone read as the
+        // clock rules' `resets` and `drift_action = "reset"` (task 244).
+        out.extend(["ljung_box", "breusch_pagan", "ramsey_reset"]);
+    }
+    if spec.emit_tails {
+        out.extend(["skew", "kurtosis", "jarque_bera"]);
+    }
+    if spec.emit_influence {
+        out.push("influence");
+    }
+    out
+}
+
+/// What one instance's diagnostics are configured with, from the spec:
+/// each one's decay -- its own memory, or the instance's -- and, for the
+/// breaks' twin fits, the features each slot's coefficients cover.
+#[derive(Debug, Clone)]
+pub struct CheckCfg {
+    /// The longest finite memory the model keeps, which a diagnostic's
+    /// readiness reads (task 232 (1), task 234; [`Spec::ready_memory`]).
+    ready: Decay,
+    calibration: Decay,
+    breaks: Decay,
+    robust: Decay,
+    specification: Decay,
+    tails: Decay,
+    influence: Decay,
+    health: Decay,
+    /// Newey and West's lags, `0` for HC0 alone.
+    lags: usize,
+    /// The diagnostics' own Newey-West lags under a horizon, `0` without
+    /// one ([`Spec::nw_lags`]; task 232 (3)).
+    nw: usize,
+    /// What the windowed CUSUM's null absorbs, `(window, h_fit)`, where the
+    /// fit takes part of every level it sums; `None` where the CUSUM keeps
+    /// the plain sum. With the breaks' memory `h_breaks`, its null's share
+    /// of the plain variance at each row follows from how far the sums have
+    /// filled ([`rheon_core::cusum_null_at`]), and the CUSUM of squares'
+    /// from its scale's ([`rheon_core::cusum_sq_null_at`]; task 232 (4),
+    /// task 278 D-B5).
+    cusum_absorber: Option<(f64, f64)>,
+    h_breaks: f64,
+    /// A quantile fit's level: its calibration is a coverage and its CUSUM
+    /// sums indicators (task 232 (6)).
+    quantile: Option<f64>,
+    /// Per combo (slot `s` is combo `s % n_combos`), the features its fit
+    /// reads, as positions in the spec's features: an `ewridge` feature
+    /// set's, or every feature.
+    combo_features: Vec<Vec<usize>>,
+    /// Whether the fits carry an intercept: the spec's, and `holt`'s level,
+    /// which has no feature to stand on.
+    intercept: bool,
+    /// The coefficients per slot, as `coef` lays them out: the features and
+    /// the spec's intercept.
+    width: usize,
+}
+
+impl CheckCfg {
+    pub fn of(spec: &Spec, model: Decay) -> Self {
+        let all: Vec<usize> = (0..spec.k()).collect();
+        let combo_features = match &spec.model {
+            ModelKind::EwRidge {
+                feature_sets: Some(sets),
+                ridge,
+                ..
+            } => {
+                let nr = ridge.as_ref().map_or(1, |r| r.to_vec().len());
+                sets.iter()
+                    .flat_map(|(_, cols)| {
+                        let idx: Vec<usize> = cols
+                            .iter()
+                            .filter_map(|c| spec.features.iter().position(|f| f == c))
+                            .collect();
+                        std::iter::repeat_n(idx, nr)
+                    })
+                    .collect()
+            }
+            // One combo per set, a single ridge (task 272 (a)).
+            ModelKind::Huber {
+                feature_sets: Some(sets),
+                ..
+            } => sets
+                .iter()
+                .map(|(_, cols)| {
+                    cols.iter()
+                        .filter_map(|c| spec.features.iter().position(|f| f == c))
+                        .collect()
+                })
+                .collect(),
+            _ => vec![all; crate::stream::combos(spec).len()],
+        };
+        let mut cfg = Self {
+            ready: spec.ready_memory(model),
+            calibration: spec.diagnostic_decay_of(
+                spec.calibration_half_life.as_ref(),
+                model,
+                Spec::memory_multiple("calibration_half_life"),
+            ),
+            breaks: spec.diagnostic_decay_of(
+                spec.breaks_half_life.as_ref(),
+                model,
+                Spec::memory_multiple("breaks_half_life"),
+            ),
+            robust: spec.diagnostic_decay_of(
+                spec.robust_se_half_life.as_ref(),
+                model,
+                Spec::memory_multiple("robust_se_half_life"),
+            ),
+            specification: spec.diagnostic_decay_of(
+                spec.specification_half_life.as_ref(),
+                model,
+                Spec::memory_multiple("specification_half_life"),
+            ),
+            tails: spec.diagnostic_decay_of(
+                spec.tails_half_life.as_ref(),
+                model,
+                Spec::memory_multiple("tails_half_life"),
+            ),
+            influence: spec.diagnostic_decay_of(
+                spec.influence_half_life.as_ref(),
+                model,
+                Spec::memory_multiple("influence_half_life"),
+            ),
+            health: spec.diagnostic_decay_of(
+                spec.feature_health_half_life.as_ref(),
+                model,
+                Spec::memory_multiple("feature_health_half_life"),
+            ),
+            lags: spec.robust_se_lags_or_default(),
+            nw: spec.nw_lags(),
+            cusum_absorber: None,
+            h_breaks: f64::INFINITY,
+            quantile: spec.quantile_level(),
+            combo_features,
+            intercept: spec.fit_intercept || spec.k() == 0,
+            width: spec.k() + usize::from(spec.fit_intercept),
+        };
+        // A least-squares fit with an intercept absorbs a level as an EW
+        // mean at its own memory, and takes that part of every mean the
+        // CUSUM would sum; the scale the CUSUM of squares is studentized by
+        // does the same to the squares (task 232 (4)). Measured on clean
+        // streams at a half-life of 200, the CUSUM's spread read 1.04-1.08
+        // beside `ewridge`, `rls`, `lasso` and `kalman` at memories of 50,
+        // 200 and 800. The others absorb at a pace of their own: `huber`'s
+        // and `quantile`'s weights, the gradient fits' learning rates, and
+        // `holt`'s trend. With the share their spreads read 1.07-1.74
+        // (`huber`, `quantile`) and 0.57-1.13 (`sgd`, `pa`, `ftrl`); without
+        // it `huber` reads 0.57-0.95 and the gradient fits 0.30-0.79,
+        // conservative, so they keep the plain sum. So does `holt`, which
+        // reads 0.51-0.94 from its readiness on its trend (task 234). The
+        // level is absorbed at the intercept's memory, which for a `kalman`
+        // with a `coef_half_life` per coefficient is the intercept's entry,
+        // not the shortest (review round 7, A-1), and under `window_size`
+        // over the window, as a rolling mean weighted by the decay inside
+        // it, not as an exponential of the window's Kish size (A-3).
+        let ((h_fit, window), h_breaks) = (spec.level_absorber(model), half_life_of(cfg.breaks));
+        let least_squares = matches!(
+            spec.model,
+            ModelKind::EwRidge { .. }
+                | ModelKind::Rls { .. }
+                | ModelKind::Lasso { .. }
+                | ModelKind::Kalman { .. }
+        );
+        // `quantile` absorbs its coverage the same way: its indicators' CUSUM
+        // (task 232 (6)) read a spread of 0.75 at its memory and 0.49-0.56
+        // at four times it, the shares' 0.71 and 0.45, and over the share
+        // 1.06 and 1.10-1.24. `sgd`'s quantile loss keeps the gradient fits'
+        // plain sum: over the share it read 0.98-1.51.
+        let quantile_fit = matches!(spec.model, ModelKind::Quantile { .. });
+        if (least_squares || quantile_fit) && spec.fit_intercept {
+            cfg.cusum_absorber = Some((window, h_fit));
+        }
+        cfg.h_breaks = h_breaks;
+        cfg
+    }
+
+    /// Whether `se_coef_hac` is written: a lag to weigh.
+    pub fn hac(&self) -> bool {
+        self.lags > 0
+    }
+
+    /// The longest finite memory the model keeps: the stream is ready for
+    /// the diagnostics once it has settled on it (task 232 (1), task 234).
+    pub fn ready(&self) -> Decay {
+        self.ready
+    }
+}
+
+/// One row as the diagnostics read it, per slot of the instance.
+pub struct RowView<'a> {
+    /// Each slot's prediction: under an embargo, at a release, the one the
+    /// row was scored with.
+    pub preds: &'a [f64],
+    /// Each slot's residual, NaN where there is none.
+    pub resid: &'a [f64],
+    /// Each slot's error inflation for the row's features, where the model
+    /// reads one (`ewridge`, `rls`, `kalman`); `None` stands in 1.
+    pub inflation: Option<&'a [f64]>,
+    /// The targets and the features.
+    pub ys: &'a [Option<f64>],
+    pub xs: &'a [f64],
+    /// Slots per target: slot `s` belongs to target `s / nc`.
+    pub nc: usize,
+}
+
+impl RowView<'_> {
+    /// Slot `slot`'s residual and error inflation, NaN where missing.
+    fn resid_and_inflation(&self, slot: usize) -> (f64, f64) {
+        let e = self.resid.get(slot).copied().unwrap_or(f64::NAN);
+        let infl = self
+            .inflation
+            .and_then(|v| v.get(slot).copied())
+            .unwrap_or(f64::NAN);
+        (e, infl)
+    }
+}
+
+/// One model instance's task-221 accumulators, empty where their switch is
+/// off. Persisted with the stream ([`crate::stream::Persisted::checks`]).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Checks {
+    /// Mincer–Zarnowitz per slot, under `emit_calibration`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub calibration: Vec<Calibration>,
+    /// A quantile fit's coverage per slot, under `emit_calibration`, in
+    /// place of Mincer–Zarnowitz (task 232 (6)).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub coverage: Vec<Coverage>,
+    /// The studentized residuals' CUSUM sums per slot, under `emit_breaks`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub breaks: Vec<Breaks>,
+    /// The fast and slow fits per target, under `emit_breaks`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub twin: Vec<TwinFit>,
+    /// The robust covariances' sums per slot, under `emit_robust_se`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sandwich: Vec<Sandwich>,
+    /// Ljung and Box's, Breusch and Pagan's and RESET's sums per slot,
+    /// under `emit_specification`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub specification: Vec<Specification>,
+    /// The recursive residuals' tails per slot, under `emit_tails`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tails: Vec<Tails>,
+    /// The recursive residuals' spread the influence reads, per slot,
+    /// under `emit_influence`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub influence: Vec<Influence>,
+    /// Each feature's fast and slow moments, under `emit_feature_health`:
+    /// one per instance, not per slot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub health: Option<FeatureHealth>,
+}
+
+impl Checks {
+    /// Fresh accumulators for `n_slots` slots, as `spec` switches them on.
+    pub fn new(spec: &Spec, n_slots: usize) -> Self {
+        let on = |flag: bool, n: usize| if flag { n } else { 0 };
+        let quantile = spec.quantile_level();
+        Self {
+            calibration: vec![
+                Calibration::with_lags(spec.nw_lags());
+                on(spec.emit_calibration && quantile.is_none(), n_slots)
+            ],
+            coverage: vec![
+                Coverage::new(quantile.unwrap_or(0.5), spec.nw_lags());
+                on(spec.emit_calibration && quantile.is_some(), n_slots)
+            ],
+            breaks: vec![
+                Breaks::with_lags(spec.nw_lags()).with_indicator(quantile.is_some());
+                on(spec.emit_breaks, n_slots)
+            ],
+            twin: vec![TwinFit::new(spec.k()); on(spec.emit_breaks, spec.m())],
+            sandwich: vec![
+                Sandwich::new(
+                    spec.k(),
+                    spec.fit_intercept,
+                    spec.robust_se_lags_or_default()
+                );
+                on(spec.emit_robust_se, n_slots)
+            ],
+            specification: vec![
+                Specification::new(
+                    spec.k(),
+                    spec.ljung_box_skip(),
+                    spec.ljung_box_lags_or_default(),
+                    spec.nw_lags()
+                );
+                on(spec.emit_specification, n_slots)
+            ],
+            tails: vec![Tails::new(); on(spec.emit_tails, n_slots)],
+            influence: vec![Influence::new(); on(spec.emit_influence, n_slots)],
+            health: spec
+                .emit_feature_health
+                .then(|| FeatureHealth::new(spec.k())),
+        }
+    }
+
+    /// Whether any switch is on: a spec with none keeps no `Checks`.
+    pub fn any(spec: &Spec) -> bool {
+        spec.emit_calibration
+            || spec.emit_breaks
+            || spec.emit_robust_se
+            || spec.emit_specification
+            || spec.emit_tails
+            || spec.emit_influence
+            || spec.emit_feature_health
+    }
+
+    /// Whether a restored set is shaped as `fresh`, this spec's: the same
+    /// accumulators, each shaped to be read and folded.
+    pub fn fits(&self, fresh: &Self, spec: &Spec) -> bool {
+        let (k, lags, nw) = (spec.k(), spec.robust_se_lags_or_default(), spec.nw_lags());
+        self.calibration.len() == fresh.calibration.len()
+            && self.coverage.len() == fresh.coverage.len()
+            && self
+                .coverage
+                .iter()
+                .all(|c| c.has_shape(spec.quantile_level().unwrap_or(0.5), nw))
+            && self.breaks.len() == fresh.breaks.len()
+            && self.twin.len() == fresh.twin.len()
+            && self.sandwich.len() == fresh.sandwich.len()
+            && self.specification.len() == fresh.specification.len()
+            && self.tails.len() == fresh.tails.len()
+            && self.tails.iter().all(Tails::has_shape)
+            && self.influence.len() == fresh.influence.len()
+            && self.influence.iter().all(Influence::has_shape)
+            && self.health.is_some() == fresh.health.is_some()
+            && self.health.as_ref().is_none_or(|h| h.has_shape(k))
+            && self.specification.iter().all(|s| {
+                s.has_shape(
+                    k,
+                    spec.ljung_box_skip(),
+                    spec.ljung_box_lags_or_default(),
+                    nw,
+                )
+            })
+            && self.calibration.iter().all(|c| c.has_shape(nw))
+            && self.breaks.iter().all(|b| b.has_shape(nw))
+            && self.twin.iter().all(|t| t.has_shape(k))
+            && self
+                .sandwich
+                .iter()
+                .all(|s| s.has_shape(k, spec.fit_intercept, lags))
+    }
+
+    /// The rows behind this one are no longer adjacent to it -- a capped gap
+    /// or a session change -- so none is a lag of the next.
+    pub fn clear_lags(&mut self) {
+        self.sandwich.iter_mut().for_each(Sandwich::clear_lags);
+        self.specification
+            .iter_mut()
+            .for_each(Specification::clear_lags);
+        self.calibration
+            .iter_mut()
+            .for_each(Calibration::clear_lags);
+        self.coverage.iter_mut().for_each(Coverage::clear_lags);
+        self.breaks.iter_mut().for_each(Breaks::clear_lags);
+    }
+
+    /// Every slot's robust standard errors, flattened in `coef`'s layout,
+    /// HC0's or (`hac`) Newey and West's: `None` until any slot has one.
+    pub fn robust_se(&self, cfg: &CheckCfg, hac: bool) -> Option<Vec<f64>> {
+        if self.sandwich.is_empty() {
+            return None;
+        }
+        let nc = cfg.combo_features.len().max(1);
+        let width = cfg.width;
+        let mut any = false;
+        let mut out = Vec::with_capacity(self.sandwich.len() * width);
+        for (slot, s) in self.sandwich.iter().enumerate() {
+            match cfg
+                .combo_features
+                .get(slot % nc)
+                .and_then(|idx| s.standard_errors(idx, hac))
+            {
+                Some(v) => {
+                    any = true;
+                    out.extend(v);
+                }
+                None => out.extend(std::iter::repeat_n(f64::NAN, width)),
+            }
+        }
+        any.then_some(out)
+    }
+
+    /// Each slot's recursive residual into `v`, under `emit_breaks`:
+    /// `resid / error_inflation`, 1 standing in for the inflation on a model
+    /// without one, and NaN where there is no residual or the inflation is
+    /// not finite (a model that has not solved). Its studentized residual
+    /// is [`Breaks::studentized`]'s, against the spread before the row.
+    pub fn recursive(&self, row: &RowView<'_>, v: &mut Vec<f64>) {
+        v.clear();
+        if self.breaks.is_empty() && self.tails.is_empty() {
+            return;
+        }
+        v.extend(row.resid.iter().enumerate().map(|(slot, &r)| {
+            let infl = row
+                .inflation
+                .map_or(1.0, |v| v.get(slot).copied().unwrap_or(f64::NAN));
+            if r.is_finite() && infl.is_finite() && infl > 0.0 {
+                r / infl
+            } else {
+                f64::NAN
+            }
+        }));
+    }
+
+    /// Write the values each slot reads before the row -- the row's own
+    /// studentized residual, from its recursive residual `rec`, beside the
+    /// sums before it -- value `v` of slot `s` at `(v·n_slots + s)·n_rows +
+    /// ri` of `out`, the instance's block.
+    #[allow(clippy::too_many_arguments)]
+    pub fn read(
+        &self,
+        cfg: &CheckCfg,
+        row: &RowView<'_>,
+        rec: &[f64],
+        n_slots: usize,
+        n_rows: usize,
+        ri: usize,
+        out: &mut [f64],
+    ) {
+        let mut put = |v: usize, slot: usize, x: Option<f64>| {
+            out[(v * n_slots + slot) * n_rows + ri] = x.unwrap_or(f64::NAN);
+        };
+        let mut v = 0;
+        if !self.calibration.is_empty() {
+            for (slot, c) in self.calibration.iter().enumerate() {
+                put(v, slot, c.slope());
+                put(v + 1, slot, c.intercept());
+                put(v + 2, slot, c.wald());
+            }
+            v += 3;
+        }
+        if !self.coverage.is_empty() {
+            for (slot, c) in self.coverage.iter().enumerate() {
+                put(v, slot, c.coverage());
+                put(v + 1, slot, c.wald());
+            }
+            v += 2;
+        }
+        if !self.breaks.is_empty() {
+            let nc = cfg.combo_features.len().max(1);
+            for (slot, b) in self.breaks.iter().enumerate() {
+                put(v, slot, rec.get(slot).and_then(|&r| b.studentized(r)));
+                // Each null's share as far as the sums have filled: a young
+                // sum is mostly its plain variance (task 278, D-B5).
+                let x = b.elapsed();
+                let share = cfg.cusum_absorber.map_or(1.0, |(window, h_fit)| {
+                    rheon_core::cusum_null_at(window, h_fit, cfg.h_breaks, x)
+                });
+                let sq_share = rheon_core::cusum_sq_null_at(cfg.h_breaks, x, b.scale_lead(x));
+                put(v + 1, slot, b.cusum(share));
+                put(v + 2, slot, b.cusum_sq(sq_share));
+                // Under a horizon the noise's variance is the long-run one,
+                // read from the slot's own studentized residuals -- on a
+                // quantile fit too, whose CUSUM sums indicators (review
+                // round 7, A-2).
+                let long_run = if cfg.nw > 0 {
+                    b.long_run_residuals()
+                } else {
+                    Some(1.0)
+                };
+                let wald = self.twin.get(slot / nc).and_then(|t| {
+                    t.wald(cfg.combo_features.get(slot % nc)?, cfg.intercept, long_run?)
+                });
+                put(v + 3, slot, wald);
+            }
+            v += 4;
+        }
+        if !self.specification.is_empty() {
+            let nc = cfg.combo_features.len().max(1);
+            // Box and Pierce's form under a memory that forgets, Ljung and
+            // Box's run once (review round 6, B-3).
+            let forget = match cfg.specification {
+                Decay::Halflife(h) => h.is_finite(),
+                Decay::Lam(l) => l < 1.0,
+            };
+            for (slot, s) in self.specification.iter().enumerate() {
+                put(v, slot, s.ljung_box(forget));
+                let idx = cfg.combo_features.get(slot % nc);
+                put(v + 1, slot, idx.and_then(|idx| s.breusch_pagan(idx)));
+                put(v + 2, slot, s.reset());
+            }
+            v += 3;
+        }
+        if !self.tails.is_empty() {
+            for (slot, t) in self.tails.iter().enumerate() {
+                put(v, slot, t.skew());
+                put(v + 1, slot, t.kurtosis());
+                put(v + 2, slot, t.jarque_bera());
+            }
+            v += 3;
+        }
+        if !self.influence.is_empty() {
+            for (slot, i) in self.influence.iter().enumerate() {
+                let (e, infl) = row.resid_and_inflation(slot);
+                put(v, slot, i.of(e, infl));
+            }
+            v += 1;
+        }
+        let _ = v;
+    }
+
+    /// Write each feature's health before the row, under
+    /// `emit_feature_health`: the spread ratio of feature `i` at `(i·n_rows
+    /// + ri)` of `out`, its mean shift `k` blocks on.
+    pub fn read_health(&self, k: usize, n_rows: usize, ri: usize, out: &mut [f64]) {
+        let Some(h) = &self.health else { return };
+        for i in 0..k {
+            let (ratio, shift) = h.read(i).unzip();
+            out[i * n_rows + ri] = ratio.unwrap_or(f64::NAN);
+            out[(k + i) * n_rows + ri] = shift.unwrap_or(f64::NAN);
+        }
+    }
+
+    /// Fold one learned row: `row` and its recursive residuals `rec`, the
+    /// row's clock step and weight. A slot with no prediction or no target,
+    /// and a row of weight 0, only age (CLAUDE.md hard rule 9). Until the
+    /// instance is `ready` (task 232 (1)) a row's residuals only age the
+    /// accumulators that read them; the twin fits and the feature health,
+    /// which read the target and the features alone, fold it.
+    pub fn learn(
+        &mut self,
+        cfg: &CheckCfg,
+        d_clock: f64,
+        row: &RowView<'_>,
+        rec: &[f64],
+        w: f64,
+        ready: bool,
+    ) {
+        let nc = row.nc.max(1);
+        // The weight the residuals fold at: none before the instance is
+        // ready, which only ages them.
+        let (wd, w) = (if ready { w } else { 0.0 }, w);
+        if !self.calibration.is_empty() {
+            let lam = cfg.calibration.factor(d_clock);
+            for (slot, c) in self.calibration.iter_mut().enumerate() {
+                let y = row.ys.get(slot / nc).copied().flatten().unwrap_or(f64::NAN);
+                c.update(row.preds[slot], y, lam, wd);
+            }
+        }
+        if !self.coverage.is_empty() {
+            let lam = cfg.calibration.factor(d_clock);
+            for (slot, c) in self.coverage.iter_mut().enumerate() {
+                let y = row.ys.get(slot / nc).copied().flatten().unwrap_or(f64::NAN);
+                c.update(row.preds[slot], y, lam, wd);
+            }
+        }
+        if !self.breaks.is_empty() {
+            let lam = cfg.breaks.factor(d_clock);
+            for (slot, b) in self.breaks.iter_mut().enumerate() {
+                // A quantile fit's CUSUM sums its standardized indicator.
+                let c = cfg.quantile.and_then(|q| {
+                    let y = row.ys.get(slot / nc).copied().flatten()?;
+                    let p = row.preds[slot];
+                    (p.is_finite() && y.is_finite())
+                        .then(|| (f64::from(u8::from(y < p)) - q) / (q * (1.0 - q)).sqrt())
+                });
+                b.update(rec.get(slot).copied().unwrap_or(f64::NAN), lam, wd, c);
+            }
+            for (t, fit) in self.twin.iter_mut().enumerate() {
+                let y = row.ys.get(t).copied().flatten().unwrap_or(f64::NAN);
+                fit.update(row.xs, y, lam, w);
+            }
+        }
+        if let Some(h) = self.health.as_mut() {
+            h.update(row.xs, cfg.health.factor(d_clock), w);
+        }
+        if !self.influence.is_empty() {
+            let lam = cfg.influence.factor(d_clock);
+            for (slot, i) in self.influence.iter_mut().enumerate() {
+                let (e, infl) = row.resid_and_inflation(slot);
+                i.update(e, infl, lam, wd);
+            }
+        }
+        if !self.tails.is_empty() {
+            let lam = cfg.tails.factor(d_clock);
+            for (slot, t) in self.tails.iter_mut().enumerate() {
+                t.update(rec.get(slot).copied().unwrap_or(f64::NAN), lam, wd);
+            }
+        }
+        if !self.specification.is_empty() {
+            let lam = cfg.specification.factor(d_clock);
+            for (slot, s) in self.specification.iter_mut().enumerate() {
+                let e = row.resid.get(slot).copied().unwrap_or(f64::NAN);
+                s.update(row.xs, row.preds[slot], e, lam, wd);
+            }
+        }
+        if !self.sandwich.is_empty() {
+            let lam = cfg.robust.factor(d_clock);
+            for (slot, s) in self.sandwich.iter_mut().enumerate() {
+                s.update(
+                    row.xs,
+                    row.resid.get(slot).copied().unwrap_or(f64::NAN),
+                    lam,
+                    wd,
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn kalman(fit_intercept: bool, halves: &str) -> Spec {
+        serde_json::from_str(&format!(
+            r#"{{"name": "m", "targets": ["y"], "features": ["a", "b"],
+                "fit_intercept": {fit_intercept},
+                "model": {{"type": "kalman", "coef_half_life": {halves}}}}}"#
+        ))
+        .unwrap()
+    }
+
+    /// A `kalman` whose `coef_half_life` list gives each coefficient its
+    /// own absorbs a level at the intercept's entry, the list's first.
+    /// Without an intercept the first entry is a slope's, and no absorber
+    /// is taken: the CUSUM keeps the plain sum, whatever the list says, so
+    /// the slope's half-life never reads as the intercept's (task 356).
+    #[test]
+    fn a_kalman_without_an_intercept_takes_no_level_absorber() {
+        let h = Decay::Halflife(20.0);
+        let with = CheckCfg::of(&kalman(true, "[30.0, 10.0, 10.0]"), h);
+        assert_eq!(with.cusum_absorber, Some((f64::INFINITY, 30.0)));
+        for halves in ["[5.0, 10.0]", "[\"inf\", 10.0]", "7.0"] {
+            let without = CheckCfg::of(&kalman(false, halves), h);
+            assert_eq!(without.cusum_absorber, None, "{halves}");
+        }
+    }
+}

@@ -38,7 +38,7 @@ env:
   # of `polars-runtime-32`, the same in its 2.0.0 and 2.1.0 wheels), which is x86-64-v3
   # less F16C and XSAVE and plus PCLMULQDQ. `polars-online-compat` is built
   # without them. The import-time CPU check reads every one of these
-  # (python/polars_online/_cpu_check.py); a test holds the two lists equal.
+  # (python/rheon/_cpu_check.py); a test holds the two lists equal.
   X86_FEATURES: "+sse3,+ssse3,+sse4.1,+sse4.2,+popcnt,+cmpxchg16b,+avx,+avx2,+fma,+bmi1,+bmi2,+lzcnt,+pclmulqdq,+movbe"
 
 jobs:
@@ -136,7 +136,7 @@ jobs:
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: sdist
-          args: --out dist -m crates/online-py/Cargo.toml
+          args: --out dist -m crates/rheon-py/Cargo.toml
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sdist
@@ -154,7 +154,7 @@ jobs:
       - uses: PyO3/maturin-action@e83996d129638aa358a18fbd1dfb82f0b0fb5d3b # v1
         with:
           command: sdist
-          args: --out dist-compat -m crates/online-py/Cargo.toml
+          args: --out dist-compat -m crates/rheon-py/Cargo.toml
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: sdist-compat
@@ -217,24 +217,24 @@ jobs:
         include:
           - target: aarch64-apple-darwin
             os: macos-latest
-            bin: polars-online
+            bin: rheon
             cli: true
           # Intel: `macos-13` was retired from the hosted pool; `macos-15-intel`
           # is the label GitHub lists for x64 macOS now (actions/runner-images).
           - target: x86_64-apple-darwin
             os: macos-15-intel
-            bin: polars-online
+            bin: rheon
             cli: true
             x86: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            bin: polars-online.exe
+            bin: rheon.exe
             cli: true
             x86: true
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             manylinux: auto
-            bin: polars-online
+            bin: rheon
             cli: true
             x86: true
           # Built natively on GitHub's arm64 runner, as polars builds its own.
@@ -247,12 +247,12 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
             manylinux: auto
-            bin: polars-online
+            bin: rheon
             cli: true
           - target: x86_64-unknown-linux-musl
             os: ubuntu-latest
             manylinux: musllinux_1_2
-            bin: polars-online
+            bin: rheon
             x86: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -271,7 +271,7 @@ jobs:
 
       # No `uv sync` here: it builds the extension into a venv nobody uses --
       # maturin-action brings its own Python, and the CLI has no pyo3 in its
-      # tree (`cargo tree -p online-cli` finds none). That was 26 minutes of
+      # tree (`cargo tree -p rheon-cli` finds none). That was 26 minutes of
       # the Intel macOS job in the first rehearsal.
 
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
@@ -287,7 +287,7 @@ jobs:
       # The compat package: this checkout renamed to `polars-online-compat`
       # in place, before maturin reads the name, the description and the
       # README into the wheel's metadata (scripts/compat_package.py). The
-      # import name, `polars_online`, does not change.
+      # import name, `rheon`, does not change.
       - name: the project is polars-online-compat
         if: matrix.variant == 'compat'
         run: uv run --no-project --python 3.12 python scripts/compat_package.py
@@ -303,7 +303,7 @@ jobs:
       # `X86_FEATURES`, through RUSTFLAGS, which maturin-action hands on to
       # the manylinux and musllinux containers (it forwards every variable
       # that starts with RUST). Nothing else sets rustflags for this build.
-      # Cargo then hands the same flags to crates/online-py/build.rs, which
+      # Cargo then hands the same flags to crates/rheon-py/build.rs, which
       # records them in the wheel for the import-time CPU check, and the
       # smoke test below holds the record to `X86_FEATURES`. The compat
       # wheels and the ARM wheels get no flag: an empty RUSTFLAGS is none.
@@ -314,12 +314,12 @@ jobs:
         with:
           target: ${{ matrix.target }}
           manylinux: ${{ matrix.manylinux || 'auto' }}
-          args: --release --locked --out dist -m crates/online-py/Cargo.toml
+          args: --release --locked --out dist -m crates/rheon-py/Cargo.toml
           sccache: "true"
 
       # Only on targets the runner builds natively. The musl wheel is
       # cross-compiled and ships without a prebuilt CLI; `cargo build
-      # --release -p online-cli` from a checkout covers it, and the wheel is
+      # --release -p rheon-cli` from a checkout covers it, and the wheel is
       # the artifact that matters for `pip install`.
       #
       # On Linux the CLI is built in the manylinux2014 image the wheel comes
@@ -351,7 +351,7 @@ jobs:
               curl --proto "=https" --tlsv1.2 -sSf https://sh.rustup.rs \
                 | sh -s -- -y --profile minimal --default-toolchain stable
               . "$HOME/.cargo/env"
-              cargo build --release --locked -p online-cli
+              cargo build --release --locked -p rheon-cli
             '
 
       # maturin-action's container runs as root with the workspace
@@ -386,7 +386,7 @@ jobs:
         if: matrix.cli && matrix.variant == 'default' && runner.os != 'Linux'
         env:
           RUSTC_WRAPPER: ""
-        run: cargo build --release --locked -p online-cli
+        run: cargo build --release --locked -p rheon-cli
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -450,7 +450,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-      # No Python here either: `online-polars` has no pyo3 in its tree and
+      # No Python here either: `rheon-polars` has no pyo3 in its tree and
       # the test is pure Rust. The `uv sync` this used to run built the
       # extension into a venv the test never touched (17 minutes on macOS,
       # 23 on Windows in the first rehearsal). `--include-ignored` here and
@@ -460,7 +460,7 @@ jobs:
       - name: write the hand-off state
         env:
           ONLINE_WRITE_STATE: ${{ github.workspace }}/handoff.state
-        run: cargo test --locked -p online-polars --test state_portability -- --include-ignored
+        run: cargo test --locked -p rheon-polars --test state_portability -- --include-ignored
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: handoff-state
@@ -491,12 +491,12 @@ jobs:
       - name: load the macOS-written state and continue the stream
         # Absolute on purpose: the artifact lands in the workspace root, but
         # cargo runs an integration test with the *package* root as its
-        # working directory (crates/online-polars/), so a bare
+        # working directory (crates/rheon-polars/), so a bare
         # `handoff.state` is "No such file or directory". The first
         # rehearsal failed here on both OSes.
         env:
           ONLINE_FOREIGN_STATE: ${{ github.workspace }}/handoff.state
-        run: cargo test --locked -p online-polars --test state_portability -- --include-ignored
+        run: cargo test --locked -p rheon-polars --test state_portability -- --include-ignored
 
   next-polars:
     name: the suite on ${{ matrix.leg }} polars
@@ -590,7 +590,7 @@ jobs:
       - name: versions in play
         run: uv run python -c "import polars; print('py-polars', polars.__version__)"
 
-      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+      - run: uv run maturin develop --release -m crates/rheon-py/Cargo.toml
       # `pins` marks the tests that can only pass on the pinned polars; see
       # the marker's description in pyproject.toml.
       - run: uv run pytest -q -m "not soak and not pins and not oracle_grid"
@@ -629,7 +629,7 @@ jobs:
         env:
           FLOOR: ${{ steps.floor.outputs.version }}
         run: uv run python -c "import os, polars; print('py-polars', polars.__version__); assert polars.__version__ == os.environ['FLOOR']"
-      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+      - run: uv run maturin develop --release -m crates/rheon-py/Cargo.toml
       - run: uv run pytest -q -m "not soak and not pins and not oracle_grid"
 
   next-numpy:
@@ -672,7 +672,7 @@ jobs:
       - run: uv sync ${{ matrix.prerelease }} --upgrade-package numpy
       - name: versions in play
         run: uv run python -c "import numpy, polars; print('numpy', numpy.__version__, '| py-polars', polars.__version__)"
-      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+      - run: uv run maturin develop --release -m crates/rheon-py/Cargo.toml
       - run: uv run pytest -q -m "not soak and not pins and not oracle_grid"
 
   # The run's own measurements, merged into the asset the next release's
@@ -785,7 +785,7 @@ jobs:
         with:
           path: artifacts
       # Two projects, so two folders: the files of `polars-online-compat`
-      # are `polars_online_compat-*` and the others `polars_online-*`, and
+      # are `polars_online_compat-*` and the others `rheon-*`, and
       # each upload step names the one folder, so a file goes to the project
       # its name says. The compat package goes first: it is the one whose
       # PyPI setup is newest, and a refusal there should leave nothing of

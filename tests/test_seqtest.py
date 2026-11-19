@@ -43,8 +43,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
 import reference
+import rheon as po
 
 TIER = "essential"
 
@@ -851,7 +851,7 @@ class TestEdgeCases:
         with pytest.raises(TypeError, match="a seqtest model evidence"):
             po.eval.unpack(out, "m")
 
-    def test_the_cli_runs_both_modes(self, tmp_path, online_cli):
+    def test_the_cli_runs_both_modes(self, tmp_path, rheon_cli):
         df = regression(2000, seed=41, groups=["p", "q"], null_every=7)
         src, dst = tmp_path / "in.parquet", tmp_path / "out.parquet"
         df.write_parquet(src)
@@ -901,7 +901,7 @@ class TestEdgeCases:
             ),
             encoding="utf-8",
         )
-        subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
+        subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         got = pl.read_parquet(dst)
         sides = two_sides(group="g")
         c = po.spec.seqtest("c", targets=["y"], a="fast", b="slow", group="g")
@@ -910,7 +910,7 @@ class TestEdgeCases:
         assert got.equals(want, null_equal=True)
         assert got.schema["c"].fields[2].dtype == pl.Int64
 
-    def test_the_cli_dry_run_lists_the_residual_fields_a_mismatch_needs(self, tmp_path, online_cli):
+    def test_the_cli_dry_run_lists_the_residual_fields_a_mismatch_needs(self, tmp_path, rheon_cli):
         # The dry run opens the input as the run would (task 160, YB12).
         src = tmp_path / "in.parquet"
         pl.DataFrame({"x0": [1.0, 2.0], "y": [1.0, 2.0]}).write_parquet(src)
@@ -943,7 +943,7 @@ class TestEdgeCases:
             encoding="utf-8",
         )
         res = subprocess.run(
-            [str(online_cli), "--config", str(cfg), "--dry-run"],
+            [str(rheon_cli), "--config", str(cfg), "--dry-run"],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -959,7 +959,7 @@ class TestEdgeCases:
         )
         cfg.write_text(ok, encoding="utf-8")
         res = subprocess.run(
-            [str(online_cli), "--config", str(cfg), "--dry-run"],
+            [str(rheon_cli), "--config", str(cfg), "--dry-run"],
             capture_output=True,
             text=True,
             encoding="utf-8",

@@ -5,7 +5,7 @@ run, so small regressions add up against one number rather than each
 passing against the last. Three kinds:
 
 - ``instructions.<case>``: the instructions one block of rows of a hot path
-  executes under Callgrind (``crates/online-bench``), from CI's Linux run;
+  executes under Callgrind (``crates/rheon-bench``), from CI's Linux run;
 - ``memory.<spec>.<field>``: the bytes per row of one output field of a
   standard workload, from ``estimated_size()`` (``tests/test_budgets_memory.py``);
 - ``rss.<case>.<platform>``: the peak resident memory a standard run adds
@@ -81,7 +81,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 BUDGETS = REPO / "budgets.toml"
 CHANGELOG = REPO / "CHANGELOG.md"
-BENCH = REPO / "crates/online-bench/benches/instructions.rs"
+BENCH = REPO / "crates/rheon-bench/benches/instructions.rs"
 #: The bench cases of the scaling table: ``scale_<surface>_by_<dimension>_small``
 #: and ``..._large``, a cell's two sizes.
 SCALE_PREFIX = "scale_"

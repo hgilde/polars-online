@@ -7,7 +7,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from data import synthetic
 from test_model_registry import REGRESSIONS
 
@@ -114,7 +114,7 @@ class TestChunkInvariance:
         runs, so the savers are called here directly."""
         import json
 
-        from polars_online import _polars_online as native
+        from rheon import _rheon as native
 
         refresh = native.RefreshTime(["a", "b"], "series", "t", "v")
         tree = ["rewm_sum", ["col", "x"], {"half_life": 2.0, "window_size": 3.0}]

@@ -22,7 +22,7 @@ import pytest
 
 import ledger
 import long_run as lr
-import polars_online as po
+import rheon as po
 from public_benchmarks import numacc_or_skip
 
 TIER = "mixed"

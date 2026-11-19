@@ -19,7 +19,7 @@ import pytest
 from polars.testing import assert_frame_equal
 
 import child
-import polars_online as po
+import rheon as po
 
 TIER = "mixed"
 
@@ -109,7 +109,7 @@ class TestThreadDeterminism:
     SNIPPET = """
 import sys, numpy as np, polars as pl
 sys.path.insert(0, {tests!r})
-import polars_online as po
+import rheon as po
 from test_portability import _frame, _bank_specs
 out = po.ModelBank(_bank_specs()).fit_predict(_frame(n={n}, groups={groups}, seed=1))
 out.write_ipc({path!r})
@@ -177,7 +177,7 @@ class TestThreadPoolKnob:
 
     def test_read_at_the_first_bank_call_and_fixed_after(self):
         out = self._python(
-            "import os, polars as pl, polars_online as po\n"
+            "import os, polars as pl, rheon as po\n"
             "os.environ['POLARS_ONLINE_MAX_THREADS'] = '3'\n"  # after import: still in time
             "print(po.thread_pool_size())\n"
             "os.environ['POLARS_ONLINE_MAX_THREADS'] = '5'\n"  # after the build: too late
@@ -194,7 +194,7 @@ class TestThreadPoolKnob:
         count = getattr(os, "process_cpu_count", os.cpu_count)
         cores = count() or 1
         out = self._python(
-            "import polars_online as po; print(po.thread_pool_size())",
+            "import rheon as po; print(po.thread_pool_size())",
             RAYON_NUM_THREADS="1",
             POLARS_MAX_THREADS="1",
         )
@@ -203,7 +203,7 @@ class TestThreadPoolKnob:
     def test_a_value_that_is_not_a_count_is_refused_by_name(self):
         tests = str(REPO / "tests")
         out = self._python(
-            "import os, sys, polars_online as po\n"
+            "import os, sys, rheon as po\n"
             f"sys.path.insert(0, {tests!r})\n"
             "from test_portability import _frame, _spec\n"
             "bank = po.ModelBank([_spec()])\n"
@@ -594,8 +594,8 @@ class TestConfigParsing:
     have CRLF endings, and Windows paths need escaping in TOML strings."""
 
     @pytest.fixture(autouse=True)
-    def _exe(self, online_cli):
-        self.exe = online_cli
+    def _exe(self, rheon_cli):
+        self.exe = rheon_cli
 
     def _cli(self, args, **kw):
         return subprocess.run(

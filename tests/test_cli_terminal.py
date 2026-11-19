@@ -1,6 +1,6 @@
 """The command line's progress line, drawn only on a terminal.
 
-The Rust tests beside the binary (``crates/online-cli/tests/surface.rs``)
+The Rust tests beside the binary (``crates/rheon-cli/tests/surface.rs``)
 hold the piped side: a log or a pipe carries no progress line and none of
 its carriage returns. This holds the other side, which needs a terminal, so
 the binary runs here with a pseudo-terminal as its standard error.
@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _drawn(online_cli: Path, config: Path, *args: str) -> str:
+def _drawn(rheon_cli: Path, config: Path, *args: str) -> str:
     """What the binary draws on a terminal standard error, run to its end."""
     import pty
 
@@ -33,7 +33,7 @@ def _drawn(online_cli: Path, config: Path, *args: str) -> str:
     # Read while it runs: a terminal's unread text can go with its last
     # writer, and its buffer is small.
     with subprocess.Popen(
-        [str(online_cli), "--config", str(config), *args],
+        [str(rheon_cli), "--config", str(config), *args],
         stdout=subprocess.DEVNULL,
         stderr=follower,
     ) as proc:
@@ -50,7 +50,7 @@ def _drawn(online_cli: Path, config: Path, *args: str) -> str:
     return drawn.decode("utf-8")
 
 
-def test_the_progress_line_is_drawn_on_a_terminal_unless_quiet(online_cli, tmp_path):
+def test_the_progress_line_is_drawn_on_a_terminal_unless_quiet(rheon_cli, tmp_path):
     n = 50
     pl.DataFrame(
         {
@@ -67,9 +67,9 @@ def test_the_progress_line_is_drawn_on_a_terminal_unless_quiet(online_cli, tmp_p
         'half_life = 20.0\ngap_cap = 5.0\n[specs.model]\ntype = "ewridge"\n',
         encoding="utf-8",
     )
-    drawn = _drawn(online_cli, config)
+    drawn = _drawn(rheon_cli, config)
     # Rewritten in place, chunk by chunk, then ended with a newline, which
     # the terminal turns into a carriage return and a line feed.
     assert drawn.startswith("\r7 rows in 1 chunk\r14 rows in 2 chunks\r"), repr(drawn)
     assert drawn.endswith("\r50 rows in 8 chunks\r\n"), repr(drawn)
-    assert _drawn(online_cli, config, "--quiet") == ""
+    assert _drawn(rheon_cli, config, "--quiet") == ""

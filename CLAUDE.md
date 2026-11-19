@@ -23,12 +23,12 @@ decisions there, not in chat.
 ## Layout
 
 ```
-crates/online-core/    pure Rust models, NO polars dependency, exhaustively unit-tested
-crates/online-polars/  Rust-side integration: the model bank over Arrow chunks (a polars adapter
+crates/rheon-core/    pure Rust models, NO polars dependency, exhaustively unit-tested
+crates/rheon-polars/  Rust-side integration: the model bank over Arrow chunks (a polars adapter
                        builds one from a frame), and the runner over parquet streams
-crates/online-cli/     binary: parquet in -> parquet out, config from TOML
-crates/online-py/      pyo3 + pyo3-polars: the Python ModelBank class
-python/polars_online/  Python package (thin wrappers, frame namespaces)
+crates/rheon-cli/     binary: parquet in -> parquet out, config from TOML
+crates/rheon-py/      pyo3 + pyo3-polars: the Python ModelBank class
+python/rheon/  Python package (thin wrappers, frame namespaces)
 tests/                 pytest (Python) — integration, invariance, oracle tests
 docs/PLAN.md           design + task list
 docs/reference/        Sphinx API reference over the docstrings (RST dialect); -W in gate and CI
@@ -41,13 +41,13 @@ docs/EXTENDING.md      every place a new model touches, with the test that catch
 uv sync                                  # Python env
 scripts/gate.sh                          # the essentials: each commit while a task is in progress
 scripts/gate.sh --extended               # everything: before EVERY push, always
-cargo test --workspace --exclude online-py   # Rust essentials only (online-py has none; see ci.yml)
-cargo test --workspace --exclude online-py -- --include-ignored   # every Rust test
-maturin develop --release -m crates/online-py/Cargo.toml
+cargo test --workspace --exclude rheon-py   # Rust essentials only (rheon-py has none; see ci.yml)
+cargo test --workspace --exclude rheon-py -- --include-ignored   # every Rust test
+maturin develop --release -m crates/rheon-py/Cargo.toml
 uv run pytest -x                         # every Python test (downloads/generates data on first run)
 HYPOTHESIS_PROFILE=essential uv run pytest -m "not extended and not soak"   # Python essentials
 uv run --group docs sphinx-build -W docs/reference docs/_build/html   # API reference (gate + CI)
-cargo run -p online-cli -- --config examples/bank.toml
+cargo run -p rheon-cli -- --config examples/bank.toml
 scripts/quick.sh                         # inside a task: tests for what the branch changed (dev-wheel build)
 scripts/gate.sh --serial                 # either tier in one process (the gate runs tests in parallel)
 scripts/clear_caches.sh --worktrees      # build caches: after each push wave, or under 100 GB free
@@ -92,8 +92,8 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    with the current row's target. Any test that finds otherwise is a bug, not a flake.
 3. **Chunk invariance**: feeding a stream as 1 chunk or 1000 chunks must give identical
    output. There is a test for this; keep it passing.
-4. Models live in `online-core` behind the `OnlineModel` trait and know nothing about
-   Polars, Python, or clocks-as-columns. Plumbing lives in `online-polars` / `online-py`.
+4. Models live in `rheon-core` behind the `OnlineModel` trait and know nothing about
+   Polars, Python, or clocks-as-columns. Plumbing lives in `rheon-polars` / `rheon-py`.
 5. State files are versioned msgpack and must load on both OSes; bump `SCHEMA_VERSION`
    on any layout change. Every schema from `MIN_SCHEMA_VERSION` / `MIN_BANK_SCHEMA_VERSION`
    to `SCHEMA_VERSION` has frozen fixtures (`crates/*/tests/state_fixtures.rs`): the
@@ -112,13 +112,13 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
    Eighteen exceptions, each the user's, are numbered and stated in full in
    `docs/records/STATE-CONTINUATION.md` ("rule 5's Nth exception" means its Nth);
    a new one is added there and counted here.
-6. No `unsafe` in `online-core`. f64 everywhere.
+6. No `unsafe` in `rheon-core`. f64 everywhere.
 7. Commit after each completed task in `docs/PLAN.md`, with the task number in the message.
 8. **`n_eff` -- the models' accessor, emitted as `weight_sum` -- means the same thing in
    every model**: the accumulated weight *before* this
    row's update and *before* its own decay. That is what makes `min_weight` portable
    across a bank. `sgd` and `pa` once applied the row's decay first, so `min_weight`
-   quietly meant a different number of rows for them; `crates/online-core/tests/model_contract.rs`
+   quietly meant a different number of rows for them; `crates/rheon-core/tests/model_contract.rs`
    now checks every model against the same recursion. **Under a `window_size`, `n_eff` is the
    weight inside the window** -- in the field a model emits, in its `min_weight` gate,
    and in its accessor -- because that is what the fit is read from (review 2026-09-12,
@@ -143,7 +143,7 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
   `python scripts/budgets.py apply` on the run's `measured.json` (the
   Budgets artifact) or `memory.json` (`POLARS_ONLINE_BUDGETS_OUT`), so the
   gain is kept. Instruction counts come from CI's Linux Valgrind;
-  `cargo test -p online-bench` runs the cases natively. A proposal that
+  `cargo test -p rheon-bench` runs the cases natively. A proposal that
   changes a data layout, a per-row path or a default that adds work carries
   its measured memory and speed cost (the coef-as-Array lesson, 2026-10-11).
 
@@ -165,7 +165,7 @@ runs both tiers, but a plain `cargo test` skips the extended Rust tests
 
 Static linking of Polars into the wheel is what Polars prescribes for a compiled
 extension, and the `#[global_allocator] static ALLOC: PolarsAllocator` line in
-`online-py` must stay: it keeps allocation coherent between the two copies of Polars
+`rheon-py` must stay: it keeps allocation coherent between the two copies of Polars
 (the evidence, raised and resolved 2026-08-31: `docs/records/LINKING.md`).
 
 13. **Know which of the interfaces a change rides on**: the PyO3 extension types
@@ -192,7 +192,7 @@ extension, and the `#[global_allocator] static ALLOC: PolarsAllocator` line in
   quantity** (the user, 2026-09-27: "Is there no third party oracle
   library?"). Write only the definition by hand, from the paper; let the
   library compute it. In Rust tests, the only ones `cargo mutants` sees, use
-  `crate::oracle` (`crates/online-core/src/oracle.rs`, compiled for tests
+  `crate::oracle` (`crates/rheon-core/src/oracle.rs`, compiled for tests
   only; the user, 2026-10-06): faer's partial-pivot LU and self-adjoint
   eigensolver, which share no arithmetic with `solve.rs`'s Cholesky. Add a
   helper there rather than computing a matrix result in a test module. Its

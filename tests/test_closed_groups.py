@@ -15,7 +15,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from conftest import run_online
 
 TIER = "essential"
@@ -669,7 +669,7 @@ def _ipc_record_batches(path) -> int:
 
 
 @pytest.mark.parametrize(("chunk_size", "batches"), [(7, 3), (100, 1)])
-def test_the_runner_writes_the_sidecar_as_it_goes(tmp_path, chunk_size, batches, online_cli):
+def test_the_runner_writes_the_sidecar_as_it_goes(tmp_path, chunk_size, batches, rheon_cli):
     """The runner drains the bank after every chunk and hands each drain to
     the sidecar's writer, so a closed row reaches the file while the run is
     still going instead of waiting in the bank for its end (review
@@ -684,7 +684,7 @@ def test_the_runner_writes_the_sidecar_as_it_goes(tmp_path, chunk_size, batches,
     df.write_parquet(tmp_path / "in.parquet")
     side = tmp_path / "closed.arrow"
     run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [cov_spec(group_close="monotone")],
         input=tmp_path / "in.parquet",
@@ -729,10 +729,10 @@ def test_a_run_in_which_nothing_closed_writes_the_empty_schema(tmp_path):
     assert dict(got.schema) == dict(empty.schema)
 
 
-def test_closed_groups_is_refused_where_nothing_closes_and_with_predict(tmp_path, online_cli):
+def test_closed_groups_is_refused_where_nothing_closes_and_with_predict(tmp_path, rheon_cli):
     frame(["a", "b"]).write_parquet(tmp_path / "in.parquet")
     res = run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [cov_spec()],
         input=tmp_path / "in.parquet",
@@ -746,7 +746,7 @@ def test_closed_groups_is_refused_where_nothing_closes_and_with_predict(tmp_path
     state = tmp_path / "b.state"
     po.ModelBank([cov_spec(group_close="monotone")]).save(state)
     res = run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [cov_spec(group_close="monotone")],
         input=tmp_path / "in.parquet",
@@ -759,13 +759,13 @@ def test_closed_groups_is_refused_where_nothing_closes_and_with_predict(tmp_path
     assert res.returncode != 0 and "no group ever closes" in res.stderr, res.stderr
 
 
-def test_the_cli_writes_the_sidecar(tmp_path, online_cli):
+def test_the_cli_writes_the_sidecar(tmp_path, rheon_cli):
     frame(["a", "b", "c"], n_per=6).write_parquet(tmp_path / "in.parquet")
     cfg = toml_config(tmp_path)
     side = tmp_path / "closed.parquet"
     r = subprocess.run(
         [
-            str(online_cli),
+            str(rheon_cli),
             "--config",
             str(cfg),
             "--closed-groups",
@@ -868,7 +868,7 @@ def test_every_surface_writes_closed_groups_as_csv(tmp_path, name):
     assert po.ModelBank.load(state).rows_fed == df.height
 
 
-def test_the_closed_groups_csv_is_the_cli_s_byte_for_byte(tmp_path, online_cli):
+def test_the_closed_groups_csv_is_the_cli_s_byte_for_byte(tmp_path, rheon_cli):
     """The three Python surfaces and the CLI write one CSV: the same text
     for every list (Rust's shortest round-trip float in a JSON array, a
     name as a JSON string) and every other field."""
@@ -879,7 +879,7 @@ def test_the_closed_groups_csv_is_the_cli_s_byte_for_byte(tmp_path, online_cli):
     df.write_parquet(tmp_path / "in.parquet")
     cli = tmp_path / "cli.csv"
     run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [spec],
         input=tmp_path / "in.parquet",
@@ -895,7 +895,7 @@ def test_the_closed_groups_csv_is_the_cli_s_byte_for_byte(tmp_path, online_cli):
     assert ours.read_bytes() == cli.read_bytes()
 
 
-def test_an_empty_closed_groups_csv_is_the_cli_s_header(tmp_path, online_cli):
+def test_an_empty_closed_groups_csv_is_the_cli_s_header(tmp_path, rheon_cli):
     """A run in which nothing closed writes the header alone, as the CLI
     does."""
     from test_every_kind import frame_for
@@ -905,7 +905,7 @@ def test_an_empty_closed_groups_csv_is_the_cli_s_header(tmp_path, online_cli):
     df.write_parquet(tmp_path / "in.parquet")
     cli = tmp_path / "cli.csv"
     run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [spec],
         input=tmp_path / "in.parquet",

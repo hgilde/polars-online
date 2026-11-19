@@ -49,7 +49,7 @@ import statsmodels.api as sm
 from scipy.stats import chi2, pearsonr
 from statsmodels.stats.diagnostic import acorr_ljungbox, het_breuschpagan
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 

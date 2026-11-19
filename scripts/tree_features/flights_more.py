@@ -14,7 +14,7 @@ import lightgbm as lgb  # noqa: E402
 import numpy as np  # noqa: E402
 from leafrefit import bank, leaf_values, rmse  # noqa: E402
 
-import polars_online as po  # noqa: E402
+import rheon as po  # noqa: E402
 
 df = C.load_flights()
 t = df["t"].to_numpy()

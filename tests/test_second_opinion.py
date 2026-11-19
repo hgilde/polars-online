@@ -15,7 +15,7 @@ The windows here run on a row-count clock, so a row's age is the number of
 rows between it and the reference row. A window keeps the rows whose age is
 **less than** ``window`` -- a row exactly ``window`` old has left, under the
 default ``closed="right"``, as Polars' ``rolling_*_by`` and
-``crates/online-core/src/window.rs`` state the boundary (docs/PLAN.md task
+``crates/rheon-core/src/window.rs`` state the boundary (docs/PLAN.md task
 196) -- each at weight ``0.5 ** (age / half_life)``. ``closed="both"`` is
 held to its definition in ``tests/test_window.py``.
 """
@@ -29,7 +29,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -3448,7 +3448,7 @@ class TestAMeanRevertingKalmanIsFilterpy:
 
 
 # The fits are small on purpose; a readiness notice about one says nothing here.
-@pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+@pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
 class TestEwRidgeIsSklearnsRidge:
     """Every ``ewridge`` solve against scikit-learn's ``Ridge``: a second
     opinion on the whole weighted, penalized fit, where the Rust oracle in

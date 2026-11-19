@@ -22,7 +22,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 
 def make(rows: int, k: int, m: int, seed: int = 0) -> pl.DataFrame:

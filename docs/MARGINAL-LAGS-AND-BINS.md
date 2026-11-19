@@ -189,7 +189,7 @@ without lags loads with none. **No schema bump.** The one rule this
 imposes is the compact msgpack form's: a struct is an array, so at most one
 field may `skip_serializing_if` and it must be last — E66's first draft
 put a skip in front of the window's and a marginal with a window but no
-lags stopped round-tripping compactly. `crates/online-core/tests/state_encoding.rs`
+lags stopped round-tripping compactly. `crates/rheon-core/tests/state_encoding.rs`
 now round-trips `marginal` through both encodings with every optional part
 present and absent.
 
@@ -207,14 +207,14 @@ whose spec did not ask has null in them.
 
 ### Tests
 
-`crates/online-core/src/marginal.rs`:
+`crates/rheon-core/src/marginal.rs`:
 `lagged_pair_moments_are_ew_covs_to_the_bit` (the recursion against
 `EwLagCov`), `t_serial_is_standard_where_t_is_over_dispersed` (200
 replications of two independent AR(1) series at φ 0.9/0.8: `sd(t)` near
 the Bartlett inflation, `sd(t_serial)` near one, the fitted decays within
 0.05 of the truth), `lag_moments_hold_where_the_target_is_missing`,
 `state_round_trips_and_continues_identically`, `validation_rejects_each_bad_field`;
-`crates/online-core/tests/state_encoding.rs`.
+`crates/rheon-core/tests/state_encoding.rs`.
 
 `tests/test_marginal_lags.py`: `t_stat` claims significance that `t_serial`
 does not (on that stream `t_stat = 2.39`, `t_serial = 1.03`); the geometric fit
@@ -422,7 +422,7 @@ holds each bin's weight to the pair's under it.
 
 ### Tests
 
-`crates/online-core/src/margbins.rs` (15): the scale-factor histogram equals
+`crates/rheon-core/src/margbins.rs` (15): the scale-factor histogram equals
 a brute-force one that decays every bin every row, bin for bin, mean for
 mean, variance for variance; a run long enough to force a renormalization
 changes nothing readable; a total gap empties it; the scale cannot underflow
@@ -433,7 +433,7 @@ refuses; explicit edges are budgeted too; no split without variance; and the
 quantile rule — without ties, with a point mass, weighted, and on degenerate
 samples.
 
-`crates/online-core/src/marginal.rs` (8 of its 21): learned edges give
+`crates/rheon-core/src/marginal.rs` (8 of its 21): learned edges give
 exactly the histogram those edges given up front give, held rows are
 replayed and not spent; a zero-weight row in the warm-up teaches nothing; a
 V is invisible to `corr` and obvious to a split; refusals before and beyond

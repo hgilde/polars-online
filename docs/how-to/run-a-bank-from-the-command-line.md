@@ -81,8 +81,8 @@ Here the first command checks `job.toml` (step 3) and the second runs it
 (step 4):
 
 ```sh
-polars-online --config job.toml --dry-run
-polars-online --config job.toml
+rheon --config job.toml --dry-run
+rheon --config job.toml
 ```
 
 ```text
@@ -138,7 +138,7 @@ Here the run fits `job.toml`'s spec over `ticks.parquet` and saves the
 state to `run.state`:
 
 ```sh
-polars-online --config job.toml --save-state run.state
+rheon --config job.toml --save-state run.state
 ```
 
 ```text
@@ -159,7 +159,7 @@ target there takes any embargo, as `fit` does. Here the run saves the
 state and writes nothing else:
 
 ```sh
-polars-online --config job.toml --no-output --save-state gram.state
+rheon --config job.toml --no-output --save-state gram.state
 ```
 
 ```text
@@ -200,7 +200,7 @@ file](#run-a-bank-over-a-file):
 ```python
 import tomllib
 
-import polars_online as po
+import rheon as po
 
 with open("job.toml", "rb") as f:                      # tomllib reads a file opened in binary mode
     bank = po.ModelBank(tomllib.load(f)["specs"])

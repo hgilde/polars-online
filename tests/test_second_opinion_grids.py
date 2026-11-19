@@ -44,7 +44,7 @@ from filterpy.kalman import KalmanFilter
 from statsmodels.stats.outliers_influence import OLSInfluence
 
 import ledger
-import polars_online as po
+import rheon as po
 
 TIER = "oracle_grid"
 

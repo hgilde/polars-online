@@ -48,7 +48,7 @@ that moved the fit most, beside the clean rows for scale:
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # 10,000 rows of y = 1.0 x0 + 0.5 x1 + noise, and three bad prints.
 rng = np.random.default_rng(7)

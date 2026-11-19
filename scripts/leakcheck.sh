@@ -24,7 +24,7 @@
 #
 # Not part of scripts/gate.sh: `leaks` needs a live process and valgrind is
 # ~50x slower. Weekly in CI (.github/workflows/leakcheck.yml); run it by hand
-# after touching crates/online-py or the extraction path in online-polars.
+# after touching crates/rheon-py or the extraction path in rheon-polars.
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source scripts/env.sh 2>/dev/null || true
@@ -36,7 +36,7 @@ echo "interpreter: $PYBIN"
 
 WORK=$(cat <<'PY'
 import gc, os, sys
-import numpy as np, polars as pl, polars_online as po
+import numpy as np, polars as pl, rheon as po
 n = int(sys.argv[1])
 control = os.environ.get("LEAKCHECK_CONTROL") == "1"
 if control:

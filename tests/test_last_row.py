@@ -11,7 +11,7 @@ leaves the row before them.
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from test_golden_pipeline import specs, stream
 
 TIER = "essential"

@@ -27,11 +27,11 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
-pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+pytestmark = pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
 
 
 def ridge(**kw):
@@ -344,7 +344,7 @@ def test_every_count_in_every_frame_is_int64():
                 frames[f"audit({table!r})"] = bank.audit(table=table)
             frames["audit(pooled=True)"] = bank.audit(pooled=True)
         if name == "ewridge":
-            from polars_online import eval as ev
+            from rheon import eval as ev
 
             frames["eval.metrics"] = ev.metrics(out, spec, min_samples=1)
             frames["eval.sums"] = ev.sums(out, spec)

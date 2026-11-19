@@ -3,7 +3,7 @@
 A row is scored where it sits, held until the first row whose clock reaches
 its label time, and learned at that label time, with the prediction and
 interval it was served scored against its label. The Rust tests
-(`crates/online-polars/tests/label_clock.rs`) hold it to the doubled stream
+(`crates/rheon-polars/tests/label_clock.rs`) hold it to the doubled stream
 and to `embargo`; here the oracle is a fold, written out in numpy, of each
 served residual `y - pred` in release order: the residual spread `sigma`,
 the conformal interval and its coverage, and `hit_rate`.
@@ -16,7 +16,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from conftest import run_online
 from test_conformal import norm_ppf
 
@@ -66,7 +66,7 @@ def spec(**kw):
 
 
 def exp_neg(x):
-    """`e^{-x}` as `online_core::conformal::exp_neg` computes it, in basic
+    """`e^{-x}` as `rheon_core::conformal::exp_neg` computes it, in basic
     arithmetic: `x = k ln 2 + r`, the Taylor series of `e^{-r}`, times
     `2^{-k}`. The gain is held to scipy's normal density separately
     (`test_the_gain_is_the_normal_density`)."""
@@ -268,7 +268,7 @@ class TestTheAutoStep:
         with pytest.raises(ValueError, match="conformal_rate sets how fast the interval adapts"):
             po.spec.ewridge("m", targets=["y"], features=["x"], conformal_rate="auto")
 
-    def test_the_cli_takes_it(self, tmp_path, online_cli):
+    def test_the_cli_takes_it(self, tmp_path, rheon_cli):
         df = frame(n=300, seed=12)
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
@@ -302,7 +302,7 @@ type = "ewridge"
 """,
             encoding="utf-8",
         )
-        subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
+        subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         got = pl.read_parquet(out).select("m").unnest("m")
         for key in ("lo_y", "hi_y", "coverage_y"):
             assert got[key].equals(want[key], null_equal=True), key
@@ -334,13 +334,13 @@ class TestTheSurfaces:
         assert row["labels_missing"] == accepted["avail"].null_count()
         assert row["labels_dropped"] > 0
 
-    def test_the_cli_takes_the_key(self, tmp_path, online_cli):
+    def test_the_cli_takes_the_key(self, tmp_path, rheon_cli):
         df = frame(n=300, seed=12)
         src = tmp_path / "in.parquet"
         df.write_parquet(src)
         s = spec()
         out = tmp_path / "out.parquet"
-        run_online(online_cli, tmp_path, [s], input=src, output=out, chunk_size=64)
+        run_online(rheon_cli, tmp_path, [s], input=src, output=out, chunk_size=64)
 
         def fields(frame_):
             return frame_.select("m").unnest("m").drop("coef", "support_coef")
@@ -374,7 +374,7 @@ type = "ewridge"
 """,
             encoding="utf-8",
         )
-        subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
+        subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         assert fields(pl.read_parquet(cli_out)).equals(want, null_equal=True)
 
 

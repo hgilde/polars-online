@@ -27,7 +27,7 @@ patch release with the advisory published alongside it.
 ## Scope
 
 This is a numerical library with no network access. There is no `unsafe`
-code in `online-core`, enforced by `unsafe_code = "forbid"`.
+code in `rheon-core`, enforced by `unsafe_code = "forbid"`.
 
 This library parses two kinds of file itself, rather than through Polars:
 its own state files, and the command line's TOML configuration. The command

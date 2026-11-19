@@ -8,7 +8,7 @@ without defining it, look the word up here. When you write a sentence, a
 docstring or a message about the library, choose the word here.
 
 In the examples, `po` is the package, imported as
-`import polars_online as po`, and `pl` is Polars, imported as
+`import rheon as po`, and `pl` is Polars, imported as
 `import polars as pl`.
 
 **Use the words of the topic tables on every page**, from [The model bank
@@ -216,7 +216,7 @@ contributor guide may use them, since its subject is the code.
 | *solve cadence* | how often a regression solves: every `solve_every` clock units, or by default once the weight learned since the last solve reaches `ln 2 / 50` of the weight the fit holds, which is `half_life / 50` of clock in steady state | *how often the model solves* |
 | *bit-identical*, *bit-exact* | the same floating-point bits, as a test compares each float column as its `u64` bits, with its validity | *the same to the bit* |
 | *golden*, *oracle*, *the gate*, *mutants* | a stored reference result, an independent check of a computed value, the test run before a commit, and mutation testing | in user-facing text, what each means: *a stored reference result*, *an independent check of the value*, *the tests run before each commit*, *mutation testing*. A contributor guide may use the word itself, with *the test gate* for *the gate*, since a [gate](#warm-up-and-readiness) is a readiness parameter |
-| *golden number* | a value the golden tests pin: `golden.rs` in `online-core`, and `tests/test_golden_pipeline.py` to 1e-12. A change that moves one past that tolerance is wrong by definition, and a reordering of the arithmetic that moves one within it is accepted | *a stored reference result* |
+| *golden number* | a value the golden tests pin: `golden.rs` in `rheon-core`, and `tests/test_golden_pipeline.py` to 1e-12. A change that moves one past that tolerance is wrong by definition, and a reordering of the arithmetic that moves one within it is accepted | *a stored reference result* |
 | *worktree slot* | a git worktree kept between tasks under `.claude/slots/<n>`, with its own builds, which a task takes with `scripts/slot.sh take` and gives back with `scripts/slot.sh give` once its branch is merged. It is not a [slot](#grids), one of the predictions a spec writes on each row | nothing: a user of the library never meets it. A contributor guide may use the word, as [Use a worktree slot](contributing/use-a-worktree-slot.md) does |
 | *wave* | the finished branches merged together onto an `integration` branch cut from `main`, tested by one essentials test gate, and fast-forwarded onto `main` when it passes. A wave of one branch merges onto `main` directly and skips that gate. Either way, the full suite runs on the exact commit before the push | nothing: a user of the library never meets it. A contributor guide may use the word, as [Merge a wave of branches](contributing/merge-a-wave-of-branches.md) does |
 

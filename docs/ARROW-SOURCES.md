@@ -26,7 +26,7 @@ A capsule producer can reach the bank **today**, with no new code and no new
 dependency, by letting polars do the import:
 
 ```python
-import duckdb, polars as pl, polars_online as po
+import duckdb, polars as pl, rheon as po
 
 rel = duckdb.sql("SELECT t, x0, y FROM read_parquet('ticks/*.parquet') ORDER BY t")
 bank = po.ModelBank([spec])
@@ -438,7 +438,7 @@ destructor releases it. The stream-shaped alternative is `open_stream_capsule`,
 which is the same idiom with `ArrowArrayStream::empty()` and
 `ArrowArrayStreamReader::try_new`.
 
-**Verified by a compiling test, not by reading.** `crates/online-polars/tests/
+**Verified by a compiling test, not by reading.** `crates/rheon-polars/tests/
 arrow_capsule_import.rs` exports an array to C, performs the replace-and-import
 round trip from *outside* polars-arrow, asserts the values survive and that the
 source's `release` is now null, and drops the emptied original with no double
@@ -463,7 +463,7 @@ What this dissolves, so none of it is reopened by accident:
 **The residual risk, which is real and small.** These items are public but carry
 no stability promise, exactly like the three interfaces in CLAUDE.md rule 13, so
 this is a fourth entry on that list rather than a departure from it. It adds no
-dependency: `crates/online-polars` already depends on polars-arrow directly and
+dependency: `crates/rheon-polars` already depends on polars-arrow directly and
 re-exports these `ffi` items. The test above is the canary — if a future
 polars-arrow drops `empty()`, it fails loudly at build time rather than silently
 at a double free.
@@ -636,7 +636,7 @@ denominated in a clock. Three tiers, in the order to consider them:
    move with the order, docs/PLAN.md task 139) and every path-changing key at its neutral
    value: no window, no session, no `embargo`, no Gram blocking,
    `drift_action = "flag"`, the diagnostics off (`_ORDER_FREE_ONLY_WHEN` in
-   `python/polars_online/_frame.py` is the full table). Then the sums commute
+   `python/rheon/_frame.py` is the full table). Then the sums commute
    and the fit reaches the same state whatever order the rows arrived in —
    measured 3.3e-16 over 200 rows. That table is conservative by construction
    ("unknown means no"), so several entries are denied as *unproven* rather
@@ -743,7 +743,7 @@ Three things, none of which reorders the list:
    `ORDER BY` note §5 already carries.
 3. **DataFusion deserves a spike.** It would let the Rust CLI read any
    DataFusion source in a declared order with no Python in the path. It does
-   bring `arrow-rs` — but into `online-cli`, a *separate binary* that already
+   bring `arrow-rs` — but into `rheon-cli`, a *separate binary* that already
    links Rust `polars` and never touches py-polars, not into the wheel. That
    makes it the cheapest way to find out what living with arrow-rs is
    actually like. Parked with the other Arrow work on 2026-09-25 (PLAN,

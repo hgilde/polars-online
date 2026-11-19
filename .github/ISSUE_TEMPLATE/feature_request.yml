@@ -23,7 +23,7 @@ body:
       label: What it would look like
       description: >
         If it is a model, the update equations. If it is an output, the field
-        name and what it means. Anything in `online-core` must be O(state), not
+        name and what it means. Anything in `rheon-core` must be O(state), not
         O(data), and must not break out-of-sample-ness or chunk invariance.
   - type: textarea
     id: prior

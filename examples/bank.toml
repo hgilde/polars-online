@@ -1,5 +1,5 @@
 # Example model bank for the `polars-online` command line:
-#   cargo run -p online-cli -- --config examples/bank.toml
+#   cargo run -p rheon-cli -- --config examples/bank.toml
 #
 # Generate a matching input, beside this file, with:
 #   uv run python scripts/make_example_parquet.py

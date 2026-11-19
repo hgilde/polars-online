@@ -27,7 +27,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from reference import ftrl_ref
 from reference_paths import holt_ref, pa_ref, sgd_ref
 

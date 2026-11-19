@@ -10,7 +10,7 @@
 # past the sign-off.
 #
 # Valgrind runs on Linux alone, so this is where the counts come from; a
-# developer on macOS runs the cases natively (`cargo test -p online-bench`)
+# developer on macOS runs the cases natively (`cargo test -p rheon-bench`)
 # and reads the counts here, or runs the bench in a Linux container.
 #
 # A measuring run (dispatch with `measure`) reports and never fails: how
@@ -102,7 +102,7 @@ jobs:
       # Built at the machine's clock, so nothing compiles under the frozen
       # one below and the counting step only runs what this built.
       - name: build the bench
-        run: cargo bench -p online-bench --bench instructions --locked --no-run
+        run: cargo bench -p rheon-bench --bench instructions --locked --no-run
 
       # The library that stops the wall clock, found where the package put
       # it (it is not on the loader's search path), and shown to work: a
@@ -139,7 +139,7 @@ jobs:
         run: |
           set -o pipefail
           for run in first second; do
-            cargo bench -p online-bench --bench instructions --locked -- \
+            cargo bench -p rheon-bench --bench instructions --locked -- \
               --output-format=json --nosummary > "$run.json"
           done
 

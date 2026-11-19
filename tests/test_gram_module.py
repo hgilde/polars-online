@@ -1,4 +1,4 @@
-"""E46: `polars_online.gram`, the accumulators read back.
+"""E46: `rheon.gram`, the accumulators read back.
 
 Every function here has to be held against the thing that already computes
 the same quantity -- the model's own solve, the model's own lasso path, or
@@ -19,8 +19,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online import gram as pg
+import rheon as po
+from rheon import gram as pg
 
 TIER = "mixed"
 

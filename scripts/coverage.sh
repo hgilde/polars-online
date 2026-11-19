@@ -5,7 +5,7 @@
 #
 # Note the two numbers measure different things and neither is the whole story:
 # `cargo llvm-cov` sees only what `cargo test` executes, so the crates driven
-# mainly from Python (online-py, and much of online-polars) look far emptier
+# mainly from Python (rheon-py, and much of rheon-polars) look far emptier
 # than they are -- the pytest suite exercises them through the compiled
 # extension, which the Rust instrumentation cannot observe.
 set -euo pipefail
@@ -13,14 +13,14 @@ cd "$(dirname "$0")/.."
 source scripts/env.sh
 
 echo "=== Rust (cargo test only; see the note above) ==="
-# online-py has no Rust tests, and with it in the build every test binary
+# rheon-py has no Rust tests, and with it in the build every test binary
 # links libpython, which a uv-managed Python keeps off Linux's loader path
 # (tests/test_ci_cost_policy.py, TestTheRustTestsLinkNoPython). Both
 # numbers are the extended tier's, everything: `--include-ignored` runs the
 # Rust tests marked `#[ignore = "extended: ..."]`, and pytest's default run
 # already holds its extended tier (docs/TESTING.md, "Two tiers").
-cargo llvm-cov --workspace --exclude online-py --summary-only -- --include-ignored
+cargo llvm-cov --workspace --exclude rheon-py --summary-only -- --include-ignored
 
 echo
 echo "=== Python (drives the extension end to end) ==="
-uv run pytest --cov=polars_online --cov-report=term-missing -q
+uv run pytest --cov=rheon --cov-report=term-missing -q

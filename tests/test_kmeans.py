@@ -37,8 +37,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
 import reference_cluster as ref
+import rheon as po
 
 TIER = "mixed"
 
@@ -422,7 +422,7 @@ class TestScaleFloor:
 # Independent of `reference_cluster.py`, which transcribes the Rust and is
 # held bit for bit above: each check here is written from the definitions in
 # docs/CLUSTERING.md §6.1-6.3 and in the module docs of
-# `crates/online-core/src/cluster/kmeans.rs` and `summary.rs`, recomputes
+# `crates/rheon-core/src/cluster/kmeans.rs` and `summary.rs`, recomputes
 # what it needs from the raw rows, and agrees to 1e-9 (review 2026-10-05,
 # TB1). They run without standardization, so a distance is the Euclidean one
 # in the features' own units, and read the weights, radii and far summaries
@@ -1439,7 +1439,7 @@ class TestRefusals:
         with pytest.raises(TypeError, match="a kmeans or micro model cluster assignments"):
             po.eval.unpack(out, "m")
 
-    def test_the_cli_runs_it(self, tmp_path, online_cli):
+    def test_the_cli_runs_it(self, tmp_path, rheon_cli):
         import subprocess
 
         X, _ = blobs(n=300, seed=36)
@@ -1466,7 +1466,7 @@ class TestRefusals:
             ),
             encoding="utf-8",
         )
-        subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
+        subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         got = unnested(pl.read_parquet(dst))
         want = unnested(po.ModelBank([spec(warm_rows=30)]).fit_predict(frame(X)))
         assert got.equals(want, null_equal=True)

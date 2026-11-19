@@ -23,7 +23,7 @@ from pathlib import Path
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 K = 20
 ROWS = 150

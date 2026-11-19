@@ -15,8 +15,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online import _frame, stream
+import rheon as po
+from rheon import _frame, stream
 
 TIER = "essential"
 

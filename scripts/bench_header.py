@@ -45,7 +45,7 @@ def load() -> str:
 def header() -> str:
     import polars as pl
 
-    import polars_online as po
+    import rheon as po
 
     commit = _git("rev-parse", "--short=12", "HEAD") or "unknown"
     if _git("status", "--porcelain", "--untracked-files=no"):

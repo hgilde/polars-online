@@ -1,12 +1,12 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/online-core",
-    "crates/online-polars",
-    "crates/online-cli",
-    "crates/online-py",
+    "crates/rheon-core",
+    "crates/rheon-polars",
+    "crates/rheon-cli",
+    "crates/rheon-py",
     # The instruction-count cases behind budgets.toml; ships in nothing.
-    "crates/online-bench",
+    "crates/rheon-bench",
 ]
 
 [workspace.package]
@@ -17,8 +17,8 @@ license = "Apache-2.0"
 repository = "https://github.com/hgilde/polars-online"
 
 [workspace.dependencies]
-online-core = { path = "crates/online-core", version = "1.6.0" }
-online-polars = { path = "crates/online-polars", version = "1.6.0" }
+rheon-core = { path = "crates/rheon-core", version = "1.6.0" }
+rheon-polars = { path = "crates/rheon-polars", version = "1.6.0" }
 
 # Rust polars is hard-pinned and linked statically into the wheel, so it is
 # fixed at build time; py-polars is a runtime range in pyproject.toml
@@ -40,7 +40,7 @@ pyo3-polars = "0.28"
 # multiplied (960 MiB a thread on a GitHub Windows runner, committed whole
 # by Windows) and takes every product past 16 x 16 x 16 there -- the
 # Gram's tiles, and the products inside faer's Cholesky, triangular solves
-# and eigensolver. online-core's Cargo.toml turns `std` on for every
+# and eigensolver. rheon-core's Cargo.toml turns `std` on for every
 # x86-64 build (tasks 260 and 264; the Windows alternatives measured in
 # task 263). `rayon`
 # keeps `gemm/std`; the four entries after this one turn back on, by Cargo's
@@ -55,7 +55,7 @@ pyo3-polars = "0.28"
 faer = { version = "0.24", default-features = false, features = ["rayon", "linalg", "rand", "sparse-linalg"] }
 faer-traits = { version = "0.24", default-features = false, features = ["std"] }
 # faer's x86 product kernel, through its `std` feature: named only for its
-# minimum version, the first with the block-size fix (online-core, task 268).
+# minimum version, the first with the block-size fix (rheon-core, task 268).
 private-gemm-x86 = { version = "0.1.22", default-features = false }
 pulp = { version = "0.22", default-features = false, features = ["std"] }
 nano-gemm = { version = "0.2", default-features = false, features = ["std"] }
@@ -68,7 +68,7 @@ serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["float_roundtrip"] }
 thiserror = "2"
 # Tests only (docs/PLAN.md task 121): property tests over generated streams
-# in `online-core`'s model contract, and over chunkings in `online-polars`'
+# in `rheon-core`'s model contract, and over chunkings in `rheon-polars`'
 # notice paths. A dev-dependency links into the test binaries alone; hard
 # rule 12 covers what ships, not tests (the user, 2026-09-25). Without
 # default features, which fork a process per case.
@@ -78,7 +78,7 @@ proptest = { version = "1.11", default-features = false, features = ["std"] }
 rmpv = "1"
 # Tests only: exact-enough arithmetic (a float of a thousand bits) for the
 # oracle of the break-detection distance's variance, which no f64 form can
-# check where its terms cancel (`online-core`'s `oracle.rs`). Pure Rust, no
+# check where its terms cancel (`rheon-core`'s `oracle.rs`). Pure Rust, no
 # C library, and a dev-dependency, so nothing ships with it (rule 12).
 dashu-float = { version = "0.6", default-features = false, features = ["std"] }
 clap = { version = "4.6", features = ["derive"] }
@@ -104,7 +104,7 @@ codegen-units = 1
 # that names the bug is intact and only the frame list goes.
 strip = "symbols"
 
-# The instruction-count cases (crates/online-bench, budgets.toml): release's
+# The instruction-count cases (crates/rheon-bench, budgets.toml): release's
 # code generation -- thin LTO, one codegen unit -- so a count is of the
 # inlining that ships, with the symbol table kept, since Callgrind finds a
 # case's entry point by its symbol. Symbols change no instruction.
@@ -141,10 +141,10 @@ strip = "none"
 #   (the function name loses its module path; a dependency's frame names its
 #   function without a line).
 # - `incremental = false`: the gate builds once, and each session directory is
-#   up to 1 GB (27.7 -> 25.9 GB; no slower on an edit of `online-core`).
+#   up to 1 GB (27.7 -> 25.9 GB; no slower on an edit of `rheon-core`).
 # - `package."*".opt-level = 1`: Polars' code at opt-level 0 is most of the
 #   binary; at 1 the binaries are 211 MB, the target 11.4 GB, and a rebuild
-#   after an edit to `online-core` 91 s where it was 158 s (the cold build is
+#   after an edit to `rheon-core` 91 s where it was 158 s (the cold build is
 #   the same, 244 s against 245 s). No float result changes: Rust does not
 #   contract or reassociate, and overflow checks and debug assertions stay on.
 # The release profile, `dev-wheel` and the wheel are untouched.

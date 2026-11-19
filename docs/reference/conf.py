@@ -21,7 +21,7 @@ from docutils.parsers.rst import Directive
 from docutils.statemachine import StringList
 from sphinx.errors import ExtensionError
 
-import polars_online
+import rheon
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -30,7 +30,7 @@ import families  # noqa: E402 -- beside this file, found through the path above
 
 project = "polars-online"
 author = "Hans Gilde"
-release = polars_online.__version__
+release = rheon.__version__
 copyright = "Hans Gilde"  # noqa: A001 -- Sphinx's name for it
 
 extensions = [
@@ -90,7 +90,7 @@ def _members(name: str) -> list[tuple[str, str]]:
     """A paged class's public methods and properties, in source order, as
     (dotted name, ``method`` or ``property``); a name kept only under its
     old spelling is left out, as the reference leaves it out everywhere."""
-    from polars_online._renamed import is_renamed
+    from rheon._renamed import is_renamed
 
     out = []
     for attr, value in vars(_object(name)).items():
@@ -171,7 +171,7 @@ def _public() -> set[str]:
     import pkgutil
     import types
 
-    from polars_online._renamed import is_renamed
+    from rheon._renamed import is_renamed
 
     found: set[str] = set()
 
@@ -179,22 +179,22 @@ def _public() -> set[str]:
         if isinstance(obj, types.ModuleType) or not callable(obj) or is_renamed(obj):
             return
         module = getattr(obj, "__module__", "") or ""
-        if module.startswith("polars_online.") and not module.split(".")[1].startswith("_"):
+        if module.startswith("rheon.") and not module.split(".")[1].startswith("_"):
             where = f"{module}.{obj.__name__}"
         found.add(where)
 
-    for name in polars_online.__all__:
+    for name in rheon.__all__:
         if not name.startswith("__"):
-            consider(f"polars_online.{name}", getattr(polars_online, name))
-    for m in pkgutil.iter_modules(polars_online.__path__):
+            consider(f"rheon.{name}", getattr(rheon, name))
+    for m in pkgutil.iter_modules(rheon.__path__):
         if m.name.startswith("_"):
             continue
-        module = importlib.import_module(f"polars_online.{m.name}")
+        module = importlib.import_module(f"rheon.{m.name}")
         for name in getattr(module, "__all__", ()):
-            consider(f"polars_online.{m.name}.{name}", getattr(module, name))
+            consider(f"rheon.{m.name}.{name}", getattr(module, name))
     found |= {
-        "polars_online._frame.LazyFrameOnlineNamespace",
-        "polars_online._frame.DataFrameOnlineNamespace",
+        "rheon._frame.LazyFrameOnlineNamespace",
+        "rheon._frame.DataFrameOnlineNamespace",
     }
     return found
 
@@ -249,7 +249,7 @@ def _skip_renamed(app, what, name, obj, skip, options):
     """Leave out a name kept only under its old spelling -- a refusal stub
     or a forwarding with a deprecation warning -- so the reference shows the
     new name alone, as the API snapshot does (``_renamed.is_renamed``)."""
-    from polars_online._renamed import is_renamed
+    from rheon._renamed import is_renamed
 
     return True if is_renamed(obj) else None
 

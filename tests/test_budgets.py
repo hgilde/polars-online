@@ -98,7 +98,7 @@ def test_the_file_is_well_formed_and_every_raise_quotes_the_changelog():
 
 
 def test_every_case_the_bench_names_has_an_entry():
-    """The bench against the crate's lists is `crates/online-bench`'s own
+    """The bench against the crate's lists is `crates/rheon-bench`'s own
     test (`the_bench_names_every_case_and_nothing_else`)."""
     cases = budgets.bench_cases()
     assert len(cases) == len(set(cases)) >= 14
@@ -111,7 +111,7 @@ def test_the_pins_are_the_repositorys():
     so the file names each and these hold it to the repository."""
     meta = DOC["meta"]
     assert meta["gungraun"] == budgets.runner_version()
-    lib = (REPO / "crates/online-bench/src/lib.rs").read_text(encoding="utf-8")
+    lib = (REPO / "crates/rheon-bench/src/lib.rs").read_text(encoding="utf-8")
     (rows,) = re.findall(r"pub const ROWS: usize = ([\d_]+);", lib)
     assert meta["rows"] == int(rows.replace("_", ""))
     job = WORKFLOW["jobs"]["instructions"]
@@ -121,7 +121,7 @@ def test_the_pins_are_the_repositorys():
     # Read from the file, never spelled out in the workflow.
     assert "scripts/budgets.py toolchain" in runs and meta["toolchain"] not in runs
     assert "scripts/budgets.py runner-version" in runs
-    cargo = tomllib.loads((REPO / "crates/online-bench/Cargo.toml").read_text(encoding="utf-8"))
+    cargo = tomllib.loads((REPO / "crates/rheon-bench/Cargo.toml").read_text(encoding="utf-8"))
     dev = cargo["target"]["cfg(unix)"]["dev-dependencies"]
     assert dev["gungraun"] == f"={meta['gungraun']}"
 
@@ -186,7 +186,7 @@ def test_the_counts_run_under_a_frozen_clock_and_nothing_else_does():
             assert not FROZEN & set(step.get("env") or {}) - {"FROZEN_AT"}, step.get("name")
     assert not FROZEN & set(WORKFLOW.get("env") or {})
     assert not FROZEN & set(WORKFLOW["jobs"]["instructions"].get("env") or {})
-    bench = (REPO / "crates/online-bench/benches/instructions.rs").read_text(encoding="utf-8")
+    bench = (REPO / "crates/rheon-bench/benches/instructions.rs").read_text(encoding="utf-8")
     (listed,) = re.findall(r"const FAKETIME_ENV: \[&str; \d+\] = \[([^\]]*)\]", bench)
     assert set(re.findall(r'"([A-Z_]+)"', listed)) == FROZEN
     (config,) = re.findall(r"fn counted_from\(.*?\n\}", bench, re.S)

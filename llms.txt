@@ -15,7 +15,7 @@ The two Python surfaces, in full:
 
 ```python
 import polars as pl
-import polars_online as po
+import rheon as po
 
 spec = po.spec.ewridge(
     "ridge",
@@ -117,7 +117,7 @@ Windows alike.
 
 - [Spec builders](https://hgilde.github.io/polars-online/spec.html): every keyword
   and its default
-- [ModelBank, fit_predict, predict](https://hgilde.github.io/polars-online/polars_online.html):
+- [ModelBank, fit_predict, predict](https://hgilde.github.io/polars-online/rheon.html):
   the objects and functions the package exports
 - [Frame namespaces](https://hgilde.github.io/polars-online/namespaces.html):
   `lf.online.*`, `df.online.*`

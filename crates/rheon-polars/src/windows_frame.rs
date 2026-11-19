@@ -1,0 +1,5151 @@
+//! `po.stream.with_windows` over a frame (docs/PLAN.md tasks 78, 143 and
+//! 144): formulas over the window operators, run a chunk at a time with the
+//! window core, in input order, O(window) memory.
+//!
+//! A chunk goes through four passes. Polars evaluates every `increment`'s
+//! input; this runner takes each increment one row back within its group's
+//! session (a step back past `restart_after_step_back` starts it over), as
+//! a hidden column of the chunk. Polars evaluates every operator's input --
+//! an element-wise formula of the row, increments included -- into a
+//! number per row. The core takes the rows, one kernel per distinct
+//! setting, every operator on it reading its own input, and gives back
+//! the rows it resolved, each with its operators' values. Polars then
+//! evaluates the formulas over the held rows with the operators standing
+//! in as hidden columns, and the hidden columns are dropped.
+
+use std::borrow::Cow;
+#[cfg(test)]
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::io::Cursor;
+
+use polars::prelude::*;
+use rheon_core::{ClockCfg, ClockValue, SessionGap};
+use serde::{Deserialize, Serialize};
+
+use crate::arrow::{NanosRole, fits_64, key_text, nanos_array, wide_integer_clock};
+use crate::formula::{Formula, Node, OpNode};
+use crate::span::{Span, format_duration};
+use crate::spec::{ClockPolicy, SessionGapSpec, clock_cfg_of};
+use crate::stream::usable;
+use crate::windows::{ChunkKeys, session_hashes};
+use crate::windows::{
+    Closed, Direction, KernelDef, OpDef, OpKind, Partial, Peek, PlainRows, Refusal, RowIn, Stat,
+    Windows,
+};
+use crate::wrong_type::{Refused, wrong_type};
+
+/// The spec behind `like=`: its name, for messages, and the columns whose
+/// values must all be usable for it to learn from a row -- its features and
+/// its weight, the rule `stream.rs` applies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Like {
+    pub spec: String,
+    pub accept: Vec<String>,
+}
+
+/// One `po.stream.with_windows` call: its formulas and its clock policy, in
+/// the spec's own words (`spec.rs`), which is how `like=` fills it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WindowsConfig {
+    pub formulas: Vec<Formula>,
+    #[serde(default)]
+    pub clock: Option<String>,
+    #[serde(default)]
+    pub gap_cap: Option<Span>,
+    #[serde(default)]
+    pub restart_after_step_back: Option<Span>,
+    #[serde(default)]
+    pub session: Option<String>,
+    #[serde(default)]
+    pub session_gap: Option<SessionGapSpec>,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub like: Option<Like>,
+}
+
+impl WindowsConfig {
+    /// Refuses a number or a duration as `session_gap`, which no window
+    /// reads, since every window ends at a session change: the call a user
+    /// makes is held to it, as Python's is. Not [`WindowsRun::new`], which a
+    /// spec's formula targets build through with the spec's own
+    /// `session_gap`, which its model does read; and under `like=` the spec's
+    /// is lent. A state saved by 1.x with a number still loads, under the call
+    /// without one.
+    ///
+    /// # Errors
+    ///
+    /// A numeric `session_gap` without `like`.
+    pub fn refuse_unread_session_gap(&self) -> Result<(), Refused> {
+        if let (None, Some(SessionGapSpec::Gap(g))) = (&self.like, &self.session_gap) {
+            return Err(format!(
+                "{WHO}: session_gap = {g} is no longer read: every window ends at a session \
+                 change, so no window measures the clock's step across one. Leave session_gap \
+                 out, or set it to \"reset\" to discard the windows still open at a session \
+                 change rather than cut them."
+            )
+            .into());
+        }
+        Ok(())
+    }
+}
+
+const WHO: &str = "with_windows";
+const WINDOWS_MAGIC: &str = "polars-online windows";
+/// 10 since task 272 (d): a queue keeps a quantile's sketches (`quant`) and
+/// an operator its level (`quantile`), each written only where there is a
+/// quantile, so a version-9 state is a version-10 state without one and
+/// loads as one ([`MIN_WINDOWS_VERSION`]); an older build refuses a 10 by
+/// its number rather than at the quantile's name;
+/// 9 since task 212: a queue keeps which of its operators are variances
+/// (`ewm_var`, `ewm_std`), its arenas six wide for one where every other
+/// operator's are three, and an operator keeps its `bias`;
+/// 8 since task 200: an integer clock rides in a row's `off` as its own
+/// value, beside the form `off` holds, where a bool said nanoseconds or
+/// the bits of a double, and an increment of an integer input keeps its
+/// previous value as an integer; 7 since task 159 (F2): the group and
+/// session columns' dtypes, which a resumed input must match; 6 since task 159 (W3): a number clock's raw
+/// value rides in a row's `off`, where 5 left it 0; 5 since review R6
+/// (D1): the last row read, beside the rows held, as a
+/// sliced state's identity of its input; 4 since review R5 (C5): the skip
+/// a sliced state carries counts the rows of its input consumed so far,
+/// and the state knows that input by its first clock (round four changed
+/// both under 3); 3 since review R2 (W1, W4, W5): a row's raw clock beside
+/// its policy time in the queues, and the rows a resume skips; 2 since
+/// task 143: formulas over operators, where 1 held descriptions. An older
+/// state would load with defaults and misbehave. The bank's schema moves
+/// with this number (review R4, A2; R6, D5).
+const WINDOWS_VERSION: u32 = 10;
+
+/// The oldest windows state this build reads: 9, whose layout is 10's
+/// without a quantile (task 272 (d)). A bank file embeds a core per window
+/// target, so a bank saved by a build that wrote 9 resumes on this one.
+const MIN_WINDOWS_VERSION: u32 = 9;
+
+/// What [`WindowsRun::save_bytes`] writes: the call, the core, the rows the
+/// core holds as Arrow IPC with their increment columns, and each group's
+/// increment state.
+#[derive(Serialize)]
+struct FileOut<'a> {
+    magic: &'a str,
+    version: u32,
+    config: &'a WindowsConfig,
+    core: &'a Windows,
+    held: &'a [u8],
+    increments: &'a [IncrState],
+    stream_clock: Option<ClockValue>,
+    resume_skip: usize,
+    resume_first: Option<ClockValue>,
+    /// That row's session hash: with its clock, what tells the saved input
+    /// from a next file that starts at the same stamp (review R7, E2).
+    resume_first_session: Option<u64>,
+    /// The last row the run read, the input's columns as Arrow IPC: with
+    /// the rows held, the identity of a sliced state's input (review R6,
+    /// D1); empty unless saved under a slice (R7, E3).
+    last_row: &'a [u8],
+    /// The group and session columns' dtypes, by role (task 159, F2).
+    key_dtypes: &'a [(String, String)],
+}
+
+/// The rest of the file, after [`Header`]'s two fields.
+#[derive(Deserialize)]
+struct FileIn {
+    config: WindowsConfig,
+    core: Windows,
+    held: Vec<u8>,
+    increments: Vec<IncrState>,
+    #[serde(default)]
+    stream_clock: Option<ClockValue>,
+    /// Rows of the input this state was saved under that the run consumed,
+    /// for a run resumed on that input: see [`WindowsRun::consumed`]
+    /// (review R2, W4; R4, B1).
+    #[serde(default)]
+    resume_skip: usize,
+    /// That input's first row's clock: a resume on an input that starts
+    /// elsewhere skips nothing (review R4, B3).
+    #[serde(default)]
+    resume_first: Option<ClockValue>,
+    resume_first_session: Option<u64>,
+    last_row: Vec<u8>,
+    key_dtypes: Vec<(String, String)>,
+}
+
+/// The file's first two fields, read before the rest: a state another
+/// version wrote is refused by its version, not by a field it lacks
+/// (review R2, W5).
+#[derive(Deserialize)]
+struct Header {
+    magic: String,
+    version: u32,
+}
+
+/// A group's increment state: the previous row's inputs, session and clock.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct IncrState {
+    key: Option<String>,
+    /// Per increment: the previous value, NaN for none; a temporal input in
+    /// nanoseconds; an integer input in integers (docs/PLAN.md task 200),
+    /// whose step is taken in integers before it becomes a double.
+    prev: Vec<f64>,
+    prev_ns: Vec<Option<i64>>,
+    prev_int: Vec<Option<i128>>,
+    session: Option<u64>,
+    clock: Option<ClockValue>,
+}
+
+/// The increments' state of a run, borrowed: a run's own, or a copy of it
+/// that a caller reads the increments off without moving the run.
+struct IncrTrack<'a> {
+    state: &'a mut Vec<IncrState>,
+    index: &'a mut HashMap<String, usize>,
+    null: &'a mut Option<usize>,
+    stream_clock: &'a mut Option<ClockValue>,
+}
+
+/// A chunk's increments' inputs, each read in the form its step is taken
+/// in: integers, doubles or nanoseconds, one `Some` of the three per
+/// increment.
+#[derive(Clone)]
+pub struct IncrInputs {
+    rows: usize,
+    integer: Vec<Option<Vec<Option<i128>>>>,
+    numeric: Vec<Option<Vec<Option<f64>>>>,
+    temporal: Vec<Option<Vec<Option<i64>>>>,
+}
+
+impl IncrInputs {
+    /// The inputs at `rows` of the chunk, in that order.
+    fn gather(&self, rows: &[usize]) -> Self {
+        fn take<T: Copy>(all: &[Option<Vec<T>>], rows: &[usize]) -> Vec<Option<Vec<T>>> {
+            all.iter()
+                .map(|v| v.as_ref().map(|v| rows.iter().map(|&i| v[i]).collect()))
+                .collect()
+        }
+        Self {
+            rows: rows.len(),
+            integer: take(&self.integer, rows),
+            numeric: take(&self.numeric, rows),
+            temporal: take(&self.temporal, rows),
+        }
+    }
+}
+
+/// What a chunk's groups' runs share, evaluated once for the chunk
+/// ([`WindowsRun::share`]): each group is handed its rows' part
+/// ([`Shared::of_group`]).
+pub struct Shared {
+    /// The operator inputs, a double a row, NaN for a null; none where each
+    /// is a column of doubles a run reads for itself.
+    inputs: Option<Vec<Vec<f64>>>,
+    /// The increments' inputs.
+    incr: Option<IncrInputs>,
+}
+
+impl Shared {
+    /// The part of the chunk's values at a group's `rows`.
+    pub fn of_group(&self, rows: &[usize]) -> Given {
+        Given {
+            inputs: self.inputs.as_ref().map(|all| {
+                all.iter()
+                    .map(|v| rows.iter().map(|&i| v[i]).collect())
+                    .collect()
+            }),
+            incr: self.incr.as_ref().map(|r| r.gather(rows)),
+        }
+    }
+}
+
+/// One group's part of what its chunk shares ([`Shared::of_group`]), handed
+/// to [`WindowsRun::feed_resolving_with`].
+pub struct Given {
+    inputs: Option<Vec<Vec<f64>>>,
+    incr: Option<IncrInputs>,
+}
+
+/// One value an increment's step reads, per row of `keys`: `x_i - x_{i-1}`
+/// within each key's session, moving `track` as it goes.
+fn step_increments(
+    track: IncrTrack<'_>,
+    width: usize,
+    (restart, restarts): (f64, bool),
+    inputs: &IncrInputs,
+    keys: &[Option<&str>],
+    clock: &Option<Vec<ClockValue>>,
+    session: Option<&[u64]>,
+) -> Vec<Vec<Option<f64>>> {
+    let IncrTrack {
+        state,
+        index,
+        null,
+        stream_clock,
+    } = track;
+    let IncrInputs {
+        rows: n,
+        integer,
+        numeric,
+        temporal,
+    } = inputs;
+    let mut out: Vec<Vec<Option<f64>>> = vec![Vec::with_capacity(*n); width];
+    for r in 0..*n {
+        let found = match keys[r] {
+            Some(k) => index.get(k).copied(),
+            None => *null,
+        };
+        let gi = match found {
+            Some(gi) => gi,
+            None => {
+                let gi = state.len();
+                state.push(IncrState {
+                    key: keys[r].map(str::to_string),
+                    prev: vec![f64::NAN; width],
+                    prev_ns: vec![None; width],
+                    prev_int: vec![None; width],
+                    session: None,
+                    clock: None,
+                });
+                match keys[r] {
+                    Some(k) => {
+                        index.insert(k.to_string(), gi);
+                    }
+                    None => *null = Some(gi),
+                }
+                gi
+            }
+        };
+        // A step back on the stream's clock past the threshold restarts
+        // every group in the core, so every group's increments start
+        // over too (review R1, S4).
+        let now_clock = clock.as_ref().map(|c| c[r]);
+        if let (Some(now), Some(prev)) = (now_clock, *stream_clock)
+            && restarts
+            && back_past(prev, now, restart)
+        {
+            for st in state.iter_mut() {
+                st.prev.iter_mut().for_each(|p| *p = f64::NAN);
+                st.prev_ns.iter_mut().for_each(|p| *p = None);
+                st.prev_int.iter_mut().for_each(|p| *p = None);
+            }
+        }
+        *stream_clock = now_clock;
+        let st = &mut state[gi];
+        let now_session = session.map(|s| s[r]);
+        let mut new_start = st.session != now_session && st.session.is_some();
+        if let (Some(now), Some(prev)) = (now_clock, st.clock)
+            && restarts
+            && back_past(prev, now, restart)
+        {
+            new_start = true;
+        }
+        if new_start {
+            st.prev.iter_mut().for_each(|p| *p = f64::NAN);
+            st.prev_ns.iter_mut().for_each(|p| *p = None);
+            st.prev_int.iter_mut().for_each(|p| *p = None);
+        }
+        st.session = now_session;
+        st.clock = now_clock;
+        for i in 0..width {
+            if let Some(vals) = &integer[i] {
+                let v = vals[r];
+                out[i].push(match (v, st.prev_int[i]) {
+                    (Some(c), Some(p)) => Some(integer_step(c, p)),
+                    // A previous value a float input of another chunk left.
+                    (Some(c), None) if !st.prev[i].is_nan() => Some(c as f64 - st.prev[i]),
+                    _ => None,
+                });
+                if let Some(c) = v {
+                    st.prev_int[i] = Some(c);
+                    st.prev[i] = c as f64;
+                }
+            } else if let Some(vals) = &numeric[i] {
+                let v = match vals[r] {
+                    Some(x) if usable(x) => x,
+                    _ => f64::NAN,
+                };
+                out[i].push(if v.is_nan() || st.prev[i].is_nan() {
+                    None
+                } else {
+                    Some(v - st.prev[i])
+                });
+                if !v.is_nan() {
+                    st.prev[i] = v;
+                    st.prev_int[i] = None;
+                }
+            } else if let Some(vals) = &temporal[i] {
+                let v = vals[r];
+                out[i].push(match (v, st.prev_ns[i]) {
+                    (Some(c), Some(p)) => {
+                        Some(rheon_core::seconds_of_ns(i128::from(c) - i128::from(p)))
+                    }
+                    _ => None,
+                });
+                if v.is_some() {
+                    st.prev_ns[i] = v;
+                }
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A test's switch: the lazy engine for every input and formula, as
+    /// before the short cuts, to hold the two to the same bits.
+    static NO_SHORT_CUTS: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether a bare column input and a bare operator formula skip the lazy
+/// engine (always, but in a test that switches them off).
+fn short_cuts() -> bool {
+    #[cfg(test)]
+    {
+        !NO_SHORT_CUTS.with(Cell::get)
+    }
+    #[cfg(not(test))]
+    {
+        true
+    }
+}
+
+/// An operator's values as a column of doubles, null where the value is NaN:
+/// the list itself, one pass to find a NaN and, only if there is one, a
+/// validity mask built from it (a null's slot reads 0, as a column built from
+/// options leaves it).
+fn nullable_column(name: &str, mut v: Vec<f64>) -> Column {
+    let ca = if v.iter().any(|x| x.is_nan()) {
+        let valid = polars_arrow::bitmap::Bitmap::from_iter(v.iter().map(|x| !x.is_nan()));
+        for x in &mut v {
+            if x.is_nan() {
+                *x = 0.0;
+            }
+        }
+        Float64Chunked::from_vec_validity(name.into(), v, Some(valid))
+    } else {
+        Float64Chunked::from_vec(name.into(), v)
+    };
+    ca.into_column()
+}
+
+/// The hidden column an operator stands in as, in a formula.
+fn hidden(op: &OpNode) -> String {
+    format!("@po:{}", op.key())
+}
+
+/// The hidden column an operator's input is evaluated into.
+fn input_column(i: usize) -> String {
+    format!("@in:{i}")
+}
+
+/// What the plan made of the call.
+struct Plan {
+    kernels: Vec<KernelDef>,
+    ops: Vec<OpDef>,
+    /// Distinct operator inputs, each a formula of the row and the
+    /// increments, by the index `OpDef::input` names.
+    inputs: Vec<Node>,
+    /// Distinct window operators: the hidden column and the core output.
+    columns: Vec<(String, usize)>,
+    /// Where every formula is nothing but one window operator (or an
+    /// increment), each formula's hidden column: named once here, since
+    /// naming one writes the operator out as JSON.
+    bare: Option<Vec<String>>,
+    /// Distinct increments: the hidden column, the input formula and whether
+    /// the input is temporal (an increment in seconds).
+    increments: Vec<(String, Node, bool)>,
+    /// Every span a kernel reads, with its parameter's name, for the scale
+    /// check.
+    spans: Vec<(&'static str, Span)>,
+}
+
+fn dtype_of<'a>(input: &'a Schema, column: &str) -> &'a DataType {
+    input.get(column).expect("checked by the plan")
+}
+
+fn numeric(dtype: &DataType) -> bool {
+    dtype.is_primitive_numeric() || matches!(dtype, DataType::Boolean | DataType::Decimal(..))
+}
+
+/// The dtypes `exprs` give over an empty frame with `schema`.
+fn dtypes_of(schema: &Schema, exprs: Vec<Expr>) -> Result<Schema, String> {
+    DataFrame::empty_with_schema(schema)
+        .lazy()
+        .with_columns(exprs)
+        .collect_schema()
+        .map(|s| s.as_ref().clone())
+        .map_err(|e| e.to_string())
+}
+
+fn plan(config: &WindowsConfig, input: &Schema) -> Result<Plan, Refused> {
+    if config.formulas.is_empty() {
+        return Err(format!(
+            "{WHO}: no expression (a column computation, such as pl.col(\"x\") + 1) was given. \
+             Give at least one that holds a window operator or an increment, such as \
+             po.ewm_mean(pl.col(\"x\"), half_life=10)."
+        )
+        .into());
+    }
+    let has = |role: &str, c: &str| -> Result<(), String> {
+        if input.contains(c) {
+            Ok(())
+        } else {
+            Err(format!(
+                "{WHO}: the {role} column {c:?} is not in the input, whose columns are {:?}. \
+                 Name a column the input has, or add {c:?} to it.",
+                input.iter_names().map(|n| n.as_str()).collect::<Vec<_>>()
+            ))
+        }
+    };
+    let mut names: HashSet<&str> = HashSet::new();
+    for f in &config.formulas {
+        if f.name.is_empty() || f.name.starts_with("@po:") || f.name.starts_with("@in:") {
+            return Err(format!(
+                "{WHO}: an output cannot be named {:?}: a name must not be empty or start with \
+                 \"@po:\" or \"@in:\". Name the expression (a column computation, such as \
+                 pl.col(\"x\") + 1) with .alias() or a keyword argument, such as \
+                 with_windows(lf, m=...).",
+                f.name
+            )
+            .into());
+        }
+        if input.contains(&f.name) {
+            return Err(format!(
+                "{WHO}: the output {:?} is already a column of the input. An expression (a \
+                 column computation, such as pl.col(\"x\") + 1) given by position is named after \
+                 its leftmost column unless .alias() names it. Give it another name with \
+                 .alias() or a keyword argument, such as with_windows(lf, m=...).",
+                f.name
+            )
+            .into());
+        }
+        if !names.insert(&f.name) {
+            return Err(format!(
+                "{WHO}: two expressions (column computations, such as pl.col(\"x\") + 1) are \
+                 named {:?}. Give each a name of its own with .alias() or a keyword argument, such as \
+                 with_windows(lf, m=...).",
+                f.name
+            ).into());
+        }
+        // Each formula holds an operator (one rule with the Python side,
+        // review R1, N7), and reads no column under a reserved prefix (N8).
+        if f.tree.operators().is_empty() {
+            return Err(format!(
+                "{WHO}: the expression {:?} (a column computation, such as pl.col(\"x\") + 1) \
+                 holds no window operator or increment, and a window run computes only those. \
+                 Compute an expression of the row alone with Polars' with_columns.",
+                f.name
+            )
+            .into());
+        }
+        for c in f.tree.columns() {
+            if c.starts_with("@po:") || c.starts_with("@in:") {
+                return Err(format!(
+                    "{WHO}: the expression {:?} (a column computation, such as pl.col(\"x\") + \
+                     1) reads column {c:?}, but a name that starts with \"@po:\" or \"@in:\" is \
+                     kept for the window run's own columns. Rename the column before the call.",
+                    f.name
+                )
+                .into());
+            }
+            has("input", &c)?;
+        }
+    }
+    let mut p = Plan {
+        kernels: Vec::new(),
+        ops: Vec::new(),
+        inputs: Vec::new(),
+        columns: Vec::new(),
+        bare: None,
+        increments: Vec::new(),
+        spans: Vec::new(),
+    };
+    // Increments first: an operator's input may read them.
+    for f in &config.formulas {
+        for op in f.tree.operators() {
+            if op.kind != OpKind::Increment {
+                continue;
+            }
+            let key = hidden(op);
+            if p.increments.iter().any(|(k, _, _)| *k == key) {
+                continue;
+            }
+            if op
+                .input
+                .operators()
+                .iter()
+                .any(|o| o.kind == OpKind::Increment)
+            {
+                return Err(format!(
+                    "{WHO}: {}: an increment's input holds another increment, but it must be an \
+                     expression (a column computation, such as pl.col(\"x\") + 1) of the row's \
+                     own columns. Compute the inner increment in one \
+                     with_windows call, and the increment of its output in a second.",
+                    f.name
+                )
+                .into());
+            }
+            let dtype = dtypes_of(
+                input,
+                vec![op.input.to_expr(&|_| unreachable!()).alias("@t")],
+            )
+            .map_err(|e| {
+                format!(
+                    "{WHO}: {}: Polars cannot compute the increment's input ({e}). Check that \
+                     the input reads columns of the right type.",
+                    f.name
+                )
+            })?;
+            let dtype = dtype.get("@t").expect("aliased").clone();
+            let temporal = dtype.is_temporal();
+            if !(numeric(&dtype) || temporal) {
+                return Err(Refused::wrong_type(format!(
+                    "{WHO}: {}: an increment's input must be a number or a temporal column, but \
+                     it is {}. Cast the input to a number, such as with .cast(pl.Float64).",
+                    f.name,
+                    crate::arrow::dtype_name(&dtype)
+                )));
+            }
+            p.increments.push((key, (*op.input).clone(), temporal));
+        }
+    }
+    let incr_schema = {
+        let mut s = input.clone();
+        for (k, _, _) in &p.increments {
+            s.insert(k.as_str().into(), DataType::Float64);
+        }
+        s
+    };
+    let resolve_incr = |op: &OpNode| col(hidden(op).as_str());
+    for f in &config.formulas {
+        for op in f.tree.operators() {
+            if op.kind == OpKind::Increment {
+                continue;
+            }
+            let key = hidden(op);
+            if p.columns.iter().any(|(k, _)| *k == key) {
+                continue;
+            }
+            let direction = op.direction();
+            let stat = op.kind.stat().expect("a window operator");
+            let half_life = op.half_life.clone().expect("checked when read");
+            p.spans.push(("half_life", half_life.clone()));
+            if let Some(w) = &op.window_size {
+                p.spans.push(("window_size", w.clone()));
+            }
+            let kernel = KernelDef {
+                direction,
+                half_life: half_life.value(),
+                window_size: op.window_size.as_ref().map(Span::value),
+                window_ns: match &op.window_size {
+                    Some(Span::Duration(d)) => Some(d.nanos),
+                    _ => None,
+                },
+                closed: op.closed,
+            };
+            kernel
+                .check()
+                .map_err(|e| format!("{WHO}: {}: {}: {e}", f.name, op.kind.name()))?;
+            let ki = match p.kernels.iter().position(|k| *k == kernel) {
+                Some(i) => i,
+                None => {
+                    p.kernels.push(kernel);
+                    p.kernels.len() - 1
+                }
+            };
+            let input_i = match p.inputs.iter().position(|n| *n == *op.input) {
+                Some(i) => i,
+                None => {
+                    let dtype = dtypes_of(
+                        &incr_schema,
+                        vec![op.input.to_expr(&resolve_incr).alias("@t")],
+                    )
+                    .map_err(|e| {
+                        format!(
+                            "{WHO}: {}: Polars cannot compute {}'s input ({e}). Check that the \
+                             input reads columns of the right type.",
+                            f.name,
+                            op.kind.name()
+                        )
+                    })?;
+                    let dtype = dtype.get("@t").expect("aliased").clone();
+                    if !numeric(&dtype) {
+                        return Err(Refused::wrong_type(format!(
+                            "{WHO}: {}: {}'s input must be a number, but it is {}. Cast \
+                             the input to a number, such as with .cast(pl.Float64).",
+                            f.name,
+                            op.kind.name(),
+                            crate::arrow::dtype_name(&dtype)
+                        )));
+                    }
+                    p.inputs.push((*op.input).clone());
+                    p.inputs.len() - 1
+                }
+            };
+            p.ops.push(OpDef {
+                kernel: ki,
+                stat,
+                input: input_i,
+                min_samples: op.min_samples,
+                partial: op.partial.unwrap_or(match direction {
+                    Direction::Backward => Partial::Keep,
+                    Direction::Forward => Partial::Null,
+                }),
+                bias: op.bias,
+                quantile: op.quantile,
+            });
+            p.columns.push((key, p.ops.len() - 1));
+        }
+    }
+    debug_assert!(
+        !(p.ops.is_empty() && p.increments.is_empty()),
+        "checked per formula"
+    );
+    p.bare = config
+        .formulas
+        .iter()
+        .map(|f| f.tree.bare_operator().map(hidden))
+        .collect();
+    Ok(p)
+}
+
+/// The kind of clock a run is fed. A state resumes only on the kind that
+/// wrote it: the other cannot be ordered against its last row, and an
+/// integer clock's edges are decided in integers, a float clock's in
+/// doubles (docs/PLAN.md task 200).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClockKind {
+    Numeric,
+    Temporal,
+    Integer,
+}
+
+impl ClockKind {
+    fn name(self) -> &'static str {
+        match self {
+            ClockKind::Numeric => "a float",
+            ClockKind::Temporal => "a temporal",
+            ClockKind::Integer => "an integer",
+        }
+    }
+}
+
+fn kind_of(v: ClockValue) -> ClockKind {
+    match v {
+        ClockValue::F64(_) => ClockKind::Numeric,
+        ClockValue::Ns(_) => ClockKind::Temporal,
+        ClockValue::I64(_) => ClockKind::Integer,
+    }
+}
+
+/// Whether the clock stepped back from `prev` to `now` by more than
+/// `restart`, which the policy reads as a new start: on an integer clock
+/// the step in integers against it, exactly (task 200).
+fn back_past(prev: ClockValue, now: ClockValue, restart: f64) -> bool {
+    if let Some(step) = now.int_step(prev) {
+        return step < 0
+            && rheon_core::cmp_int_f64(-step, restart) == Some(std::cmp::Ordering::Greater);
+    }
+    let back = match (prev, now) {
+        (ClockValue::Ns(p), ClockValue::Ns(c)) => {
+            rheon_core::seconds_of_ns(i128::from(p) - i128::from(c))
+        }
+        (p, c) => p.seconds() - c.seconds(),
+    };
+    back > 0.0 && back > restart
+}
+
+/// An integer column's values, as `i128` so an unsigned 64-bit one is
+/// whole too, and an `Int128` (review round 5, B3); null where null.
+fn integer_values(s: &Series) -> PolarsResult<Vec<Option<i128>>> {
+    Ok(match s.dtype() {
+        DataType::UInt64 => s.u64()?.iter().map(|v| v.map(i128::from)).collect(),
+        DataType::Int128 => s.i128()?.iter().collect(),
+        _ => s
+            .cast(&DataType::Int64)?
+            .i64()?
+            .iter()
+            .map(|v| v.map(i128::from))
+            .collect(),
+    })
+}
+
+/// Whether an increment's input is read as its integers: every integer
+/// dtype [`integer_values`] holds whole, the 64-bit forms and an `Int128`.
+fn integer_input(dtype: &DataType) -> bool {
+    fits_64(dtype) || *dtype == DataType::Int128
+}
+
+/// `now − prev` as a double, rounded once: the difference of two `i128`s
+/// fits a `u128` either way round, where `i128` subtraction overflows
+/// between the type's two ends.
+fn integer_step(now: i128, prev: i128) -> f64 {
+    let size = now.abs_diff(prev) as f64;
+    if now >= prev { size } else { -size }
+}
+
+/// Durations and numbers must match the clock, as a spec's must
+/// (docs/PLAN.md task 88): a duration needs a temporal clock, a number a
+/// numeric one, and a duration below the clock's resolution is refused.
+fn check_scale(
+    config: &WindowsConfig,
+    spans: &[(&'static str, Span)],
+    input: &Schema,
+) -> Result<(), String> {
+    let mut all: Vec<(&str, &Span)> = spans.iter().map(|(n, s)| (*n, s)).collect();
+    all.extend(config.gap_cap.iter().map(|s| ("gap_cap", s)));
+    all.extend(
+        config
+            .restart_after_step_back
+            .iter()
+            .map(|s| ("restart_after_step_back", s)),
+    );
+    if let Some(SessionGapSpec::Gap(g)) = &config.session_gap {
+        all.push(("session_gap", g));
+    }
+    let duration = all.iter().find(|(_, s)| s.is_duration()).map(|(f, _)| *f);
+    let number = all
+        .iter()
+        .find(|(_, s)| s.is_unit_bound_number())
+        .map(|(f, _)| *f);
+    let clock = config.clock.as_deref();
+    let temporal = clock.is_some_and(|c| dtype_of(input, c).is_temporal());
+    match (duration, number) {
+        (Some(d), Some(n)) => {
+            return Err(format!(
+                "{WHO}: {d} is a duration and {n} is a number, but every parameter on one \
+                 clock is written the same way. Give both as durations on a temporal clock, or \
+                 both as numbers of clock units on a number clock."
+            ));
+        }
+        (Some(d), None) if !temporal => {
+            return Err(format!(
+                "{WHO}: {d} is a duration, which needs a temporal clock column (Datetime, \
+                 Date or Duration), but clock is {}. Give {d} as a number of clock units, or \
+                 name a temporal clock column.",
+                clock.map_or("not given".to_string(), |c| {
+                    format!("{c:?} ({})", crate::arrow::dtype_name(dtype_of(input, c)))
+                })
+            ));
+        }
+        (None, Some(n)) if temporal => {
+            return Err(format!(
+                "{WHO}: {n} is a number, but clock column {:?} is {}, which measures time. Give \
+                 {n} as a duration, such as \"10m\", a timedelta or pl.duration(minutes=10).",
+                clock.unwrap_or(""),
+                crate::arrow::dtype_name(dtype_of(input, clock.unwrap_or("")))
+            ));
+        }
+        _ => {}
+    }
+    if let (Some(c), true) = (clock, temporal) {
+        let dtype = dtype_of(input, c);
+        let tick = match dtype {
+            DataType::Date => 86_400.0,
+            DataType::Datetime(unit, _) | DataType::Duration(unit) => match unit {
+                TimeUnit::Milliseconds => 1e-3,
+                TimeUnit::Microseconds => 1e-6,
+                TimeUnit::Nanoseconds => 1e-9,
+            },
+            _ => 1e-9,
+        };
+        let step = match dtype {
+            DataType::Date => "a day",
+            DataType::Datetime(TimeUnit::Milliseconds, _)
+            | DataType::Duration(TimeUnit::Milliseconds) => "a millisecond",
+            DataType::Datetime(TimeUnit::Microseconds, _)
+            | DataType::Duration(TimeUnit::Microseconds) => "a microsecond",
+            _ => "a nanosecond",
+        };
+        for (param, s) in &all {
+            let (why, or_zero) = match *param {
+                "gap_cap" => (
+                    "every step would be cut to it and the clock would count rows rather than \
+                     measure time",
+                    "",
+                ),
+                "restart_after_step_back" => (
+                    "no step back could be as small and every one would reset the windows",
+                    ", or to 0 to reset at every step back",
+                ),
+                _ => continue,
+            };
+            let v = s.value();
+            if s.is_duration() && v > 0.0 && v < tick {
+                return Err(format!(
+                    "{WHO}: {param} is {s}, less than {step}, the smallest step clock column \
+                     {c:?} ({}) can take, so {why}. Set {param} to at least {step}{or_zero}.",
+                    crate::arrow::dtype_name(dtype)
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The call a state resumes, as it compares: a numeric `session_gap` is no
+/// part of it, since no window reads the number (every window ends at a
+/// session change), so a state saved with one resumes the call without it,
+/// or with another (task 278). `"reset"` acts, and stays.
+fn same_call(config: &WindowsConfig) -> WindowsConfig {
+    let mut c = config.clone();
+    if matches!(c.session_gap, Some(SessionGapSpec::Gap(_))) {
+        c.session_gap = None;
+    }
+    c
+}
+
+/// What differs between the call a state was saved by and this one, each
+/// setting with both its values, for the refusal of another call.
+fn call_differences(saved: &WindowsConfig, now: &WindowsConfig) -> String {
+    fn text<T: std::fmt::Display>(v: Option<&T>) -> String {
+        v.map_or_else(|| "not set".to_string(), |v| format!("\"{v}\""))
+    }
+    let reset = |c: &WindowsConfig| {
+        if c.session_gap.is_some() {
+            "\"reset\"".to_string()
+        } else {
+            "not set".to_string()
+        }
+    };
+    let like = |c: &WindowsConfig| text(c.like.as_ref().map(|l| &l.spec));
+    let mut out: Vec<String> = Vec::new();
+    if saved.formulas != now.formulas {
+        out.push("the expressions differ".into());
+    }
+    // Compared as the call compares them: a duration by its length.
+    let settings = [
+        (
+            "clock",
+            saved.clock != now.clock,
+            text(saved.clock.as_ref()),
+            text(now.clock.as_ref()),
+        ),
+        (
+            "gap_cap",
+            saved.gap_cap != now.gap_cap,
+            text(saved.gap_cap.as_ref()),
+            text(now.gap_cap.as_ref()),
+        ),
+        (
+            "restart_after_step_back",
+            saved.restart_after_step_back != now.restart_after_step_back,
+            text(saved.restart_after_step_back.as_ref()),
+            text(now.restart_after_step_back.as_ref()),
+        ),
+        (
+            "session",
+            saved.session != now.session,
+            text(saved.session.as_ref()),
+            text(now.session.as_ref()),
+        ),
+        (
+            "session_gap",
+            saved.session_gap != now.session_gap,
+            reset(saved),
+            reset(now),
+        ),
+        (
+            "group",
+            saved.group != now.group,
+            text(saved.group.as_ref()),
+            text(now.group.as_ref()),
+        ),
+        ("like=", saved.like != now.like, like(saved), like(now)),
+    ];
+    for (name, differs, was, is) in settings {
+        if !differs {
+            continue;
+        }
+        out.push(if was == is {
+            format!("{name} differs")
+        } else {
+            format!("{name} was {was} when saved and is {is} now")
+        });
+    }
+    match out.len() {
+        0 => "the call differs".into(),
+        1 => out.remove(0),
+        _ => {
+            let last = out.pop().unwrap_or_default();
+            format!("{} and {last}", out.join(", "))
+        }
+    }
+}
+
+/// [`same_call`] for the core's clock rules: a session's gap compares as
+/// any other number.
+fn same_clock(cfg: &ClockCfg) -> ClockCfg {
+    let mut c = *cfg;
+    if matches!(c.session_gap, Some(SessionGap::Gap(_))) {
+        c.session_gap = Some(SessionGap::Gap(0.0));
+    }
+    c
+}
+
+/// A session value as the core sees it: a hash of its text, so any dtype
+/// can mark sessions and only a change is read.
+/// The bank's session hash (`fnv1a`), which std's `DefaultHasher` is not: a
+/// hash persisted in the state must be the same on every toolchain (review
+/// R1, S6).
+fn session_hash(v: Option<&str>) -> u64 {
+    crate::bank::session_hash(v)
+}
+
+/// What a [`WindowsRun`] holds that no row changes: the call, its plan and
+/// the schemas it was built against.
+#[derive(PartialEq)]
+struct Constants {
+    config: WindowsConfig,
+    inputs: Vec<Node>,
+    columns: Vec<(String, usize)>,
+    /// [`Plan::bare`].
+    bare: Option<Vec<String>>,
+    increments: Vec<(String, Node, bool)>,
+    accept: Vec<String>,
+    /// The input's schema, as the call was built against it.
+    input: Schema,
+    /// The group and session columns' dtypes, by role: a key is its value's
+    /// text, so a column of another type on a resumed input would start
+    /// every key over, silently (task 159, F2).
+    key_dtypes: Vec<(String, String)>,
+    /// The output's schema: the input's columns, then each formula.
+    output: Schema,
+}
+
+/// A row of a frame by its place in it, sliced out only where it is read: a
+/// chunk is fed far more often than a state is saved sliced.
+#[derive(Clone)]
+struct LastRow {
+    frame: DataFrame,
+    at: usize,
+}
+
+impl LastRow {
+    fn row(&self) -> DataFrame {
+        self.frame.slice(self.at as i64, 1)
+    }
+}
+
+/// One `with_windows` run: the core, its plan, and the input rows it holds.
+#[derive(Clone)]
+pub struct WindowsRun {
+    /// What the call fixes and no row changes, shared by every run of a spec
+    /// (the bank's cores of one spec's groups): a copy of the run is then
+    /// its state alone.
+    k: Arc<Constants>,
+    core: Windows,
+    /// The rows the core holds, oldest first, as slices of the input with
+    /// the increment columns beside them.
+    /// Each behind an `Arc`, so that a copy of the run (the bank keeps one
+    /// before a chunk that may be refused) shares the rows rather than
+    /// copying a frame a chunk.
+    held: VecDeque<Arc<DataFrame>>,
+    /// Per group, the increments' state; the null key apart, so a row's
+    /// key is looked up as text without a copy.
+    incr_state: Vec<IncrState>,
+    incr_index: HashMap<String, usize>,
+    incr_null: Option<usize>,
+    /// The previous row's clock on the stream, across groups: a step back
+    /// past `restart_after_step_back` there restarts every group's windows
+    /// in the core, so it restarts every group's increments too (review
+    /// R1, S4).
+    stream_clock: Option<ClockValue>,
+    /// The core's row count at this run's first row: an error names the
+    /// row of this run's input.
+    run_base: u64,
+    /// Rows at the start of the input to skip, from a state saved under a
+    /// slice of the same input (review R2, W4; R4, B1), the first clock of
+    /// the input that state was saved under (R4, B3), and how many rows
+    /// this run has skipped, which an error's row number counts.
+    resume_skip: usize,
+    resume_first: Option<ClockValue>,
+    resume_first_session: Option<u64>,
+    skipped: u64,
+    /// The identity of the input a sliced state resumes on (review R5, C3;
+    /// R6, D1 and D2): the skip as loaded; the last rows the state read --
+    /// the rows it holds that are this input's, or the last row read where
+    /// it holds none -- and the skipped rows at those positions as they go
+    /// by.
+    resume_total: usize,
+    resume_held: Option<DataFrame>,
+    resume_rows: Vec<DataFrame>,
+    /// The last row read, skipped or fed, as the chunk had it (the hidden
+    /// columns beside the input's when fed): what a sliced state saves as
+    /// its identity beside the rows it holds (review R6, D1).
+    last_row: Option<LastRow>,
+    /// The first row's clock and session of this run's input, and whether
+    /// a row has been seen: what a state saved by this run remembers its
+    /// input by (review R4, B3; R7, E2).
+    first_clock: Option<ClockValue>,
+    first_session: Option<u64>,
+    started: bool,
+}
+
+/// Each text and binary column of `rows` with its views rebuilt into the
+/// fewest data buffers, so the rows a state holds save to the same bytes
+/// however they were laid out in memory (task 278, b32). A parquet read
+/// gives a text column whose values all sit inline in their views a data
+/// buffer anyway, where a frame built in memory has none, and the IPC
+/// writer writes every buffer the array has: the command line saved 19
+/// bytes more than `ModelBank.fit_predict` of the same rows. The values,
+/// and so every number the state holds, are unchanged.
+fn compact_views(rows: &mut DataFrame) -> PolarsResult<()> {
+    let names: Vec<PlSmallStr> = rows.get_column_names_owned();
+    for name in names {
+        let col = rows.column(&name)?;
+        let compact = match col.dtype() {
+            DataType::String => StringChunked::from_chunk_iter(
+                name.clone(),
+                col.str()?.downcast_iter().map(|a| a.clone().gc()),
+            )
+            .into_column(),
+            DataType::Binary => BinaryChunked::from_chunk_iter(
+                name.clone(),
+                col.binary()?.downcast_iter().map(|a| a.clone().gc()),
+            )
+            .into_column(),
+            _ => continue,
+        };
+        rows.replace(&name, compact)?;
+    }
+    Ok(())
+}
+
+impl WindowsRun {
+    /// Share `other`'s constants where they are the same as this run's: the
+    /// bank builds one core a group, and the cores of one spec's groups hold
+    /// one copy of the call and its plan, not one each. A run that differs
+    /// (another input schema, say) keeps its own.
+    pub fn share_with(&mut self, other: &WindowsRun) {
+        if !Arc::ptr_eq(&self.k, &other.k) && *self.k == *other.k {
+            self.k = Arc::clone(&other.k);
+        }
+        self.core.share_with(&other.core);
+    }
+
+    /// A run of `config` over an input with schema `input`.
+    ///
+    /// # Errors
+    ///
+    /// A formula or clock policy that cannot run, a column the input has
+    /// not got, and an output name that collides.
+    pub fn new(config: WindowsConfig, input: &Schema) -> Result<Self, Refused> {
+        for (role, c) in [
+            ("clock", &config.clock),
+            ("session", &config.session),
+            ("group", &config.group),
+        ] {
+            if let Some(c) = c
+                && !input.contains(c)
+            {
+                return Err(format!(
+                    "{WHO}: the {role} column {c:?} is not in the input, whose columns are {:?}. \
+                     Name a column the input has, or add {c:?} to it.",
+                    input.iter_names().map(|n| n.as_str()).collect::<Vec<_>>()
+                )
+                .into());
+            }
+        }
+        // A clock of text was read through a cast that turns digits into
+        // numbers and anything else into nulls, where every other surface
+        // refuses it by its type (task 356).
+        if let Some(c) = &config.clock {
+            let dtype = dtype_of(input, c);
+            if !(dtype.is_numeric()
+                || dtype.is_temporal()
+                || matches!(dtype, DataType::Boolean | DataType::Null))
+            {
+                return Err(Refused::wrong_type(format!(
+                    "{WHO}: clock column {c:?} must be a number or temporal, but it is {}. Cast \
+                     it, such as with pl.col({c:?}).cast(pl.Float64), or to a Datetime.",
+                    crate::arrow::dtype_name(dtype)
+                )));
+            }
+        }
+        // A key that does nothing is refused, as a spec refuses it (task 278,
+        // D3): each was accepted here and changed nothing.
+        if config.session_gap.is_some() && config.session.is_none() {
+            return Err(format!(
+                "{WHO}: session_gap is set, but session is not, and session_gap says only what \
+                 a change of session does. Set session to the session column, or leave out \
+                 session_gap."
+            )
+            .into());
+        }
+        if config.restart_after_step_back.is_some() && config.clock.is_none() {
+            return Err(format!(
+                "{WHO}: restart_after_step_back is set, but clock is not, and without a clock \
+                 column every row is one step forward, so no row steps back. Set clock to the \
+                 clock column, or leave out restart_after_step_back."
+            )
+            .into());
+        }
+        let cfg: ClockCfg = clock_cfg_of(&ClockPolicy {
+            who: WHO,
+            clock: config.clock.as_deref(),
+            gap_cap: config.gap_cap.as_ref(),
+            restart_after_step_back: config.restart_after_step_back.as_ref(),
+            session: config.session.as_deref(),
+            session_gap: config.session_gap.as_ref(),
+            spec_closes_on_session: None,
+            // A bank's window targets run one core per group, each built
+            // with no group column (`resolvers.rs`): the spec refuses its
+            // own groups without a clock, with this same rule (task 173).
+            group: config.group.as_deref(),
+            looks_ahead: config
+                .formulas
+                .iter()
+                .any(|f| f.tree.has_forward_operator()),
+        })?;
+        let p = plan(&config, input)?;
+        check_scale(&config, &p.spans, input)?;
+        let accept = config
+            .like
+            .as_ref()
+            .map_or_else(Vec::new, |l| l.accept.clone());
+        for c in &accept {
+            if !input.contains(c) {
+                return Err(format!(
+                    "{WHO}: the spec {:?} given as like= reads column {c:?}, which is not in \
+                     the input. Add {c:?} to the input, or pass a spec that reads only its \
+                     columns.",
+                    config.like.as_ref().map_or("", |l| l.spec.as_str())
+                )
+                .into());
+            }
+        }
+        // The output's dtypes: the formulas over the hidden columns, every
+        // one a Float64, on an empty frame.
+        let mut hidden_schema = input.clone();
+        for (k, _, _) in &p.increments {
+            hidden_schema.insert(k.as_str().into(), DataType::Float64);
+        }
+        for (k, _) in &p.columns {
+            hidden_schema.insert(k.as_str().into(), DataType::Float64);
+        }
+        let exprs: Vec<Expr> = config
+            .formulas
+            .iter()
+            .map(|f| {
+                f.tree
+                    .to_expr(&|op| col(hidden(op).as_str()))
+                    .alias(f.name.as_str())
+            })
+            .collect();
+        let evaluated = dtypes_of(&hidden_schema, exprs).map_err(|e| {
+            format!(
+                "{WHO}: Polars cannot compute an expression on the input's columns ({e}). \
+                     Check that each expression reads columns of the right type."
+            )
+        })?;
+        let mut output = input.clone();
+        for f in &config.formulas {
+            let dtype = evaluated.get(&f.name).expect("aliased").clone();
+            output.insert(f.name.as_str().into(), dtype);
+        }
+        let mut core = if p.ops.is_empty() {
+            // Increments alone: the core carries a kernel that reads nothing,
+            // so rows pass straight through it. A sum over no window, read
+            // at every row.
+            Windows::new(
+                vec![KernelDef {
+                    direction: Direction::Backward,
+                    half_life: f64::INFINITY,
+                    window_size: Some(1.0),
+                    // Its edge is never read, but on a temporal clock an
+                    // integer window converts nothing (review R4).
+                    window_ns: Some(1_000_000_000),
+                    closed: Closed::Left,
+                }],
+                vec![OpDef {
+                    kernel: 0,
+                    stat: Stat::Sum,
+                    input: 0,
+                    min_samples: 1,
+                    partial: Partial::Keep,
+                    bias: false,
+                    quantile: None,
+                }],
+                cfg,
+            )
+            .map_err(|e| format!("{WHO}: {e}"))?
+        } else {
+            Windows::new(p.kernels, p.ops, cfg).map_err(|e| format!("{WHO}: {e}"))?
+        };
+        core.set_grouped(config.group.is_some());
+        let inputs = if p.inputs.is_empty() {
+            vec![Node::Lit(crate::formula::Literal::Float(0.0))]
+        } else {
+            p.inputs
+        };
+        let key_dtypes: Vec<(String, String)> =
+            [("group", &config.group), ("session", &config.session)]
+                .into_iter()
+                .filter_map(|(role, c)| {
+                    let c = c.as_ref()?;
+                    let dtype = input.get(c.as_str()).map(ToString::to_string)?;
+                    Some((role.to_string(), dtype))
+                })
+                .collect();
+        Ok(Self {
+            k: Arc::new(Constants {
+                config,
+                inputs,
+                columns: p.columns,
+                bare: p.bare,
+                increments: p.increments,
+                accept,
+                input: input.clone(),
+                key_dtypes,
+                output,
+            }),
+            core,
+            held: VecDeque::new(),
+            incr_state: Vec::new(),
+            incr_index: HashMap::new(),
+            incr_null: None,
+            stream_clock: None,
+            run_base: 0,
+            resume_skip: 0,
+            resume_first: None,
+            resume_first_session: None,
+            skipped: 0,
+            resume_total: 0,
+            resume_held: None,
+            resume_rows: Vec::new(),
+            last_row: None,
+            first_clock: None,
+            first_session: None,
+            started: false,
+        })
+    }
+
+    /// The output's schema: the input's columns, then each formula.
+    /// Switch the core's plain-run loop off or on again: for a test that
+    /// holds it to the general row loop, and a timing of what it saves. Not
+    /// state: a run read back from a file has it on.
+    #[doc(hidden)]
+    pub fn set_plain_run(&mut self, on: bool) {
+        self.core.set_plain_run(on);
+    }
+
+    /// Rows the core's plain-run loop has taken, for a test to see that it ran.
+    #[doc(hidden)]
+    pub fn plain_rows(&self) -> u64 {
+        self.core.plain_rows()
+    }
+
+    /// Bytes the core's plain-run loop keeps between rows, for a measurement.
+    #[doc(hidden)]
+    pub fn plain_scratch_bytes(&self) -> usize {
+        self.core.plain_scratch_bytes()
+    }
+
+    pub fn schema(&self) -> Schema {
+        self.k.output.clone()
+    }
+
+    /// Rows fed and not yet out.
+    pub fn held(&self) -> usize {
+        self.core.held()
+    }
+
+    /// Contributing rows the kernels' queues hold: what their sums cost.
+    pub fn queued(&self) -> usize {
+        self.core.queued()
+    }
+
+    /// The columns the formulas read, whatever else the output keeps: what a
+    /// source must read however narrow the query's projection.
+    pub fn needed(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        let mut put = |c: &String| {
+            if !out.contains(c) {
+                out.push(c.clone());
+            }
+        };
+        for c in [
+            &self.k.config.clock,
+            &self.k.config.session,
+            &self.k.config.group,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            put(c);
+        }
+        for f in &self.k.config.formulas {
+            f.tree.columns().iter().for_each(&mut put);
+        }
+        self.k.accept.iter().for_each(&mut put);
+        out
+    }
+
+    /// The hidden columns a held chunk carries beside the input's.
+    fn hidden_names(&self) -> Vec<String> {
+        self.k
+            .increments
+            .iter()
+            .map(|(k, _, _)| k.clone())
+            .collect()
+    }
+
+    /// Feed one chunk and return the rows it resolved, in input order, less
+    /// any a `"drop"` operator was partial on. With `limit`, rows are fed
+    /// only until `limit` rows are out, so the state is the state after
+    /// the row that resolved the last of them, whatever the chunk size.
+    ///
+    /// # Errors
+    ///
+    /// A chunk whose columns are not the input's, and every row refusal the
+    /// core makes, each naming the row.
+    pub fn feed(&mut self, df: &DataFrame, limit: Option<usize>) -> PolarsResult<DataFrame> {
+        self.feed_inner(df, limit, None, None, false)
+    }
+
+    /// Feed one chunk for a bank learning formula targets (docs/PLAN.md
+    /// task 104): every row it resolved, dropped ones included, as a frame
+    /// of the formulas' values -- null where a `"drop"` operator was partial
+    /// -- beside `@po:seq`, the row's number as the caller counts it (the
+    /// chunk's `@po:row` column), and `@po:at`, the number of the row that
+    /// resolved it (the row that closed, cut or discarded its windows),
+    /// read from `rows`, the chunk's rows' numbers.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::feed`].
+    pub fn feed_resolving(&mut self, df: &DataFrame, rows: &[u64]) -> PolarsResult<DataFrame> {
+        polars_ensure!(
+            rows.len() == df.height() && df.get_column_names().iter().any(|c| c.as_str() == "@po:row"),
+            ComputeError: "internal: feed_resolving: the chunk must carry a row number for each row and an \
+                @po:row column, which is a defect in polars-online. Open an issue at \
+                https://github.com/hgilde/polars-online/issues with this message."
+        );
+        self.feed_inner(df, None, Some(rows), None, false)
+    }
+
+    /// [`Self::feed_resolving`] for a caller that evaluates what the lazy
+    /// engine would per chunk, once for every group it feeds (the bank's
+    /// resolver, which hands the engine its whole chunk rather than one
+    /// plan a group): `given` is what [`Self::share`] evaluated over the
+    /// whole frame -- the chunk's operator inputs and its increments'
+    /// inputs -- taken at this group's rows, and, where
+    /// [`Self::formulas_pending`], the frame
+    /// returned is the resolved rows before their formulas, which
+    /// [`Self::resolved_formulas`] evaluates over any number of such frames
+    /// stacked.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::feed_resolving`].
+    pub fn feed_resolving_with(
+        &mut self,
+        df: &DataFrame,
+        rows: &[u64],
+        given: Option<Given>,
+    ) -> PolarsResult<DataFrame> {
+        polars_ensure!(
+            rows.len() == df.height() && df.get_column_names().iter().any(|c| c.as_str() == "@po:row"),
+            ComputeError: "internal: feed_resolving: the chunk must carry a row number for each row and an \
+                @po:row column, which is a defect in polars-online. Open an issue at \
+                https://github.com/hgilde/polars-online/issues with this message."
+        );
+        if let Some(given) = &given {
+            let inputs_fit = given.inputs.as_ref().is_none_or(|all| {
+                all.len() == self.k.inputs.len() && all.iter().all(|v| v.len() == df.height())
+            });
+            let incr_fits = given.incr.as_ref().is_none_or(|r| r.rows == df.height());
+            polars_ensure!(
+                inputs_fit && incr_fits,
+                ComputeError: "internal: feed_resolving: the operator inputs handed over must be \
+                    one value a row for each input, which is a defect in polars-online. Open an \
+                    issue at https://github.com/hgilde/polars-online/issues with this message."
+            );
+        }
+        self.feed_inner(df, None, Some(rows), given, true)
+    }
+
+    /// Whether the formulas of a resolving feed are evaluated by the lazy
+    /// engine, over the resolved rows: unless each is only an operator's
+    /// values.
+    pub fn formulas_pending(&self) -> bool {
+        self.bare_formulas().is_none()
+    }
+
+    /// The hidden column each formula is, where every formula is nothing else
+    /// but one operator (and the short cuts are on).
+    fn bare_formulas(&self) -> Option<&[String]> {
+        short_cuts().then_some(self.k.bare.as_deref()).flatten()
+    }
+
+    /// Every operator input over a whole frame, as one plan of the lazy
+    /// engine, each as doubles with a null (as a NaN) where the input has
+    /// none: what a feed would evaluate for any rows of the frame, since a
+    /// formula's inputs are element-wise. `None` where there is nothing to
+    /// save a feed -- inputs that are all columns of doubles -- and where the
+    /// plan refuses, which a feed reports for the rows it was handed. For a
+    /// run with no increments; [`Self::share_increments`] does the rest.
+    fn evaluate_inputs(&self, frame: &DataFrame) -> Option<Vec<Vec<f64>>> {
+        if self.bare_inputs(frame).is_some() {
+            return None;
+        }
+        self.evaluated_inputs(frame).ok()
+    }
+
+    /// The input columns, where each is a column of doubles.
+    fn bare_inputs<'a>(&self, chunk: &'a DataFrame) -> Option<Vec<&'a Column>> {
+        short_cuts()
+            .then(|| {
+                self.k
+                    .inputs
+                    .iter()
+                    .map(|node| match node {
+                        Node::Col(c) => chunk
+                            .column(c.as_str())
+                            .ok()
+                            .filter(|s| *s.dtype() == DataType::Float64),
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .flatten()
+    }
+
+    /// Polars evaluates every operator's input over the chunk.
+    fn evaluated_inputs(&self, chunk: &DataFrame) -> PolarsResult<Vec<Vec<f64>>> {
+        let resolve_incr = |op: &OpNode| col(hidden(op).as_str());
+        // `with_columns` then `select`: a bare literal input (the stand-in
+        // where only increments run) broadcasts to the chunk's rows.
+        let evaluated = chunk
+            .clone()
+            .lazy()
+            .with_columns(
+                self.k
+                    .inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, node)| {
+                        node.to_expr(&resolve_incr)
+                            .cast(DataType::Float64)
+                            .alias(input_column(i).as_str())
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .select(
+                (0..self.k.inputs.len())
+                    .map(|i| col(input_column(i).as_str()))
+                    .collect::<Vec<_>>(),
+            )
+            .collect()?;
+        (0..self.k.inputs.len())
+            .map(|i| {
+                let s = evaluated.column(input_column(i).as_str())?;
+                Ok(s.f64()?.iter().map(|v| v.unwrap_or(f64::NAN)).collect())
+            })
+            .collect()
+    }
+
+    fn feed_inner(
+        &mut self,
+        df: &DataFrame,
+        limit: Option<usize>,
+        resolving: Option<&[u64]>,
+        given: Option<Given>,
+        defer: bool,
+    ) -> PolarsResult<DataFrame> {
+        // The clock of the whole chunk first: the row numbers an error
+        // names count the rows skipped below.
+        let mut clock = self.clock_values(df)?;
+        // A state saved under a slice recorded the rows of its input the
+        // run consumed; a run resumed on that input skips them (review R2,
+        // W4; R4, B1). The input's first clock says whether this is that
+        // input: one that starts elsewhere, the next file, skips nothing
+        // (R4, B3). Without a clock column the rows are skipped either way.
+        if !self.started && df.height() > 0 {
+            // The verdict first, the run's record of its input after it: a
+            // refused first chunk leaves the run as it was, so fed again it
+            // is refused again, where a run marked started before the
+            // verdict took the same chunk whole on the next call (task 159,
+            // F1).
+            let first_clock = clock.as_ref().map(|c| c[0]);
+            let (key, session) = self.first_key_session(df)?;
+            if self.resume_skip > 0
+                && (first_clock != self.resume_first || session != self.resume_first_session)
+            {
+                // Not the same input from its start: its first row's clock or
+                // session is not the saved input's (review R7, E2: a clock
+                // that starts over at the same stamp each day gives the next
+                // file the same first clock, and the session tells them
+                // apart). The row is put to the clock policy against the
+                // last row the state read: a step forward or a new start (a
+                // step back past restart_after_step_back, a new session) is
+                // the next file, which skips nothing; the same stamp is a
+                // file boundary inside a tied stamp or the same input sliced
+                // inside it, which cannot be told apart; a step back the
+                // policy refuses is the same input sliced by hand or an
+                // overlapping file (review R5, C4; R6, D3 and D4).
+                match self.core.peek(key.as_deref(), first_clock, session) {
+                    Ok(Peek::NewStart) => self.resume_skip = 0,
+                    Ok(Peek::Forward) if self.k.config.clock.is_some() => self.resume_skip = 0,
+                    // A row-count clock steps forward at every row, so a step
+                    // forward is evidence of nothing there: without a clock
+                    // column the next file begins with a new session (review
+                    // R8, F1) -- of its first row's group under `group`, so a
+                    // group the state has not read shows none (R9, G1).
+                    Ok(Peek::Forward) => polars_bail!(ComputeError:
+                        "{WHO}: the state was saved from a slice of its input, and this is \
+                         another input: its first row continues the session last read, or is of \
+                         a group the state has not read. Resume on the whole input the state was \
+                         saved from, or begin the next file with a new session (and, under group, \
+                         with a group the state has read)."
+                    ),
+                    Ok(Peek::SameStamp) => polars_bail!(ComputeError:
+                        "{WHO}: the state was saved from a slice of its input, and this input \
+                         starts at the last clock value the state read. A file that begins \
+                         inside a run of tied clock values, or the same input sliced inside \
+                         them, starts there too. Resume on the input the state was \
+                         saved from, whole, or on the next file, which starts after the last \
+                         clock value the state read."
+                    ),
+                    // The policy's own words beside the rule's (review R8, F2):
+                    // under `group` a next-day file's step back is refused on
+                    // the stream's clock whatever its session, as the
+                    // unsliced path refuses it.
+                    Err(r) => {
+                        let why = self.refusal(r, self.core.next_seq()).to_string();
+                        let why = why.strip_prefix(&format!("{WHO}: ")).unwrap_or(&why);
+                        // Its first sentence, the step back: its remedy is
+                        // not this one's.
+                        let why = why.split_once(". ").map_or(why, |(first, _)| first);
+                        let mut letters = why.chars();
+                        let why: String = letters
+                            .next()
+                            .map(|c| c.to_uppercase().chain(letters).collect())
+                            .unwrap_or_default();
+                        polars_bail!(ComputeError:
+                            "{WHO}: the state was saved from a slice of its input, and this is \
+                             another input: it starts before the last row the state read. \
+                             {why}. Resume on the input the state was saved from, whole, or on \
+                             the next file, which starts after the last row the state read."
+                        )
+                    }
+                }
+            } else if self.resume_skip == 0 && self.k.config.clock.is_some() && resolving.is_none()
+            {
+                // A state saved without a slice goes on with the next file,
+                // and refuses one that starts at the last stamp it read, as a
+                // sliced state does: a file boundary inside a tied stamp
+                // cannot be told from an input that repeats the rows read
+                // there, which would come out twice (task 158, E13). A fresh
+                // run has read no stamp, and a new session at that stamp is a
+                // new start; a step back is the policy's to refuse, below.
+                // Not for a core the bank's resolver feeds (`resolving`): it
+                // gets the rows of one stream the bank's own clock has
+                // checked, so a chunk boundary inside a tied stamp is that
+                // stream going on, and the same words refused every bank
+                // with a window target saved there (task 159, B1).
+                if let Ok(Peek::SameStamp) = self.core.peek(key.as_deref(), first_clock, session) {
+                    polars_bail!(ComputeError:
+                        "{WHO}: this input starts at the last clock value the state read, so it \
+                         may be an input that repeats rows the state read, which would come out \
+                         twice. A file that begins inside a run of tied clock values cannot be \
+                         told from one. Resume on the next file, which starts after the last \
+                         clock value the state read, and cut files between clock values rather \
+                         than inside a run of tied ones."
+                    );
+                }
+            }
+            self.started = true;
+            self.first_clock = first_clock;
+            self.first_session = session;
+        }
+        let skipped: DataFrame;
+        let mut df = df;
+        let mut resolving = resolving;
+        let (mut given_inputs, mut given_incr) = given.map_or((None, None), |g| (g.inputs, g.incr));
+        let skip = self.resume_skip.min(df.height());
+        if skip > 0 {
+            // The skipped rows inside the held window -- the last
+            // `resume_held` of the `resume_total` rows consumed -- are kept
+            // for the identity check once the skip completes (review R5, C3).
+            let before = usize::try_from(self.skipped).expect("rows fit");
+            let held = self.resume_held.as_ref().map_or(0, DataFrame::height);
+            let lo = self.resume_total.saturating_sub(held).max(before);
+            let hi = (before + skip).min(self.resume_total);
+            if hi > lo {
+                self.resume_rows
+                    .push(df.slice((lo - before) as i64, hi - lo));
+            }
+            self.resume_skip -= skip;
+            self.skipped += skip as u64;
+            // Once the skip completes, the last row skipped is the last row
+            // read; until then the loaded one still is, as `consumed` counts
+            // the rows pending (review R6, D1; R7, E4).
+            if self.resume_skip == 0 {
+                self.last_row = Some(LastRow {
+                    frame: df.clone(),
+                    at: skip - 1,
+                });
+            }
+            skipped = df.slice(skip as i64, df.height() - skip);
+            df = &skipped;
+            resolving = resolving.map(|r| &r[skip..]);
+            for v in given_inputs.iter_mut().flatten() {
+                v.drain(..skip);
+            }
+            // The increments' inputs of the rows after those skipped: not
+            // handed over, the run reads them from its own rows.
+            given_incr = None;
+            if let Some(c) = &mut clock {
+                c.drain(..skip);
+            }
+            if self.resume_skip == 0 {
+                self.check_resumed_input()?;
+            }
+        }
+        let n = df.height();
+        let session: Option<Vec<u64>> = self.session_hashes(df)?;
+        // The groups' keys as codes from the column's own values: a group is
+        // made at the first row that reaches it, below. The increments (a
+        // `diff` or `pct_change` in an input) keep their state by the key's
+        // text, which only they read.
+        let mut codes = match &self.k.config.group {
+            None => ChunkKeys::ungrouped(),
+            Some(c) => ChunkKeys::of(
+                &mut self.core,
+                df.column(c.as_str())?.as_materialized_series(),
+            )?,
+        };
+        let group_col = match &self.k.config.group {
+            Some(c) if !self.k.increments.is_empty() => {
+                Some(key_text(df.column(c.as_str())?.as_materialized_series())?)
+            }
+            _ => None,
+        };
+        let groups = group_col.as_ref().map(|c| c.str()).transpose()?;
+        let keys: Vec<Option<&str>> = if self.k.increments.is_empty() {
+            Vec::new()
+        } else {
+            (0..n)
+                .map(|i| match groups {
+                    None => Some(""),
+                    Some(g) => g.get(i),
+                })
+                .collect()
+        };
+
+        // Pass one: the increments, one row back within the group's
+        // session, as hidden columns of the chunk. On a snapshot: the state
+        // must end at the last row the core took, and a slice (`limit`) or
+        // a refusal stops short of the chunk's end (review R1, B1).
+        let snapshot = (
+            self.incr_state.clone(),
+            self.incr_index.clone(),
+            self.incr_null,
+            self.stream_clock,
+        );
+        let chunk = self.with_increments(df, &keys, &clock, session.as_deref(), given_incr)?;
+
+        // Pass two: Polars evaluates every operator's input -- but an input
+        // that is a column of doubles, as a price is, is its values already:
+        // the cast to double of a double is none, and a plan of the lazy
+        // engine is tens of microseconds a call, which a bank's group pays
+        // every chunk. A bank's resolver evaluates the whole chunk's in one
+        // plan, and hands each group its rows' values.
+        // A column with no null in one piece is read where it lies: the copy
+        // with a NaN for each null is for the column that has one.
+        let values: Vec<Cow<'_, [f64]>> = if let Some(values) = given_inputs {
+            values.into_iter().map(Cow::Owned).collect()
+        } else if let Some(columns) = self.bare_inputs(&chunk) {
+            columns
+                .iter()
+                .map(|s| {
+                    let ca = s.f64()?;
+                    Ok(match ca.cont_slice() {
+                        Ok(whole) => Cow::Borrowed(whole),
+                        Err(_) => Cow::Owned(ca.iter().map(|v| v.unwrap_or(f64::NAN)).collect()),
+                    })
+                })
+                .collect::<PolarsResult<_>>()?
+        } else {
+            self.evaluated_inputs(&chunk)?
+                .into_iter()
+                .map(Cow::Owned)
+                .collect()
+        };
+        let slices: Vec<&[f64]> = values.iter().map(|c| &**c).collect();
+        let accepts: Vec<Vec<f64>> = self
+            .k
+            .accept
+            .iter()
+            .map(|c| {
+                let s = df.column(c.as_str())?.cast(&DataType::Float64)?;
+                Ok(s.f64()?.iter().map(|v| v.unwrap_or(f64::NAN)).collect())
+            })
+            .collect::<PolarsResult<_>>()?;
+
+        // Pass three: the core.
+        let chunk_base = self.core.next_seq();
+        let mut row_values = vec![0.0; self.k.inputs.len()];
+        let mut consumed = n;
+        // Resolving: per resolved row, the number of the row that resolved
+        // it, read off the core's ready count after each push. Nothing is
+        // ready before the chunk: every resolving feed drains everything.
+        let mut at: Vec<u64> = Vec::new();
+        if let Some(rows) = resolving {
+            at.resize(self.core.ready(), rows.first().copied().unwrap_or(0));
+        }
+        let plain_rows = limit.is_none() && resolving.is_none();
+        let mut i = 0;
+        while i < n {
+            if let Some(l) = limit
+                && self.core.ready_kept() >= l
+            {
+                consumed = i;
+                break;
+            }
+            // The row's group: its code names it, or makes it where this is
+            // the first row of a key the core had no group for.
+            let group = codes.group(&mut self.core, i);
+            // The rows the core's plain loop runs, taken by it as one block
+            // after another; the first row that is not plain, and the rows
+            // of a feed that stops at a row count or names the row that
+            // resolved each, are `push`'s one at a time.
+            if plain_rows && self.core.plain_may_run() {
+                let taken = self.core.push_plain(&PlainRows {
+                    group,
+                    start: i,
+                    clock: clock.as_deref(),
+                    len: n,
+                    session: session.as_deref(),
+                    values: &slices,
+                    accepts: &accepts,
+                    keys: codes.is_grouped().then_some(&codes),
+                });
+                if taken > 0 {
+                    i += taken;
+                    continue;
+                }
+            }
+            for (k, col) in slices.iter().enumerate() {
+                row_values[k] = col[i];
+            }
+            let row = RowIn {
+                group,
+                clock: clock.as_ref().map(|c| c[i]),
+                session: session.as_ref().map(|s| s[i]),
+                values: &row_values,
+                accept: accepts.iter().all(|col| usable(col[i])),
+            };
+            if let Err(r) = self.core.push(&row) {
+                // The rows before it are in the core: hold them, and put the
+                // increments' state where they end.
+                if i > 0 {
+                    self.held.push_back(Arc::new(chunk.slice(0, i)));
+                    self.last_row = Some(LastRow {
+                        frame: chunk.clone(),
+                        at: i - 1,
+                    });
+                }
+                self.rewind_increments(snapshot, df, &keys, &clock, session.as_deref(), i)?;
+                return Err(self.refusal(r, chunk_base));
+            }
+            if let Some(rows) = resolving {
+                at.resize(self.core.ready(), rows[i]);
+            }
+            i += 1;
+        }
+        if consumed > 0 {
+            self.last_row = Some(LastRow {
+                frame: chunk.clone(),
+                at: consumed - 1,
+            });
+            // The whole chunk is held as it is: no slice of every column.
+            let kept = if consumed == chunk.height() {
+                chunk
+            } else {
+                chunk.slice(0, consumed)
+            };
+            self.held.push_back(Arc::new(kept));
+        }
+        if consumed < n {
+            self.rewind_increments(snapshot, df, &keys, &clock, session.as_deref(), consumed)?;
+        }
+        let e = match limit {
+            None => self.core.drain(),
+            Some(l) => self.core.drain_kept(l),
+        };
+        if resolving.is_some() {
+            debug_assert_eq!(at.len(), e.rows);
+            self.assemble_resolved(e, &at, defer)
+        } else {
+            self.assemble(e)
+        }
+    }
+
+    /// [`Self::assemble`] for [`Self::feed_resolving`]: the formulas over
+    /// every resolved row, null on a dropped one, with the row numbers.
+    fn assemble_resolved(
+        &mut self,
+        e: crate::windows::Emitted,
+        at: &[u64],
+        defer: bool,
+    ) -> PolarsResult<DataFrame> {
+        let resolved_at: UInt64Chunked = at.iter().map(|&a| Some(a)).collect();
+        let mut frame = self.assemble_rows(e)?;
+        frame.hstack_mut(&[resolved_at.with_name("@po:at".into()).into_column()])?;
+        if defer && self.formulas_pending() {
+            return Ok(frame);
+        }
+        self.resolved_formulas(frame)
+    }
+
+    /// The formulas over resolved rows, as [`Self::feed_resolving`] gives
+    /// them: the rows with their operators' hidden columns, `@po:row` and
+    /// `@po:at`, in; the formulas' columns, `@po:seq` and `@po:at` out. The
+    /// formulas are element-wise, so the rows may be of any number of runs
+    /// of one call, stacked.
+    ///
+    /// # Errors
+    ///
+    /// A formula that cannot be evaluated over the rows, such as a strict
+    /// cast that fails.
+    pub fn resolved_formulas(&self, frame: DataFrame) -> PolarsResult<DataFrame> {
+        // A formula that is only a window operator's values is its hidden
+        // column under the formula's name: no plan of the lazy engine for
+        // it, which a bank's group would pay every chunk.
+        if let Some(names) = self.bare_formulas() {
+            let mut cols: Vec<Column> = Vec::with_capacity(names.len() + 2);
+            for (f, name) in self.k.config.formulas.iter().zip(names) {
+                cols.push(
+                    frame
+                        .column(name.as_str())?
+                        .clone()
+                        .with_name(f.name.as_str().into()),
+                );
+            }
+            cols.push(frame.column("@po:row")?.clone().with_name("@po:seq".into()));
+            cols.push(frame.column("@po:at")?.clone());
+            return DataFrame::new(frame.height(), cols);
+        }
+        // An operator partial under `"drop"` gives no value, so a formula
+        // over it is null of itself; the row's other formulas keep theirs
+        // (review R1, D4: every formula of the row was nulled).
+        let exprs: Vec<Expr> = self
+            .k
+            .config
+            .formulas
+            .iter()
+            .map(|f| {
+                f.tree
+                    .to_expr(&|op| col(hidden(op).as_str()))
+                    .alias(f.name.as_str())
+            })
+            .collect();
+        let keep: Vec<Expr> = self
+            .k
+            .config
+            .formulas
+            .iter()
+            .map(|f| col(f.name.as_str()))
+            .chain([col("@po:row").alias("@po:seq"), col("@po:at")])
+            .collect();
+        frame.lazy().with_columns(exprs).select(keep).collect()
+    }
+
+    /// Rows of this run's input consumed so far: skipped as already read, a
+    /// loaded skip not yet applied (review R5, C1), or fed to the core.
+    /// Under a slice, what a run resumed on the same input must skip
+    /// ([`Self::save_bytes_with`]). Rows the state held from an earlier run
+    /// and returned are none of this input's (review R4, B1 and B2).
+    pub fn consumed(&self) -> usize {
+        let fed = usize::try_from(self.core.next_seq() - self.run_base).expect("rows fit");
+        usize::try_from(self.skipped).expect("rows fit") + self.resume_skip + fed
+    }
+
+    /// The first row's group key and session hash, as the core reads them.
+    fn first_key_session(&self, df: &DataFrame) -> PolarsResult<(Option<String>, Option<u64>)> {
+        let head = df.slice(0, 1);
+        let key = match &self.k.config.group {
+            None => Some(String::new()),
+            Some(c) => key_text(head.column(c.as_str())?.as_materialized_series())?
+                .str()?
+                .get(0)
+                .map(str::to_string),
+        };
+        let session = match &self.k.config.session {
+            None => None,
+            Some(c) => {
+                let s = key_text(head.column(c.as_str())?.as_materialized_series())?;
+                Some(session_hash(s.str()?.get(0)))
+            }
+        };
+        Ok((key, session))
+    }
+
+    /// The identity of the input a sliced state resumes on (review R5, C3
+    /// and C4; R6, D1): the rows skipped where the state was cut must be
+    /// the last rows the state read -- the rows it held that are the
+    /// input's own, or the last row alone where it held none. Another input
+    /// that starts at the same clock, or the same input sliced by hand, is
+    /// refused by name rather than fed with rows skipped or doubled.
+    fn check_resumed_input(&mut self) -> PolarsResult<()> {
+        let rows = std::mem::take(&mut self.resume_rows);
+        let names: Vec<&str> = self.k.input.iter_names().map(|n| n.as_str()).collect();
+        let stack = |parts: &[DataFrame]| -> PolarsResult<DataFrame> {
+            let mut out = DataFrame::empty_with_schema(&self.k.input);
+            for part in parts {
+                out.vstack_mut(&part.select(names.iter().copied())?)?;
+            }
+            Ok(out)
+        };
+        if let Some(want) = self.resume_held.take() {
+            // The last rows the state read, as loaded: a run may have
+            // drained some of the held ones before the skip completes.
+            let got = stack(&rows)?;
+            if got.height() != want.height() || !got.equals_missing(&want) {
+                polars_bail!(ComputeError:
+                    "{WHO}: the state was saved from a slice of its input, and the last {} rows \
+                     it read are not this input's rows at that place, so this is another input. \
+                     Resume on the input the state was saved from, whole.",
+                    want.height()
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// The rows a sliced state still expects to skip: an input that ends
+    /// first is another input (review R5, C3).
+    fn resumed_input_ended_early(&self) -> Option<String> {
+        (self.resume_skip > 0).then(|| {
+            format!(
+                "{WHO}: the state was saved from a slice of its input after reading {} rows, \
+                 but this input ended after {}, so it is another input. Resume on the input the \
+                 state was saved from, whole.",
+                self.resume_total, self.skipped
+            )
+        })
+    }
+
+    /// The end of the input: every row still held goes out, each forward
+    /// window still open over it null.
+    pub fn finish(&mut self) -> PolarsResult<DataFrame> {
+        if let Some(msg) = self.resumed_input_ended_early() {
+            polars_bail!(ComputeError: "{}", msg);
+        }
+        let e = self.core.finish();
+        self.assemble(e)
+    }
+
+    /// Put the increments' state back to `snapshot` and run the first
+    /// `rows` rows of `df` through it again, so it ends where the core
+    /// stopped: the values the held rows carry are the same, since an
+    /// increment reads only the rows before it.
+    #[allow(clippy::type_complexity)]
+    fn rewind_increments(
+        &mut self,
+        snapshot: (
+            Vec<IncrState>,
+            HashMap<String, usize>,
+            Option<usize>,
+            Option<ClockValue>,
+        ),
+        df: &DataFrame,
+        keys: &[Option<&str>],
+        clock: &Option<Vec<ClockValue>>,
+        session: Option<&[u64]>,
+        rows: usize,
+    ) -> PolarsResult<()> {
+        (
+            self.incr_state,
+            self.incr_index,
+            self.incr_null,
+            self.stream_clock,
+        ) = snapshot;
+        if rows > 0 {
+            let clock = clock.as_ref().map(|c| c[..rows].to_vec());
+            self.with_increments(
+                &df.slice(0, rows),
+                keys.get(..rows).unwrap_or(&[]),
+                &clock,
+                session.map(|s| &s[..rows]),
+                None,
+            )?;
+        }
+        Ok(())
+    }
+
+    /// The chunk with one hidden column per increment: `x_i - x_{i-1}`
+    /// within the group's session, null on a session's first row and after
+    /// a step back the policy reads as a new start; seconds for a temporal
+    /// input. `given` is the increments' inputs where a caller has
+    /// evaluated them (see [`Self::share`]); the lazy engine does it here
+    /// otherwise.
+    fn with_increments(
+        &mut self,
+        df: &DataFrame,
+        keys: &[Option<&str>],
+        clock: &Option<Vec<ClockValue>>,
+        session: Option<&[u64]>,
+        given: Option<IncrInputs>,
+    ) -> PolarsResult<DataFrame> {
+        if self.k.increments.is_empty() {
+            return Ok(df.clone());
+        }
+        let inputs = match given {
+            Some(read) => read,
+            None => self.increment_inputs(df)?,
+        };
+        let (restart, restarts) = self.restart_policy();
+        let out = step_increments(
+            IncrTrack {
+                state: &mut self.incr_state,
+                index: &mut self.incr_index,
+                null: &mut self.incr_null,
+                stream_clock: &mut self.stream_clock,
+            },
+            self.k.increments.len(),
+            (restart, restarts),
+            &inputs,
+            keys,
+            clock,
+            session,
+        );
+        let cols = self.increment_columns(out);
+        let mut chunk = df.clone();
+        chunk.hstack_mut(&cols)?;
+        Ok(chunk)
+    }
+
+    /// The clock policy's reading of a step back: the span past which it is
+    /// a new start, and whether a step back starts anew at all.
+    fn restart_policy(&self) -> (f64, bool) {
+        (
+            self.core.clock_cfg().min_backwards_jump,
+            matches!(
+                self.core.clock_cfg().on_clock_reset,
+                rheon_core::OnClockReset::ResetState
+            ),
+        )
+    }
+
+    /// The increments' values as the hidden columns they stand in as.
+    fn increment_columns(&self, out: Vec<Vec<Option<f64>>>) -> Vec<Column> {
+        self.k
+            .increments
+            .iter()
+            .zip(out)
+            .map(|((name, _, _), values)| {
+                let ca: Float64Chunked = values.into_iter().collect();
+                ca.with_name(name.as_str().into()).into_column()
+            })
+            .collect()
+    }
+
+    /// The increments' inputs over `df`, as one plan of the lazy engine.
+    fn increment_inputs(&self, df: &DataFrame) -> PolarsResult<IncrInputs> {
+        let inputs = df
+            .clone()
+            .lazy()
+            .select(
+                self.k
+                    .increments
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, node, _))| {
+                        node.to_expr(&|_| unreachable!("no operator in an increment's input"))
+                            .alias(input_column(i).as_str())
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .collect()?;
+        self.read_increment_inputs(&inputs)
+    }
+
+    /// Each increment's input read in the form its step is taken in.
+    fn read_increment_inputs(&self, inputs: &DataFrame) -> PolarsResult<IncrInputs> {
+        let width = self.k.increments.len();
+        // An integer input's values as integers (task 200): its step is
+        // taken in integers and then converted, where two doubles of an
+        // epoch-nanosecond column near 1.8e18 tied at a step of 1.
+        let integer: Vec<Option<Vec<Option<i128>>>> = (0..width)
+            .map(|i| {
+                let c = inputs.column(input_column(i).as_str())?;
+                if self.k.increments[i].2 || !integer_input(c.dtype()) {
+                    Ok(None)
+                } else {
+                    integer_values(c.as_materialized_series()).map(Some)
+                }
+            })
+            .collect::<PolarsResult<_>>()?;
+        let numeric: Vec<Option<Vec<Option<f64>>>> = (0..width)
+            .map(|i| {
+                if self.k.increments[i].2 || integer[i].is_some() {
+                    Ok(None)
+                } else {
+                    let s = inputs
+                        .column(input_column(i).as_str())?
+                        .cast(&DataType::Float64)?;
+                    Ok(Some(s.f64()?.iter().collect()))
+                }
+            })
+            .collect::<PolarsResult<_>>()?;
+        let temporal: Vec<Option<Vec<Option<i64>>>> = (0..width)
+            .map(|i| {
+                if self.k.increments[i].2 {
+                    // A time of day is read too, in nanoseconds since
+                    // midnight (review round 4, PD5).
+                    let c = inputs.column(input_column(i).as_str())?;
+                    let ns = nanos_array(c.as_materialized_series(), 0, NanosRole::Increment, WHO)?;
+                    Ok(Some((0..ns.len()).map(|r| ns.get(r)).collect()))
+                } else {
+                    Ok(None)
+                }
+            })
+            .collect::<PolarsResult<_>>()?;
+        Ok(IncrInputs {
+            rows: inputs.height(),
+            integer,
+            numeric,
+            temporal,
+        })
+    }
+
+    /// What a chunk's groups' runs share, evaluated once over the whole
+    /// chunk instead of once for each group (a bank's resolver, which feeds
+    /// every group's run its own rows of one frame): the operator inputs
+    /// and, where the runs have increments, the increments' inputs. Every
+    /// one is an element-wise formula of the row, so a value does not
+    /// depend on the rows beside it; the increments themselves are a group's
+    /// own, which [`Self::preview_increments`] reads off each run's state
+    /// without moving it, so that the operator inputs that read them can be
+    /// evaluated over the chunk too. `groups` is each run's rows of `frame`,
+    /// in `runs`' order. `None` where there is nothing to save, a feed
+    /// plans for itself -- one group; inputs that are all columns of doubles
+    /// -- or where a plan refuses, which a feed reports for the rows it was
+    /// handed.
+    pub fn share(runs: &[WindowsRun], frame: &DataFrame, groups: &[&[usize]]) -> Option<Shared> {
+        let first = runs.first()?;
+        if first.k.increments.is_empty() {
+            return first.evaluate_inputs(frame).map(|inputs| Shared {
+                inputs: Some(inputs),
+                incr: None,
+            });
+        }
+        first.share_increments(runs, frame, groups)
+    }
+
+    /// [`Self::share`] for runs with increments.
+    fn share_increments(
+        &self,
+        runs: &[WindowsRun],
+        frame: &DataFrame,
+        groups: &[&[usize]],
+    ) -> Option<Shared> {
+        // A run keeps its rows' increments by group: only a bank's, whose
+        // run is one group's, is read here. One that skips rows its input
+        // read before it was saved is left to feed for itself.
+        if self.k.config.group.is_some() || runs.iter().any(|r| r.resume_skip > 0) {
+            return None;
+        }
+        let n = frame.height();
+        let inputs = frame
+            .clone()
+            .lazy()
+            .select(
+                self.k
+                    .increments
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, node, _))| {
+                        node.to_expr(&|_| unreachable!("no operator in an increment's input"))
+                            .alias(input_column(i).as_str())
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .collect()
+            .ok()?;
+        // A literal is one value, which a feed broadcasts.
+        if inputs.height() != n {
+            return None;
+        }
+        let read = self.read_increment_inputs(&inputs).ok()?;
+        let clock = self.clock_values(frame).ok()?;
+        let session = self.session_hashes(frame).ok()?;
+        let mut values: Vec<Vec<Option<f64>>> = vec![vec![None; n]; self.k.increments.len()];
+        for (run, rows) in runs.iter().zip(groups) {
+            let keys = vec![Some(""); rows.len()];
+            let clock = clock
+                .as_ref()
+                .map(|c| rows.iter().map(|&i| c[i]).collect::<Vec<_>>());
+            let session: Option<Vec<u64>> = session
+                .as_ref()
+                .map(|s| rows.iter().map(|&i| s[i]).collect());
+            let out = run.preview_increments(&read.gather(rows), &keys, &clock, session.as_deref());
+            for (all, part) in values.iter_mut().zip(out) {
+                for (&i, v) in rows.iter().zip(part) {
+                    all[i] = v;
+                }
+            }
+        }
+        let mut chunk = frame.clone();
+        chunk.hstack_mut(&self.increment_columns(values)).ok()?;
+        let inputs = if self.bare_inputs(&chunk).is_some() {
+            None
+        } else {
+            Some(self.evaluated_inputs(&chunk).ok()?)
+        };
+        Some(Shared {
+            inputs,
+            incr: Some(read),
+        })
+    }
+
+    /// The increments of `rows` rows as [`Self::with_increments`] would give
+    /// them, with this run's state left as it is.
+    fn preview_increments(
+        &self,
+        inputs: &IncrInputs,
+        keys: &[Option<&str>],
+        clock: &Option<Vec<ClockValue>>,
+        session: Option<&[u64]>,
+    ) -> Vec<Vec<Option<f64>>> {
+        let mut state = self.incr_state.clone();
+        let mut index = self.incr_index.clone();
+        let mut null = self.incr_null;
+        let mut stream_clock = self.stream_clock;
+        step_increments(
+            IncrTrack {
+                state: &mut state,
+                index: &mut index,
+                null: &mut null,
+                stream_clock: &mut stream_clock,
+            },
+            self.k.increments.len(),
+            self.restart_policy(),
+            inputs,
+            keys,
+            clock,
+            session,
+        )
+    }
+
+    /// The session column's values, each as the hash the core reads. Keys
+    /// are text, a zoned Datetime's its instant, as the bank keys them: the
+    /// cast to text failed on one (task 160, PA4b).
+    fn session_hashes(&self, df: &DataFrame) -> PolarsResult<Option<Vec<u64>>> {
+        self.k
+            .config
+            .session
+            .as_ref()
+            .map(|c| session_hashes(df.column(c.as_str())?.as_materialized_series()))
+            .transpose()
+    }
+
+    /// Clock values of a chunk, in the form the column has them: a temporal
+    /// clock as nanoseconds, a numeric one as numbers; null, NaN and
+    /// infinity refused by row, and the other kind than the state's.
+    fn clock_values(&self, df: &DataFrame) -> PolarsResult<Option<Vec<ClockValue>>> {
+        let Some(c) = &self.k.config.clock else {
+            return Ok(None);
+        };
+        let col = df.column(c.as_str())?;
+        let base = self.core.next_seq() - self.run_base + self.skipped;
+        let bad = |i: usize| {
+            polars_err!(ComputeError:
+                "{WHO}: clock column {c:?} is null, NaN or infinite at row {} (counting from \
+                 0). Drop the rows whose clock has no value, or fill it in, before the call.",
+                base + i as u64)
+        };
+        let values: Vec<ClockValue> = if col.dtype().is_temporal() {
+            let ns = nanos_array(
+                col.as_materialized_series(),
+                base as usize,
+                NanosRole::Clock,
+                WHO,
+            )?;
+            (0..ns.len())
+                .map(|i| ns.get(i).map(ClockValue::Ns).ok_or_else(|| bad(i)))
+                .collect::<PolarsResult<_>>()?
+        } else if col.dtype().is_integer() && fits_64(col.dtype()) {
+            // An integer clock as its integers (task 200), as the bank reads
+            // one; an unsigned value past an `i64` is refused by row.
+            integer_values(col.as_materialized_series())?
+                .into_iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    let v = v.ok_or_else(|| bad(i))?;
+                    i64::try_from(v).map(ClockValue::I64).map_err(|_| {
+                        polars_err!(ComputeError:
+                            "{WHO}: clock column {c:?} is {v} at row {} (counting from 0), \
+                             past {}, the largest value an integer clock holds (an Int64's). \
+                             Cast the clock to Int64 after subtracting an origin from it.",
+                            base + i as u64, i64::MAX)
+                    })
+                })
+                .collect::<PolarsResult<_>>()?
+        } else if col.dtype().is_integer() {
+            return Err(wrong_type(wide_integer_clock(WHO, c, col.dtype())));
+        } else {
+            let s = col.cast(&DataType::Float64)?;
+            s.f64()?
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    v.filter(|v| v.is_finite())
+                        .map(ClockValue::F64)
+                        .ok_or_else(|| bad(i))
+                })
+                .collect::<PolarsResult<_>>()?
+        };
+        if let (Some(first), Some(last)) = (values.first(), self.core.shared_clock().last_clock())
+            && kind_of(*first) != kind_of(last)
+        {
+            polars_bail!(ComputeError:
+                "{WHO}: clock column {c:?} is {}, but the state it resumes read {} one. Resume \
+                 the state on a clock of the kind it was saved with.",
+                crate::arrow::dtype_name(col.dtype()),
+                kind_of(last).name()
+            );
+        }
+        Ok(Some(values))
+    }
+
+    /// A row the core refused, as the error naming it.
+    fn refusal(&self, r: Refusal, _chunk_base: u64) -> PolarsError {
+        let row = |seq: u64| seq - self.run_base + self.skipped;
+        match r {
+            Refusal::Backwards {
+                seq,
+                back,
+                prev,
+                now,
+                min_backwards_jump,
+            } => {
+                let column = self.k.config.clock.as_deref().unwrap_or("<row count>");
+                // A step that is no number (the core refuses it like a step
+                // back): two finite values whose difference is past the
+                // largest double, since a value that is not finite was
+                // refused by row before it (task 270, F-1).
+                if !back.is_finite() {
+                    let label = |v: Option<ClockValue>| {
+                        v.map_or_else(String::new, |v| crate::spec::num_label(v.seconds()))
+                    };
+                    return polars_err!(ComputeError:
+                        "{WHO}: clock column {column:?} steps from {} to {} at row {} (counting \
+                         from 0), a difference past the largest float, which cannot be a number \
+                         of clock units. Shift or rescale the clock column so that the step between two \
+                         of its values is finite.",
+                        label(prev),
+                        label(now),
+                        row(seq)
+                    );
+                }
+                let step = match (now, prev) {
+                    (Some(ClockValue::Ns(c)), Some(ClockValue::Ns(p))) => {
+                        i64::try_from(i128::from(p) - i128::from(c))
+                            .map_or_else(|_| back.to_string(), format_duration)
+                    }
+                    // In integers, exactly (task 200).
+                    (Some(ClockValue::I64(c)), Some(ClockValue::I64(p))) => {
+                        (i128::from(p) - i128::from(c)).to_string()
+                    }
+                    _ => crate::spec::num_label(back),
+                };
+                match min_backwards_jump {
+                    None => polars_err!(ComputeError:
+                        "{WHO}: clock column {column:?} steps back by {step} at row {} \
+                         (counting from 0), and restart_after_step_back is not set, so every \
+                         step back is refused. Sort the whole input by the clock, across groups, \
+                         or set \
+                         restart_after_step_back below the step to reset the windows at such a \
+                         step back (0 resets them at every one).",
+                        row(seq)
+                    ),
+                    Some(m) => polars_err!(ComputeError:
+                        "{WHO}: clock column {column:?} steps back by {step} at row {} \
+                         (counting from 0), no more than restart_after_step_back = {}, so the \
+                         step back is refused. Sort the input by the clock, or set \
+                         restart_after_step_back below the step to reset the windows at such a \
+                         step back (0 resets them at every one).",
+                        row(seq),
+                        self.k.config.restart_after_step_back.as_ref().map_or_else(|| crate::spec::num_label(m), ToString::to_string)
+                    ),
+                }
+            }
+        }
+    }
+
+    /// The first `e.rows` held rows with the formulas evaluated beside
+    /// them, less the dropped ones and the hidden columns.
+    fn assemble(&mut self, e: crate::windows::Emitted) -> PolarsResult<DataFrame> {
+        let drop = e.drop.clone();
+        let mut frame = self.assemble_rows(e)?;
+        if drop.iter().any(|&d| d) {
+            let keep: BooleanChunked = drop.iter().map(|&d| Some(!d)).collect();
+            frame = frame.filter(&keep)?;
+        }
+        // A formula that is only an operator's values is its hidden column
+        // under the formula's name: no plan of the lazy engine for it, which
+        // costs 100 to 150 microseconds a chunk whatever the chunk holds.
+        if let Some(names) = self.bare_formulas() {
+            let mut cols: Vec<Column> = frame
+                .columns()
+                .iter()
+                .filter(|c| self.k.input.contains(c.name().as_str()))
+                .cloned()
+                .collect();
+            for (f, name) in self.k.config.formulas.iter().zip(names) {
+                cols.push(
+                    frame
+                        .column(name.as_str())?
+                        .clone()
+                        .with_name(f.name.as_str().into()),
+                );
+            }
+            return DataFrame::new(frame.height(), cols);
+        }
+        // Pass four: the formulas, over the rows with their operators.
+        let exprs: Vec<Expr> = self
+            .k
+            .config
+            .formulas
+            .iter()
+            .map(|f| {
+                f.tree
+                    .to_expr(&|op| col(hidden(op).as_str()))
+                    .alias(f.name.as_str())
+            })
+            .collect();
+        // The input's columns the chunk has (a projection may have narrowed
+        // it), then the formulas; the hidden columns stay behind.
+        let present: Vec<String> = frame
+            .get_column_names()
+            .iter()
+            .map(|n| n.to_string())
+            .filter(|n| self.k.input.contains(n.as_str()))
+            .collect();
+        let keep: Vec<Expr> = present
+            .iter()
+            .map(|n| col(n.as_str()))
+            .chain(self.k.config.formulas.iter().map(|f| col(f.name.as_str())))
+            .collect();
+        frame.lazy().with_columns(exprs).select(keep).collect()
+    }
+
+    /// The emitted rows as one frame: the held input rows with their
+    /// increment columns, and each operator's values as its hidden column.
+    fn assemble_rows(&mut self, mut e: crate::windows::Emitted) -> PolarsResult<DataFrame> {
+        let mut out: Option<DataFrame> = None;
+        let mut parts = 0;
+        let mut left = e.rows;
+        while left > 0 {
+            let h = self.held.front().map_or(0, |f| f.height());
+            assert!(h > 0, "the core holds no row the frames do not");
+            let part = if h <= left {
+                let whole = self.held.pop_front().expect("checked");
+                Arc::try_unwrap(whole).unwrap_or_else(|shared| (*shared).clone())
+            } else {
+                let front = self.held.front_mut().expect("checked");
+                let part = front.slice(0, left);
+                *front = Arc::new(front.slice(left as i64, h - left));
+                part
+            };
+            left -= part.height();
+            parts += 1;
+            match &mut out {
+                None => out = Some(part),
+                Some(o) => {
+                    o.vstack_mut(&part)?;
+                }
+            }
+        }
+        // No emitted row: an empty frame of the held rows' schema. Built
+        // only then, not for every chunk.
+        let mut frame = out.unwrap_or_else(|| {
+            let mut held_schema = self.k.input.clone();
+            for k in self.hidden_names() {
+                held_schema.insert(k.as_str().into(), DataType::Float64);
+            }
+            DataFrame::empty_with_schema(&held_schema)
+        });
+        // Many one-row chunks make every later operation slow; a few are
+        // what vstack is for.
+        if parts > 8 {
+            frame.rechunk_mut();
+        }
+        let mut cols: Vec<Column> = Vec::with_capacity(self.k.columns.len());
+        for (name, o) in &self.k.columns {
+            cols.push(nullable_column(name, std::mem::take(&mut e.values[*o])));
+        }
+        frame.hstack_mut(&cols)?;
+        Ok(frame)
+    }
+
+    /// The state as bytes: the call, the core, the rows it holds, which the
+    /// next run emits first, and the increments' state. Versioned msgpack,
+    /// one state one file.
+    pub fn save_bytes(&self) -> Result<Vec<u8>, String> {
+        self.save_bytes_with(0, false)
+    }
+
+    /// [`Self::save_bytes`] for a state saved under a slice: a run resumed
+    /// on the same input skips its first `skip_on_resume` rows, the rows
+    /// consumed so far ([`Self::consumed`]); the state knows the input by
+    /// its first row's clock and session, and by the last rows it read: the
+    /// rows it holds that are the input's, or the last row alone (review
+    /// R2, W4; R4, B1 to B3; R5, C1 to C4; R6, D1; R7, E2). `input_ended`
+    /// says the input ran out rather
+    /// than a slice being satisfied: a skip still pending is then another
+    /// input, refused.
+    pub fn save_bytes_with(
+        &self,
+        skip_on_resume: usize,
+        input_ended: bool,
+    ) -> Result<Vec<u8>, String> {
+        // Only the caller knows whether the input ended or a slice was
+        // satisfied first; a skip still pending is another input only in
+        // the first case (review R5, C3).
+        if input_ended && let Some(msg) = self.resumed_input_ended_early() {
+            return Err(msg);
+        }
+        let held_schema = {
+            let mut s = self.k.input.clone();
+            for k in self.hidden_names() {
+                s.insert(k.as_str().into(), DataType::Float64);
+            }
+            s
+        };
+        let mut rows = DataFrame::empty_with_schema(&held_schema);
+        for part in &self.held {
+            rows.vstack_mut(part).map_err(|e| e.to_string())?;
+        }
+        // One chunk: the IPC writer writes a record batch per chunk, so
+        // held rows still in the chunks they came in saved to other bytes
+        // after 600 chunks of one row than after one chunk (docs/PLAN.md
+        // task 269, review round 8 B-1). The bytes are the rows' alone.
+        rows.rechunk_mut();
+        compact_views(&mut rows).map_err(|e| e.to_string())?;
+        let mut held = Vec::new();
+        IpcWriter::new(&mut held)
+            .finish(&mut rows)
+            .map_err(|e| e.to_string())?;
+        // The last row read is a sliced state's identity and nothing else's
+        // (review R7, E3): the bank saves every core unsliced.
+        let mut last_row = Vec::new();
+        if let (true, Some(r)) = (skip_on_resume > 0, &self.last_row) {
+            let names: Vec<&str> = self.k.input.iter_names().map(|n| n.as_str()).collect();
+            let mut r = r
+                .row()
+                .select(names.iter().copied())
+                .map_err(|e| e.to_string())?;
+            compact_views(&mut r).map_err(|e| e.to_string())?;
+            IpcWriter::new(&mut last_row)
+                .finish(&mut r)
+                .map_err(|e| e.to_string())?;
+        }
+        rmp_serde::to_vec_named(&FileOut {
+            magic: WINDOWS_MAGIC,
+            version: WINDOWS_VERSION,
+            config: &self.k.config,
+            core: &self.core,
+            held: &held,
+            increments: &self.incr_state,
+            stream_clock: self.stream_clock,
+            resume_skip: skip_on_resume,
+            // A run that saw no row keeps the identity it loaded (review R5, C1).
+            resume_first: if self.started {
+                self.first_clock
+            } else {
+                self.resume_first
+            },
+            resume_first_session: if self.started {
+                self.first_session
+            } else {
+                self.resume_first_session
+            },
+            last_row: &last_row,
+            key_dtypes: &self.k.key_dtypes,
+        })
+        .map_err(|e| e.to_string())
+    }
+
+    /// [`Self::save_bytes`] to `path`, replacing it whole or not at all.
+    pub fn save(&self, path: &std::path::Path) -> std::io::Result<()> {
+        self.save_with(path, 0, false)
+    }
+
+    /// [`Self::save_bytes_with`] to `path`, replacing it whole or not at
+    /// all.
+    pub fn save_with(
+        &self,
+        path: &std::path::Path,
+        skip_on_resume: usize,
+        input_ended: bool,
+    ) -> std::io::Result<()> {
+        let bytes = self
+            .save_bytes_with(skip_on_resume, input_ended)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        crate::atomic::write(path, &bytes)
+    }
+
+    /// A run that goes on from a saved state: the call must be the one that
+    /// saved it, and the input must have the columns it held. Rows are
+    /// counted from the start of the new input, the rows the state says to
+    /// skip included ([`Self::save_bytes_with`]).
+    ///
+    /// # Errors
+    ///
+    /// Bytes that are not a windows state, a version this build does not
+    /// read, another call, or held rows whose columns the input has not got.
+    pub fn load_bytes(
+        bytes: &[u8],
+        config: WindowsConfig,
+        input: &Schema,
+    ) -> Result<Self, Refused> {
+        let header: Header = rmp_serde::from_slice(bytes).map_err(|e| {
+            format!(
+                "{WHO}: the state cannot be read ({e}), so it is damaged or was not saved by a \
+                 window run. Pass a state file a window run saved, or leave out load_state to \
+                 start over."
+            )
+        })?;
+        if header.magic != WINDOWS_MAGIC {
+            return Err(format!(
+                "{WHO}: the state was not saved by a window run. Pass a state file a window run \
+                 saved, or leave out load_state to start over."
+            )
+            .into());
+        }
+        if !(MIN_WINDOWS_VERSION..=WINDOWS_VERSION).contains(&header.version) {
+            return Err(format!(
+                "{WHO}: the state's version is {}, but this version of polars-online reads \
+                 versions {MIN_WINDOWS_VERSION} to {WINDOWS_VERSION}. Load the state with the \
+                 version of polars-online that saved it, or leave out load_state to start \
+                 over.",
+                header.version
+            )
+            .into());
+        }
+        let file: FileIn = rmp_serde::from_slice(bytes).map_err(|e| {
+            format!(
+                "{WHO}: the state cannot be read ({e}), so it is damaged or was saved by \
+                 another version of polars-online. Load it with the version that saved it, or \
+                 leave out load_state to start over."
+            )
+        })?;
+        // A duration compares by its length, so "5000ms" is the call that
+        // saved "5s" (task 160, PC3).
+        if same_call(&file.config) != same_call(&config) {
+            return Err(format!(
+                "{WHO}: the state was saved by another call, and it resumes only the call that \
+                 saved it, but {}. Give the call as the state was saved with it, or leave out \
+                 load_state to start over.",
+                call_differences(&same_call(&file.config), &same_call(&config))
+            )
+            .into());
+        }
+        let mut run = Self::new(config, input)?;
+        if file.key_dtypes != run.k.key_dtypes {
+            let name = |role: &str| {
+                if role == "group" {
+                    run.k.config.group.clone()
+                } else {
+                    run.k.config.session.clone()
+                }
+                .unwrap_or_default()
+            };
+            let saved: Vec<String> = file
+                .key_dtypes
+                .iter()
+                .map(|(r, t)| format!("{r} column {:?}: {t}", name(r)))
+                .collect();
+            let now: Vec<String> = run
+                .k
+                .key_dtypes
+                .iter()
+                .map(|(r, t)| format!("{r} column {:?}: {t}", name(r)))
+                .collect();
+            let what = match (run.k.config.group.is_some(), run.k.config.session.is_some()) {
+                (true, true) => "group and session columns",
+                (true, false) => "group column",
+                _ => "session column",
+            };
+            return Err(format!(
+                "{WHO}: the state was saved with a {what} of another type ({}), and this \
+                 input's ({}) may not give the same keys. Cast the column to the type the state \
+                 was saved with.",
+                saved.join(", "),
+                now.join(", ")
+            )
+            .into());
+        }
+        if file.core.kernels() != run.core.kernels()
+            || file.core.ops() != run.core.ops()
+            || same_clock(file.core.clock_cfg()) != same_clock(run.core.clock_cfg())
+        {
+            return Err(format!(
+                "{WHO}: the state's window operators are not those of the call that saved it, \
+                 so the state is damaged. Load an undamaged copy of the state file, or leave out \
+                 load_state to start over."
+            )
+            .into());
+        }
+        // The core's own invariants, beyond the call's (review 2026-10-06,
+        // PD1): a damaged core that still decoded panicked at the next call.
+        // The check's own words name the core's parts, which are this
+        // library's, not the reader's: the reader is told the file is
+        // damaged, and what to do.
+        file.core.check().map_err(|_| {
+            format!(
+                "{WHO}: the state is damaged. Load an undamaged copy of the state file, or leave \
+                 out load_state to start over."
+            )
+        })?;
+        let held = IpcReader::new(Cursor::new(file.held))
+            .finish()
+            .map_err(|e| {
+                format!(
+                    "{WHO}: the rows the state holds cannot be read ({e}), so it is damaged. \
+                     Load an undamaged copy of the state file, or leave out load_state to start \
+                     over."
+                )
+            })?;
+        if held.height() != file.core.held() {
+            return Err(format!(
+                "{WHO}: the state holds {} rows but counts {}, so it is damaged. Load an undamaged \
+                 copy of the state file, or leave out load_state to start over.",
+                held.height(),
+                file.core.held()
+            )
+            .into());
+        }
+        let hidden_names = run.hidden_names();
+        let held_input: Vec<(String, DataType)> = held
+            .schema()
+            .iter()
+            .filter(|(n, _)| !hidden_names.iter().any(|h| h == n.as_str()))
+            .map(|(n, t)| (n.to_string(), t.clone()))
+            .collect();
+        let want: Vec<(String, DataType)> = input
+            .iter()
+            .map(|(n, t)| (n.to_string(), t.clone()))
+            .collect();
+        if held.height() > 0 && held_input != want {
+            return Err(format!(
+                "{WHO}: the state holds {} {} with columns {:?}, but the input has {:?}. \
+                 Resume the state on an input with the columns and types it was saved with.",
+                held.height(),
+                if held.height() == 1 { "row" } else { "rows" },
+                held_input
+                    .iter()
+                    .map(|(n, t)| format!("{n}: {}", crate::arrow::dtype_name(t)))
+                    .collect::<Vec<_>>(),
+                want.iter()
+                    .map(|(n, t)| format!("{n}: {}", crate::arrow::dtype_name(t)))
+                    .collect::<Vec<_>>()
+            )
+            .into());
+        }
+        run.run_base = file.core.next_seq();
+        run.core = file.core;
+        if held.height() > 0 {
+            run.held.push_back(Arc::new(held));
+        }
+        if file.resume_skip > 0 && !file.last_row.is_empty() {
+            let last = IpcReader::new(Cursor::new(file.last_row))
+                .finish()
+                .map_err(|e| {
+                    format!(
+                        "{WHO}: the last row the state read cannot be read back ({e}), so it is \
+                         damaged. Load an undamaged copy of the state file, or leave out \
+                         load_state to start over."
+                    )
+                })?;
+            let have: Vec<(String, DataType)> = last
+                .schema()
+                .iter()
+                .map(|(n, t)| (n.to_string(), t.clone()))
+                .collect();
+            if have != want {
+                return Err(format!(
+                    "{WHO}: the last row the state read has columns {:?}, but the input has \
+                     {:?}. Resume the state on the input it was saved from, whole, or on the \
+                     next file, with the columns and types it was saved with.",
+                    have.iter()
+                        .map(|(n, t)| format!("{n}: {}", crate::arrow::dtype_name(t)))
+                        .collect::<Vec<_>>(),
+                    want.iter()
+                        .map(|(n, t)| format!("{n}: {}", crate::arrow::dtype_name(t)))
+                        .collect::<Vec<_>>()
+                )
+                .into());
+            }
+            run.last_row = Some(LastRow { frame: last, at: 0 });
+        }
+        run.stream_clock = file.stream_clock;
+        run.resume_skip = file.resume_skip;
+        run.resume_first = file.resume_first;
+        run.resume_first_session = file.resume_first_session;
+        run.resume_total = file.resume_skip;
+        if file.resume_skip > 0 {
+            // The identity of this input: the rows the state holds that are
+            // this input's -- the last `resume_skip` of them at most, since
+            // a state saved on the next file under a slice still holds the
+            // previous file's unresolved rows ahead of its own, rows going
+            // out in order (review R6, D2) -- or, where it holds none (an
+            // operator that resolves a row at its push), the last row it
+            // read (R6, D1).
+            let names: Vec<&str> = run.k.input.iter_names().map(|n| n.as_str()).collect();
+            let mut want = DataFrame::empty_with_schema(&run.k.input);
+            for part in &run.held {
+                want.vstack_mut(
+                    &part
+                        .select(names.iter().copied())
+                        .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+            }
+            let extra = want.height().saturating_sub(file.resume_skip);
+            if extra > 0 {
+                want = want.slice(extra as i64, want.height() - extra);
+            }
+            if want.height() == 0
+                && let Some(last) = &run.last_row
+            {
+                want = last.row();
+            }
+            if want.height() == 0 {
+                // This build writes the last row read under every skip, so a
+                // state with none has lost it (review R8, F5): refused rather
+                // than resumed on anything by a check that compares nothing.
+                return Err(format!(
+                    "{WHO}: the state was saved from a slice of {} rows but holds no row to \
+                     know its input by, so it is damaged. Load an undamaged copy of the state \
+                     file, or leave out load_state to start over.",
+                    file.resume_skip
+                )
+                .into());
+            }
+            run.resume_held = Some(want);
+        }
+        for (i, st) in file.increments.into_iter().enumerate() {
+            match &st.key {
+                Some(k) => {
+                    run.incr_index.insert(k.clone(), i);
+                }
+                None => run.incr_null = Some(i),
+            }
+            run.incr_state.push(st);
+        }
+        Ok(run)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config(json: &str) -> WindowsConfig {
+        serde_json::from_str(json).unwrap()
+    }
+
+    const FORWARD: &str = r#"{"formulas": [{"name": "f", "tree": ["rewm_mean", ["col", "x"],
+        {"half_life": 1, "window_size": 2}]}], "clock": "t", "gap_cap": 100}"#;
+
+    fn frame(t: &[f64]) -> DataFrame {
+        df!(
+            "t" => t,
+            "x" => t.iter().map(|v| v * 10.0).collect::<Vec<_>>(),
+            "wide" => t.iter().map(|v| format!("row {v} {}", "pad".repeat(20))).collect::<Vec<_>>(),
+        )
+        .unwrap()
+    }
+
+    /// The cores of one spec's groups hold one copy of the call and its plan,
+    /// a core of another input does not take them, and sharing changes
+    /// nothing a core saves.
+    #[test]
+    fn runs_of_one_call_share_their_constants_and_only_those() {
+        let cfg = config(FORWARD);
+        let f = frame(&[1.0, 2.0, 3.0]);
+        let mut a = WindowsRun::new(cfg.clone(), f.schema()).unwrap();
+        let mut b = WindowsRun::new(cfg.clone(), f.schema()).unwrap();
+        a.feed(&f, None).unwrap();
+        let unshared = (a.save_bytes().unwrap(), b.save_bytes().unwrap());
+        assert!(!Arc::ptr_eq(&a.k, &b.k));
+        b.share_with(&a);
+        assert!(Arc::ptr_eq(&a.k, &b.k));
+        assert!(a.core.shares_definitions_with(&b.core));
+        assert_eq!((a.save_bytes().unwrap(), b.save_bytes().unwrap()), unshared);
+        // A copy shares them too, and feeding it leaves the original alone.
+        let mut c = a.clone();
+        assert!(Arc::ptr_eq(&a.k, &c.k));
+        c.feed(&frame(&[4.0]), None).unwrap();
+        assert_eq!(a.save_bytes().unwrap(), unshared.0);
+        // Another input's schema is another plan.
+        let wider = df!("t" => [1.0], "x" => [1i64], "wide" => ["a"]).unwrap();
+        let mut d = WindowsRun::new(cfg, wider.schema()).unwrap();
+        d.share_with(&a);
+        assert!(!Arc::ptr_eq(&a.k, &d.k));
+    }
+
+    /// A bare column input skips the lazy engine's cast and a bare operator
+    /// formula its plan, and the bits are the lazy engine's: every value, null
+    /// and row number of what a run resolves, over nulls, NaN, infinities,
+    /// signed zeros and a column of integers (which takes the plan), whole and
+    /// in chunks, for a mix of formulas that take the short cut and ones that
+    /// do not.
+    #[test]
+    fn the_short_cuts_resolve_as_the_lazy_engine_does() {
+        let op = |kind: &str, col: &str, extra: &str| {
+            format!(
+                r#"["{kind}", ["col", "{col}"], {{"half_life": 1.5, "window_size": 4{extra}}}]"#
+            )
+        };
+        let shapes: Vec<(&str, Vec<String>)> = vec![
+            ("bare forward", vec![op("rewm_sum", "x", "")]),
+            (
+                "bare drop",
+                vec![op("rewm_mean", "x", r#", "partial": "drop""#)],
+            ),
+            (
+                "bare, aliased, two inputs",
+                vec![
+                    format!(r#"["alias", {}, "a"]"#, op("rewm_mean", "x", "")),
+                    op("ewm_sum", "y", ""),
+                ],
+            ),
+            (
+                "one not bare",
+                vec![
+                    op("rewm_sum", "x", ""),
+                    format!(r#"["-", {}, ["col", "x"]]"#, op("ewm_mean", "x", "")),
+                ],
+            ),
+            ("integer input", vec![op("rewm_sum", "n", "")]),
+            (
+                "computed input",
+                vec![
+                    r#"["rewm_sum", ["*", ["col", "x"], ["col", "y"]], {"half_life": 1.5, "window_size": 4}]"#
+                        .to_string(),
+                ],
+            ),
+        ];
+        let n = 60;
+        let mut seed = 7u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut t = 0.0;
+        let (mut ts, mut xs, mut ys, mut ns) = (vec![], vec![], vec![], vec![]);
+        for i in 0..n {
+            t += if i % 9 == 4 { 0.0 } else { 0.2 + 1.5 * next() };
+            ts.push(t);
+            let v = next();
+            xs.push(match i % 11 {
+                3 => None,
+                5 => Some(f64::NAN),
+                7 => Some(f64::INFINITY),
+                8 => Some(-0.0),
+                _ => Some(v - 0.5),
+            });
+            ys.push(Some(next() * 3.0));
+            ns.push(i as i64 % 5);
+        }
+        let rows: Vec<u64> = (0..n as u64).collect();
+        let df =
+            df!("t" => ts, "x" => xs, "y" => ys, "n" => ns, "@po:row" => rows.clone()).unwrap();
+        let run = |formulas: &[String], cuts: &[usize], off: bool| -> Vec<DataFrame> {
+            NO_SHORT_CUTS.with(|c| c.set(off));
+            let names: Vec<String> = (0..formulas.len())
+                .map(|i| format!(r#"{{"name": "f{i}", "tree": {}}}"#, formulas[i]))
+                .collect();
+            let mut r = WindowsRun::new(
+                config(&format!(
+                    r#"{{"formulas": [{}], "clock": "t", "gap_cap": 100}}"#,
+                    names.join(",")
+                )),
+                df.schema(),
+            )
+            .unwrap();
+            let mut out = vec![];
+            let mut at = 0;
+            for &c in cuts {
+                let part = df.slice(at as i64, c);
+                out.push(r.feed_resolving(&part, &rows[at..at + c]).unwrap());
+                at += c;
+            }
+            NO_SHORT_CUTS.with(|c| c.set(false));
+            out
+        };
+        let bits = |frames: &[DataFrame]| -> Vec<String> {
+            frames
+                .iter()
+                .flat_map(|f| {
+                    f.columns().iter().map(|c| match c.dtype() {
+                        DataType::Float64 => format!(
+                            "{} {:?}",
+                            c.name(),
+                            c.f64()
+                                .unwrap()
+                                .iter()
+                                .map(|v| v.map(f64::to_bits))
+                                .collect::<Vec<_>>()
+                        ),
+                        _ => format!(
+                            "{} {:?} {:?}",
+                            c.name(),
+                            c.dtype(),
+                            c.u64().map(|u| u.iter().collect::<Vec<_>>())
+                        ),
+                    })
+                })
+                .collect()
+        };
+        for (what, formulas) in &shapes {
+            for cuts in [vec![n], vec![7, 1, 30, 22]] {
+                let fast = run(formulas, &cuts, false);
+                let lazy = run(formulas, &cuts, true);
+                let resolved: usize = lazy.iter().map(DataFrame::height).sum();
+                assert!(resolved > 20, "{what}: {resolved} rows resolved");
+                assert_eq!(bits(&fast), bits(&lazy), "{what}, cuts {cuts:?}");
+            }
+        }
+    }
+
+    /// `feed` over bare operators is the lazy engine's: the same columns in
+    /// the same order, with the same nulls and bits, for inputs with and
+    /// without a null, in one piece or several, sliced, with an extra column
+    /// the formulas do not read, an operator partial under `"drop"`, and
+    /// chunks that cut anywhere (the rows' dropped and not).
+    #[test]
+    fn a_feed_of_bare_operators_is_the_lazy_engines() {
+        let op = |kind: &str, col: &str, extra: &str| {
+            format!(
+                r#"["{kind}", ["col", "{col}"], {{"half_life": 1.5, "window_size": 4{extra}}}]"#
+            )
+        };
+        let shapes: Vec<(&str, Vec<String>)> = vec![
+            ("one", vec![op("ewm_mean", "x", "")]),
+            ("drop", vec![op("ewm_mean", "x", r#", "partial": "drop""#)]),
+            (
+                "aliased, two inputs, one shared",
+                vec![
+                    format!(r#"["alias", {}, "a"]"#, op("ewm_sum", "x", "")),
+                    op("ewm_mean", "y", ""),
+                    op("ewm_sum", "x", ""),
+                ],
+            ),
+            (
+                "no window",
+                vec![r#"["ewm_mean", ["col", "y"], {"half_life": 1.5}]"#.into()],
+            ),
+            ("forward", vec![op("rewm_sum", "x", "")]),
+            (
+                "one not bare",
+                vec![
+                    op("ewm_sum", "x", ""),
+                    format!(r#"["-", {}, ["col", "x"]]"#, op("ewm_mean", "x", "")),
+                ],
+            ),
+        ];
+        let n = 70;
+        let mut seed = 11u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 11) as f64 / (1u64 << 53) as f64
+        };
+        let mut t = 0.0;
+        let (mut ts, mut xs, mut ys, mut zs) = (vec![], vec![], vec![], vec![]);
+        for i in 0..n {
+            t += if i % 9 == 4 { 0.0 } else { 0.2 + 1.5 * next() };
+            ts.push(t);
+            xs.push(match i % 11 {
+                3 => None,
+                5 => Some(f64::NAN),
+                _ => Some(next() - 0.5),
+            });
+            ys.push(Some(next() * 3.0));
+            zs.push(i as i64);
+        }
+        let df = df!("t" => ts, "x" => xs, "y" => ys, "z" => zs).unwrap();
+        // The same rows as columns of several pieces.
+        let pieces = {
+            let mut whole = df.slice(0, 23);
+            whole.vstack_mut(&df.slice(23, 30)).unwrap();
+            whole.vstack_mut(&df.slice(53, 17)).unwrap();
+            whole
+        };
+        let run = |formulas: &[String], frames: &[DataFrame], off: bool| -> Vec<DataFrame> {
+            NO_SHORT_CUTS.with(|c| c.set(off));
+            let names: Vec<String> = (0..formulas.len())
+                .map(|i| format!(r#"{{"name": "f{i}", "tree": {}}}"#, formulas[i]))
+                .collect();
+            let mut r = WindowsRun::new(
+                config(&format!(
+                    r#"{{"formulas": [{}], "clock": "t", "gap_cap": 100}}"#,
+                    names.join(",")
+                )),
+                df.schema(),
+            )
+            .unwrap();
+            let mut out: Vec<DataFrame> = frames.iter().map(|f| r.feed(f, None).unwrap()).collect();
+            out.push(r.finish().unwrap());
+            NO_SHORT_CUTS.with(|c| c.set(false));
+            out
+        };
+        let bits = |frames: &[DataFrame]| -> Vec<String> {
+            frames
+                .iter()
+                .flat_map(|f| {
+                    f.columns().iter().map(|c| match c.dtype() {
+                        DataType::Float64 => format!(
+                            "{} {:?}",
+                            c.name(),
+                            c.f64()
+                                .unwrap()
+                                .iter()
+                                .map(|v| v.map(f64::to_bits))
+                                .collect::<Vec<_>>()
+                        ),
+                        d => format!("{} {d:?} {}", c.name(), c.len()),
+                    })
+                })
+                .collect()
+        };
+        let cuts = |sizes: &[usize]| -> Vec<DataFrame> {
+            let mut at = 0;
+            sizes
+                .iter()
+                .map(|&c| {
+                    let part = df.slice(at as i64, c);
+                    at += c;
+                    part
+                })
+                .collect()
+        };
+        for (what, formulas) in &shapes {
+            for (how, frames) in [
+                ("whole", vec![df.clone()]),
+                ("pieces", vec![pieces.clone()]),
+                ("cut", cuts(&[7, 1, 30, 32])),
+                ("one rows", cuts(&[1; 70])),
+            ] {
+                let fast = run(formulas, &frames, false);
+                let lazy = run(formulas, &frames, true);
+                let rows: usize = lazy.iter().map(DataFrame::height).sum();
+                assert!(rows > 30, "{what}, {how}: {rows} rows out");
+                assert_eq!(bits(&fast), bits(&lazy), "{what}, {how}");
+                let names: Vec<&str> = fast[0]
+                    .get_column_names()
+                    .iter()
+                    .map(|n| n.as_str())
+                    .collect();
+                assert!(names.contains(&"f0") && names.contains(&"t"), "{names:?}");
+            }
+        }
+    }
+
+    /// An operator's values as a column: null where the value is NaN, the
+    /// rest to the bit, a null's slot 0 (as a column built from options leaves
+    /// it), with and without a NaN.
+    #[test]
+    fn an_operators_values_become_a_column_with_a_null_for_each_nan() {
+        for values in [
+            vec![],
+            vec![1.5, -0.0, 3.25],
+            vec![f64::NAN, f64::NAN],
+            vec![f64::NAN, 2.0, f64::NAN, -4.5, f64::NAN],
+            (0..130)
+                .map(|i| if i % 3 == 0 { f64::NAN } else { f64::from(i) })
+                .collect(),
+        ] {
+            let column = nullable_column("v", values.clone());
+            let want: Float64Chunked = values.iter().map(|&x| (!x.is_nan()).then_some(x)).collect();
+            let got = column.f64().unwrap();
+            assert_eq!(got.name().as_str(), "v");
+            assert_eq!(got.null_count(), want.null_count());
+            assert_eq!(
+                got.iter().map(|v| v.map(f64::to_bits)).collect::<Vec<_>>(),
+                want.iter().map(|v| v.map(f64::to_bits)).collect::<Vec<_>>()
+            );
+            // The slot under a null reads 0, as the options' column leaves it.
+            let raw: Vec<u64> = got
+                .downcast_iter()
+                .flat_map(|a| a.values().iter().map(|x| x.to_bits()))
+                .collect();
+            let raw_want: Vec<u64> = want
+                .downcast_iter()
+                .flat_map(|a| a.values().iter().map(|x| x.to_bits()))
+                .collect();
+            assert_eq!(raw, raw_want);
+        }
+    }
+
+    /// What a chunk's groups share, evaluated once ([`WindowsRun::share`]),
+    /// is what each group's run computes for itself: runs fed their rows with
+    /// the chunk's shared inputs give the same rows to the bit and keep the
+    /// same state as runs that plan their own, over two chunks (the second
+    /// starts from the first's increments), with a null, a step back past a
+    /// restart, a session change and an integer input; and the shared values
+    /// are there, not a fallback.
+    #[test]
+    fn a_chunk_s_shared_increments_are_each_run_s_own() {
+        let n = 90;
+        let key = |i: usize| (i * 7 + i / 5) % 4;
+        let frame_of = |lo: usize, hi: usize| {
+            let rows = lo..hi;
+            df!(
+                "t" => rows.clone().map(|i| i as f64 * 0.5).collect::<Vec<_>>(),
+                "tr" => rows.clone().map(|i| if i == 50 { 3.0 } else { i as f64 * 0.5 }).collect::<Vec<_>>(),
+                "x" => rows.clone().map(|i| (i % 11 != 4).then(|| (i * i % 17) as f64 * 0.25)).collect::<Vec<_>>(),
+                "k" => rows.clone().map(|i| (i % 9 != 2).then_some((i * 3 % 13) as i64)).collect::<Vec<_>>(),
+                "s" => rows.clone().map(|i| if i < 40 { "a" } else { "b" }).collect::<Vec<_>>(),
+                "g" => rows.clone().map(|i| key(i) as i64).collect::<Vec<_>>(),
+                "@po:row" => rows.map(|i| i as u64).collect::<Vec<_>>(),
+            )
+            .unwrap()
+        };
+        let window = r#"{"half_life": 4, "window_size": 6}"#;
+        for (what, inputs_shared, tree, policy) in [
+            (
+                "bare",
+                true,
+                format!(r#"["rewm_mean", ["increment", ["col", "x"]], {window}]"#),
+                r#", "clock": "t", "gap_cap": 100"#,
+            ),
+            (
+                "arithmetic and two increments",
+                true,
+                format!(
+                    r#"["-", ["rewm_sum", ["*", ["increment", ["col", "x"]], ["col", "x"]], {window}],
+                    ["rewm_mean", ["increment", ["col", "k"]], {window}]]"#
+                ),
+                r#", "clock": "t", "gap_cap": 100"#,
+            ),
+            (
+                // Every input is a column of doubles: each run reads its own.
+                "an increment in the formula's body",
+                false,
+                format!(
+                    r#"["-", ["rewm_mean", ["col", "x"], {window}], ["increment", ["col", "x"]]]"#
+                ),
+                r#", "clock": "t", "gap_cap": 100"#,
+            ),
+            (
+                "a restart",
+                true,
+                format!(r#"["rewm_mean", ["increment", ["col", "x"]], {window}]"#),
+                r#", "clock": "tr", "gap_cap": 100, "restart_after_step_back": 0"#,
+            ),
+            (
+                "a session",
+                true,
+                format!(r#"["rewm_mean", ["increment", ["col", "k"]], {window}]"#),
+                r#", "clock": "t", "gap_cap": 100, "session": "s", "session_gap": "reset""#,
+            ),
+        ] {
+            let json = format!(r#"{{"formulas": [{{"name": "f", "tree": {tree}}}]{policy}}}"#);
+            let first = frame_of(0, 35);
+            let schema = first.schema().clone();
+            let new_runs = || -> Vec<WindowsRun> {
+                (0..4)
+                    .map(|_| WindowsRun::new(config(&json), &schema).unwrap())
+                    .collect()
+            };
+            let (mut own, mut shared) = (new_runs(), new_runs());
+            let bits = |df: &DataFrame| -> Vec<(String, Vec<Option<u64>>)> {
+                df.columns()
+                    .iter()
+                    .map(|c| {
+                        let cast = c.cast(&DataType::Float64).unwrap();
+                        let values = cast.f64().unwrap().iter().map(|v| v.map(f64::to_bits));
+                        (c.name().to_string(), values.collect())
+                    })
+                    .collect()
+            };
+            let mut resolved = 0;
+            for (lo, hi) in [(0, 35), (35, n)] {
+                let chunk = frame_of(lo, hi);
+                let rows_of: Vec<Vec<usize>> = (0..4)
+                    .map(|g| (0..chunk.height()).filter(|&r| key(lo + r) == g).collect())
+                    .collect();
+                let groups: Vec<&[usize]> = rows_of.iter().map(Vec::as_slice).collect();
+                let all = WindowsRun::share(&shared, &chunk, &groups)
+                    .expect("a chunk of several groups shares its inputs");
+                assert!(
+                    all.incr.is_some(),
+                    "{what}: the increments' inputs are shared"
+                );
+                assert_eq!(all.inputs.is_some(), inputs_shared, "{what}: the inputs");
+                for (g, rows) in rows_of.iter().enumerate() {
+                    let take =
+                        IdxCa::from_vec("".into(), rows.iter().map(|&r| r as IdxSize).collect());
+                    let sub = chunk.take(&take).unwrap();
+                    let numbers: Vec<u64> = rows.iter().map(|&r| (lo + r) as u64).collect();
+                    let want = own[g].feed_resolving(&sub, &numbers).unwrap();
+                    let mut got = shared[g]
+                        .feed_resolving_with(&sub, &numbers, Some(all.of_group(rows)))
+                        .unwrap();
+                    if shared[g].formulas_pending() {
+                        got = shared[g].resolved_formulas(got).unwrap();
+                    }
+                    resolved += want.height();
+                    assert_eq!(
+                        bits(&got),
+                        bits(&want),
+                        "{what}: group {g}, rows {lo}..{hi}"
+                    );
+                }
+            }
+            assert!(resolved > 40, "{what}: {resolved} rows resolved");
+            for (g, (a, b)) in own.iter().zip(&shared).enumerate() {
+                assert_eq!(
+                    a.save_bytes().unwrap(),
+                    b.save_bytes().unwrap(),
+                    "{what}: group {g}'s state"
+                );
+            }
+            // Without an increment, the operator inputs alone.
+            let plain = format!(
+                r#"{{"formulas": [{{"name": "f", "tree": ["rewm_sum", ["*", ["col", "x"], ["col", "x"]], {window}]}}]{policy}}}"#
+            );
+            let plain = vec![WindowsRun::new(config(&plain), &schema).unwrap(); 4];
+            let rows20: Vec<Vec<usize>> = (0..4)
+                .map(|g| (0..20).filter(|&r| key(r) == g).collect())
+                .collect();
+            let groups20: Vec<&[usize]> = rows20.iter().map(Vec::as_slice).collect();
+            let only = WindowsRun::share(&plain, &frame_of(0, 20), &groups20).unwrap();
+            assert!(only.inputs.is_some() && only.incr.is_none(), "{what}");
+            // Nothing is shared for a run that skips rows of its input, or
+            // one keyed by a group column: each plans for itself.
+            let chunk = frame_of(0, 20);
+            let rows_of: Vec<Vec<usize>> = (0..4)
+                .map(|g| (0..20).filter(|&r| key(r) == g).collect())
+                .collect();
+            let groups: Vec<&[usize]> = rows_of.iter().map(Vec::as_slice).collect();
+            let mut skipping = new_runs();
+            skipping[3].resume_skip = 2;
+            assert!(WindowsRun::share(&skipping, &chunk, &groups).is_none());
+            let grouped = r#", "group": "g""#;
+            let json =
+                format!(r#"{{"formulas": [{{"name": "f", "tree": {tree}}}]{policy}{grouped}}}"#);
+            let keyed = vec![WindowsRun::new(config(&json), &schema).unwrap(); 4];
+            assert!(WindowsRun::share(&keyed, &chunk, &groups).is_none());
+            // A part that is not one value a row for each input and each
+            // row is refused, whichever of the two is the wrong one.
+            let all = WindowsRun::share(&new_runs(), &chunk, &groups).unwrap();
+            let sub = chunk
+                .take(&IdxCa::from_vec(
+                    "".into(),
+                    rows_of[0].iter().map(|&r| r as IdxSize).collect(),
+                ))
+                .unwrap();
+            let numbers: Vec<u64> = rows_of[0].iter().map(|&r| r as u64).collect();
+            let (whole, short) = (all.of_group(&rows_of[0]), all.of_group(&rows_of[0][1..]));
+            let wrong_incr = Given {
+                inputs: whole.inputs.clone(),
+                incr: short.incr.clone(),
+            };
+            let wrong_inputs = Given {
+                inputs: short.inputs.clone(),
+                incr: whole.incr.clone(),
+            };
+            for (which, given) in [("increments", wrong_incr), ("inputs", wrong_inputs)] {
+                if given.inputs.is_none() && which == "inputs" {
+                    continue;
+                }
+                let err = new_runs()[0]
+                    .feed_resolving_with(&sub, &numbers, Some(given))
+                    .err()
+                    .unwrap_or_else(|| panic!("{what}: wrong {which} accepted"));
+                assert!(
+                    err.to_string().contains("internal: feed_resolving"),
+                    "{err}"
+                );
+            }
+        }
+    }
+
+    /// Task 160, PB2: without a clock a row is one step, and a cap on it cut
+    /// every window at every row (a gap of 1 past a cap of 0.5).
+    #[test]
+    fn gap_cap_needs_a_clock() {
+        let input = frame(&[0.0, 1.0]).schema().clone();
+        let err = WindowsRun::new(
+            config(
+                r#"{"formulas": [{"name": "f", "tree": ["rewm_sum", ["col", "x"],
+                {"half_life": 10, "window_size": 3}]}], "gap_cap": 0.5}"#,
+            ),
+            &input,
+        )
+        .err()
+        .expect("refused");
+        assert!(err.contains("with_windows: gap_cap needs clock"), "{err}");
+    }
+
+    /// Task 278 (D3): a `session_gap` without a session, in either form,
+    /// and a `restart_after_step_back` without a clock did nothing and were
+    /// taken; a spec refuses both, and so does this call now, in its own
+    /// words.
+    #[test]
+    fn a_key_with_nothing_to_act_on_is_refused() {
+        let input = df!("t" => [0.0, 1.0], "x" => [1.0, 2.0], "s" => ["a", "b"])
+            .unwrap()
+            .schema()
+            .clone();
+        let refused = |extra: &str| {
+            WindowsRun::new(
+                config(&format!(
+                    r#"{{"formulas": [{{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+                    {{"half_life": 10, "window_size": 3}}]}}]{extra}}}"#
+                )),
+                &input,
+            )
+            .err()
+            .expect("refused")
+        };
+        let gap = "with_windows: session_gap is set, but session is not, and session_gap says \
+                   only what a change of session does. Set session to the session column, or \
+                   leave out session_gap.";
+        for extra in [
+            r#", "session_gap": 1"#,
+            r#", "session_gap": "reset""#,
+            r#", "clock": "t", "gap_cap": 5, "session_gap": 1"#,
+        ] {
+            assert_eq!(refused(extra), gap, "{extra}");
+        }
+        for extra in [
+            r#", "restart_after_step_back": 1"#,
+            r#", "restart_after_step_back": 0, "session": "s""#,
+        ] {
+            assert_eq!(
+                refused(extra),
+                "with_windows: restart_after_step_back is set, but clock is not, and without a \
+                 clock column every row is one step forward, so no row steps back. Set clock to \
+                 the clock column, or leave out restart_after_step_back.",
+                "{extra}"
+            );
+        }
+    }
+
+    /// Every window ends at a session change, so no window measures the
+    /// clock's jump across one, and a numeric `session_gap` is never read:
+    /// the call is refused naming it, as Python's is, and `"reset"` is still
+    /// taken. A state saved by 1.x with a number resumes the call without
+    /// one (the comparison of a saved call drops the number).
+    #[test]
+    fn a_numeric_session_gap_is_refused() {
+        const OPS: &str = r#"{"formulas": [
+            {"name": "back", "tree": ["ewm_mean", ["col", "x"], {"half_life": 2, "window_size": 3}]}],
+            "clock": "t", "gap_cap": 4, "session": "s""#;
+        let call = |gap: &str| config(&format!("{OPS}{gap}}}"));
+        let df = df!(
+            "t" => [0.0, 1.0, 2.0, 3.0],
+            "x" => [1.0, 3.0, 2.0, 5.0],
+            "s" => ["a", "a", "b", "b"],
+        )
+        .unwrap();
+        for gap in [0, 1, 50] {
+            let err = call(&format!(r#", "session_gap": {gap}"#))
+                .refuse_unread_session_gap()
+                .expect_err("refused");
+            assert!(
+                err.contains(&format!("with_windows: session_gap = {gap}"))
+                    && err.contains("is no longer read"),
+                "{err}"
+            );
+        }
+        for ok in [r#", "session_gap": "reset""#, ""] {
+            call(ok).refuse_unread_session_gap().unwrap();
+            WindowsRun::new(call(ok), df.schema()).unwrap();
+        }
+        // Under `like=` the spec's own is lent, and the run is built.
+        let mut lent = call(r#", "session_gap": 1"#);
+        lent.like = Some(Like {
+            spec: "m".into(),
+            accept: vec!["x".into()],
+        });
+        lent.refuse_unread_session_gap().unwrap();
+    }
+
+    /// Task 173, PC1: without a clock column each group's clock counts its
+    /// own rows, so a group that falls silent never closed its windows, and
+    /// every later row of every group waited for them to the end of the
+    /// input (500,001 rows held, 117 MiB more over 2M rows). Refused, naming
+    /// a clock column or no group; the same call with a clock runs, and so
+    /// do a window looking back under groups and one looking ahead without.
+    #[test]
+    fn a_window_looking_ahead_with_group_needs_a_clock() {
+        let df = df!(
+            "t" => [0.0, 1.0, 2.0, 3.0],
+            "g" => ["a", "b", "b", "b"],
+            "x" => [1.0, 2.0, 3.0, 4.0],
+        )
+        .unwrap();
+        let ahead = r#"[{"name": "f", "tree": ["-", ["rewm_sum", ["col", "x"],
+            {"half_life": 10, "window_size": 2}], ["col", "x"]]}]"#;
+        let back = r#"[{"name": "f", "tree": ["ewm_sum", ["col", "x"], {"half_life": 10}]}]"#;
+        let run = |formulas: &str, policy: &str| {
+            WindowsRun::new(
+                config(&format!(r#"{{"formulas": {formulas}{policy}}}"#)),
+                df.schema(),
+            )
+        };
+        let err = run(ahead, r#", "group": "g""#).err().expect("refused");
+        assert!(
+            err.starts_with("with_windows: a window looking ahead under group needs clock")
+                && err.ends_with("Set clock and gap_cap, or leave group out."),
+            "{err}"
+        );
+        // `like=` takes a spec's policy, and is held to the same rule.
+        let like = r#", "group": "g", "like": {"spec": "m", "accept": ["x"]}"#;
+        let err = run(ahead, like).err().expect("refused");
+        assert!(err.contains("under group needs clock"), "{err}");
+        let mut clocked = run(ahead, r#", "group": "g", "clock": "t", "gap_cap": 1.5"#).unwrap();
+        let mut out = clocked.feed(&df, None).unwrap();
+        out.vstack_mut(&clocked.finish().unwrap()).unwrap();
+        assert_eq!(out.height(), 4);
+        run(back, r#", "group": "g""#).unwrap();
+        run(ahead, "").unwrap();
+    }
+
+    /// Task 173, PC2: a spec's window target runs the same core, through
+    /// `feed_resolving`, and a reset keeps the window whose far edge is the
+    /// last row before it whole there too: row 1's window `(1, 3]` resolves
+    /// at the step back with `4 + 8`, where it resolved discarded, null.
+    /// The windows reaching past that row resolve discarded, null.
+    #[test]
+    fn a_target_window_whose_far_edge_is_the_last_row_before_a_reset_resolves_whole() {
+        let df = df!(
+            "t" => [0.0, 1.0, 2.0, 3.0, -7.0, -6.0],
+            "x" => [1.0, 2.0, 4.0, 8.0, 16.0, 32.0],
+            "@po:row" => [100u64, 101, 102, 103, 104, 105],
+        )
+        .unwrap();
+        let mut run = WindowsRun::new(
+            config(
+                r#"{"formulas": [{"name": "f", "tree": ["rewm_sum", ["col", "x"],
+                {"half_life": "inf", "window_size": 2}]}], "clock": "t", "gap_cap": 100,
+                "restart_after_step_back": 1}"#,
+            ),
+            df.schema(),
+        )
+        .unwrap();
+        let out = run
+            .feed_resolving(&df, &[100, 101, 102, 103, 104, 105])
+            .unwrap();
+        let rows = |name: &str| -> Vec<u64> {
+            out.column(name)
+                .unwrap()
+                .u64()
+                .unwrap()
+                .iter()
+                .flatten()
+                .collect()
+        };
+        let f: Vec<Option<f64>> = out.column("f").unwrap().f64().unwrap().iter().collect();
+        assert_eq!(rows("@po:seq"), [100, 101, 102, 103]);
+        assert_eq!(rows("@po:at"), [103, 104, 104, 104]);
+        assert_eq!(f, [Some(6.0), Some(12.0), None, None]);
+    }
+
+    /// Task 160, PC3: a state compares its call by length, not by how a
+    /// length was written: "5000ms" resumes the call that saved "5s", and
+    /// the rows it holds go on to the same values.
+    #[test]
+    fn a_state_resumes_another_spelling_of_one_length() {
+        let df = df!(
+            "t" => Series::new("t".into(), [0i64, 1_000, 2_000, 3_000, 4_000, 5_000])
+                .cast(&DataType::Datetime(TimeUnit::Milliseconds, None))
+                .unwrap(),
+            "x" => [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]
+        )
+        .unwrap();
+        let call = |cap: &str, window: &str| {
+            config(&format!(
+                r#"{{"formulas": [{{"name": "f", "tree": ["rewm_sum", ["col", "x"],
+                {{"half_life": "1h", "window_size": "{window}"}}]}}], "clock": "t",
+                "gap_cap": "{cap}"}}"#
+            ))
+        };
+        let mut whole = WindowsRun::new(call("5s", "2s"), df.schema()).unwrap();
+        let mut want = whole.feed(&df, None).unwrap();
+        want.vstack_mut(&whole.finish().unwrap()).unwrap();
+        let mut first = WindowsRun::new(call("5s", "2s"), df.schema()).unwrap();
+        let got = first.feed(&df.slice(0, 3), None).unwrap();
+        let bytes = first.save_bytes().unwrap();
+        for (cap, window) in [("5000ms", "2s"), ("5s", "2000ms")] {
+            let mut second = WindowsRun::load_bytes(&bytes, call(cap, window), df.schema())
+                .unwrap_or_else(|e| panic!("{cap}, {window}: {e}"));
+            let mut out = got.clone();
+            out.vstack_mut(&second.feed(&df.slice(3, 3), None).unwrap())
+                .unwrap();
+            out.vstack_mut(&second.finish().unwrap()).unwrap();
+            assert!(out.equals_missing(&want), "{cap}, {window}");
+        }
+        assert!(
+            WindowsRun::load_bytes(&bytes, call("6s", "2s"), df.schema())
+                .err()
+                .expect("another length is another call")
+                .contains("another call")
+        );
+    }
+
+    fn values_ptr(df: &DataFrame, c: &str) -> *const f64 {
+        df.column(c)
+            .unwrap()
+            .f64()
+            .unwrap()
+            .cont_slice()
+            .unwrap()
+            .as_ptr()
+    }
+
+    /// The rows a look-ahead holds are the input's own chunks, not copies:
+    /// the output's values sit at the input's addresses.
+    /// Review R1, N7 and N8: a formula with no operator beside one with an
+    /// operator was accepted (Python refused it), and an input under the
+    /// operators' prefix would have collided with a hidden column at run
+    /// time.
+    #[test]
+    fn each_formula_holds_an_operator_and_reads_no_reserved_column() {
+        let input = frame(&[0.0, 1.0]).schema().clone();
+        let err = WindowsRun::new(
+            config(
+                r#"{"formulas": [{"name": "y", "tree": ["ewm_sum", ["col", "x"], {"half_life": 1.0}]},
+                                 {"name": "z", "tree": ["-", ["col", "x"], ["lit", 1.0]]}],
+                   "clock": "t", "gap_cap": 100.0}"#,
+            ),
+            &input,
+        )
+        .err()
+        .expect("refused");
+        assert!(
+            err.contains("holds no window operator or increment"),
+            "{err}"
+        );
+        let mut with_hidden: Schema = (*input).clone();
+        with_hidden.insert("@po:x".into(), DataType::Float64);
+        let err = WindowsRun::new(
+            config(
+                r#"{"formulas": [{"name": "y", "tree": ["ewm_sum", ["col", "@po:x"], {"half_life": 1.0}]}],
+                   "clock": "t", "gap_cap": 100.0}"#,
+            ),
+            &with_hidden,
+        )
+        .err()
+        .expect("refused");
+        assert!(
+            err.contains("is kept for the window run's own columns"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn held_rows_are_the_inputs_own_chunks() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let mut run = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let out = run.feed(&df, None).unwrap();
+        assert_eq!(out.height(), 3, "rows 0..3 resolved by row 5");
+        assert_eq!(values_ptr(&out, "x"), values_ptr(&df, "x"));
+        assert_eq!(run.held(), 3);
+        let rest = run.finish().unwrap();
+        assert_eq!(rest.height(), 3);
+        assert!(
+            rest.column("f")
+                .unwrap()
+                .f64()
+                .unwrap()
+                .iter()
+                .all(|v| v.is_none())
+        );
+    }
+
+    /// The schema is the input's columns then the formulas, typed by what
+    /// they compute.
+    #[test]
+    fn the_schema_types_each_formula() {
+        let df = frame(&[0.0, 1.0]);
+        let cfg = config(
+            r#"{"formulas": [
+                {"name": "m", "tree": ["ewm_mean", ["col", "x"], {"half_life": 1}]},
+                {"name": "up", "tree": [">", ["ewm_sum", ["col", "x"], {"half_life": 1}], ["lit", 0]]},
+                {"name": "dx", "tree": ["increment", ["col", "x"]]}
+            ], "clock": "t", "gap_cap": 100}"#,
+        );
+        let run = WindowsRun::new(cfg, df.schema()).unwrap();
+        let s = run.schema();
+        assert_eq!(
+            s.iter_names().map(|n| n.to_string()).collect::<Vec<_>>(),
+            ["t", "x", "wide", "m", "up", "dx"]
+        );
+        assert_eq!(s.get("up"), Some(&DataType::Boolean));
+        assert_eq!(s.get("dx"), Some(&DataType::Float64));
+        assert_eq!(run.needed(), vec!["t".to_string(), "x".to_string()]);
+    }
+
+    /// A formula that cannot run is refused while the plan is built, by
+    /// name.
+    #[test]
+    fn a_formula_that_cannot_run_is_refused_by_name() {
+        let df = frame(&[0.0, 1.0]);
+        for (json, says) in [
+            (
+                r#"{"formulas": [], "clock": "t", "gap_cap": 1}"#,
+                "was given. Give at least one",
+            ),
+            (
+                r#"{"formulas": [{"name": "x", "tree": ["ewm_mean", ["col", "x"], {"half_life": 1}]}], "clock": "t", "gap_cap": 1}"#,
+                "is already a column of the input",
+            ),
+            (
+                r#"{"formulas": [{"name": "a", "tree": ["ewm_mean", ["col", "x"], {"half_life": 1}]}, {"name": "a", "tree": ["ewm_sum", ["col", "x"], {"half_life": 1}]}], "clock": "t", "gap_cap": 1}"#,
+                "are named \"a\"",
+            ),
+            (
+                r#"{"formulas": [{"name": "a", "tree": ["ewm_mean", ["col", "nope"], {"half_life": 1}]}], "clock": "t", "gap_cap": 1}"#,
+                "the input column \"nope\" is not in the input",
+            ),
+            (
+                r#"{"formulas": [{"name": "a", "tree": ["ewm_mean", ["col", "wide"], {"half_life": 1}]}], "clock": "t", "gap_cap": 1}"#,
+                "input must be a number, but it is String",
+            ),
+            (
+                r#"{"formulas": [{"name": "a", "tree": ["-", ["col", "x"], ["lit", 1]]}], "clock": "t", "gap_cap": 1}"#,
+                "holds no window operator or increment",
+            ),
+            (
+                r#"{"formulas": [{"name": "a", "tree": ["ewm_mean", ["col", "x"], {"half_life": "1s"}]}], "clock": "t", "gap_cap": 1}"#,
+                "half_life is a duration",
+            ),
+            (
+                r#"{"formulas": [{"name": "a", "tree": ["shift", ["col", "x"]]}], "clock": "t", "gap_cap": 1}"#,
+                "\"shift\" is not one of the operators a formula can hold",
+            ),
+        ] {
+            let err = match serde_json::from_str::<WindowsConfig>(json) {
+                Ok(c) => WindowsRun::new(c, df.schema())
+                    .err()
+                    .expect("refused")
+                    .into_string(),
+                Err(e) => e.to_string(),
+            };
+            assert!(err.contains(says), "{json}: {err}");
+        }
+    }
+
+    /// An increment is one row back within the group's session, and seconds
+    /// on a temporal column.
+    #[test]
+    fn an_increment_is_one_row_back_within_the_session() {
+        let df = df!(
+            "t" => [0.0, 1.0, 2.0, 3.0, 4.0],
+            "s" => ["a", "a", "b", "b", "b"],
+            "c" => [10.0, 12.0, 15.0, 15.5, 20.0],
+        )
+        .unwrap();
+        let cfg = config(
+            r#"{"formulas": [{"name": "dc", "tree": ["increment", ["col", "c"]]},
+                {"name": "dt", "tree": ["increment", ["col", "t"]]}],
+                "clock": "t", "gap_cap": 100, "session": "s"}"#,
+        );
+        let mut run = WindowsRun::new(cfg, df.schema()).unwrap();
+        let mut out = run.feed(&df.slice(0, 2), None).unwrap();
+        out.vstack_mut(&run.feed(&df.slice(2, 3), None).unwrap())
+            .unwrap();
+        out.vstack_mut(&run.finish().unwrap()).unwrap();
+        let dc: Vec<Option<f64>> = out.column("dc").unwrap().f64().unwrap().iter().collect();
+        assert_eq!(dc, vec![None, Some(2.0), None, Some(0.5), Some(4.5)]);
+        let dt: Vec<Option<f64>> = out.column("dt").unwrap().f64().unwrap().iter().collect();
+        assert_eq!(dt, vec![None, Some(1.0), None, Some(1.0), Some(1.0)]);
+    }
+
+    /// A state resumes only its own call, and goes on from where it was.
+    #[test]
+    fn a_state_resumes_its_own_call() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut whole = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let mut want = whole.feed(&df, None).unwrap();
+        want.vstack_mut(&whole.finish().unwrap()).unwrap();
+        let mut first = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let mut got = first.feed(&df.slice(0, 3), None).unwrap();
+        let bytes = first.save_bytes().unwrap();
+        let other = config(
+            r#"{"formulas": [{"name": "f", "tree": ["rewm_mean", ["col", "x"],
+            {"half_life": 2, "window_size": 2}]}], "clock": "t", "gap_cap": 100}"#,
+        );
+        let err = WindowsRun::load_bytes(&bytes, other, df.schema())
+            .err()
+            .expect("refused");
+        assert!(err.contains("another call"));
+        let mut second = WindowsRun::load_bytes(&bytes, config(FORWARD), df.schema()).unwrap();
+        got.vstack_mut(&second.feed(&df.slice(3, 4), None).unwrap())
+            .unwrap();
+        got.vstack_mut(&second.finish().unwrap()).unwrap();
+        assert!(got.equals_missing(&want));
+    }
+
+    /// Review R2, W4, then R4, B1 to B3: a state saved under a slice records
+    /// the rows of its input the run consumed, skipped or fed, and the
+    /// input's first clock. A run resumed on the same input skips them, so a
+    /// chain of sliced runs reads the rest as one run would, rows held from
+    /// an earlier run and returned counted as none of this input's; a run
+    /// on an input that starts at another clock skips nothing.
+    #[test]
+    fn a_state_saved_under_a_slice_resumes_on_the_same_input() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut one = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let mut whole = one.feed(&df, None).unwrap();
+        whole.vstack_mut(&one.finish().unwrap()).unwrap();
+        let mut out: Option<DataFrame> = None;
+        let mut state: Option<Vec<u8>> = None;
+        for _ in 0..4 {
+            let mut run = match &state {
+                None => WindowsRun::new(config(FORWARD), df.schema()).unwrap(),
+                Some(b) => WindowsRun::load_bytes(b, config(FORWARD), df.schema()).unwrap(),
+            };
+            let part = run.feed(&df, Some(1)).unwrap();
+            assert_eq!(part.height(), 1);
+            state = Some(run.save_bytes_with(run.consumed(), false).unwrap());
+            match &mut out {
+                None => out = Some(part),
+                Some(o) => {
+                    o.vstack_mut(&part).unwrap();
+                }
+            }
+        }
+        let state = state.unwrap();
+        let mut rest = WindowsRun::load_bytes(&state, config(FORWARD), df.schema()).unwrap();
+        let mut tail = rest.feed(&df, None).unwrap();
+        tail.vstack_mut(&rest.finish().unwrap()).unwrap();
+        let mut both = out.unwrap();
+        both.vstack_mut(&tail).unwrap();
+        assert!(both.equals_missing(&whole), "{both} against {whole}");
+        // The next file starts at another clock: none of its rows skipped.
+        let later = frame(&[10.0, 11.0, 12.0]);
+        let mut next = WindowsRun::load_bytes(&state, config(FORWARD), later.schema()).unwrap();
+        let mut got = next.feed(&later, None).unwrap();
+        got.vstack_mut(&next.finish().unwrap()).unwrap();
+        let fed_later = got
+            .column("t")
+            .unwrap()
+            .f64()
+            .unwrap()
+            .iter()
+            .flatten()
+            .filter(|t| *t >= 10.0)
+            .count();
+        assert_eq!(fed_later, 3, "{got}");
+    }
+
+    /// Review R2, W5: a state written by version 2 (before round one)
+    /// loaded with defaults for the fields round one added, and
+    /// misbehaved; the version is read before the rest, and refused by
+    /// number.
+    #[test]
+    fn a_state_of_another_version_is_refused_by_its_version() {
+        #[derive(Serialize)]
+        struct Old<'a> {
+            magic: &'a str,
+            version: u32,
+        }
+        let input = frame(&[0.0]).schema().clone();
+        let old = rmp_serde::to_vec_named(&Old {
+            magic: WINDOWS_MAGIC,
+            version: 2,
+        })
+        .unwrap();
+        let err = WindowsRun::load_bytes(&old, config(FORWARD), &input)
+            .err()
+            .expect("refused");
+        assert!(
+            err.contains(
+                "the state's version is 2, but this version of polars-online reads versions 9 \
+                 to 10"
+            ),
+            "{err}"
+        );
+        let other = rmp_serde::to_vec_named(&Old {
+            magic: "something else",
+            version: WINDOWS_VERSION,
+        })
+        .unwrap();
+        let err = WindowsRun::load_bytes(&other, config(FORWARD), &input)
+            .err()
+            .expect("refused");
+        assert!(err.contains("was not saved by a window run"), "{err}");
+    }
+
+    /// Review R5, C1: a resumed run that satisfies its limit from the rows the
+    /// state held, while a loaded skip still spans the chunks it has fed, saves
+    /// the rows consumed of the input so far -- the loaded skip included.
+    #[test]
+    fn a_resumed_run_fed_one_row_at_a_time_saves_the_whole_count() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 10.0, 11.0, 12.0]);
+        let mut one = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let mut whole = one.feed(&df, None).unwrap();
+        whole.vstack_mut(&one.finish().unwrap()).unwrap();
+        // Run 1: head(2) reads rows 0..5: row 0 closes at t = 3, and row 4 at
+        // t = 10 closes rows 1..3 at once, so rows 2 and 3 stay held, resolved.
+        let mut run = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let mut out = run.feed(&df, Some(2)).unwrap();
+        assert_eq!(run.consumed(), 5);
+        let state = run.save_bytes_with(run.consumed(), false).unwrap();
+        // Run 2, one row a chunk, head(1): the first chunk is skipped, the
+        // held row 2 satisfies the limit, the skip still spans four chunks.
+        let mut run = WindowsRun::load_bytes(&state, config(FORWARD), df.schema()).unwrap();
+        let mut i = 0;
+        loop {
+            let part = run.feed(&df.slice(i, 1), Some(1)).unwrap();
+            i += 1;
+            if part.height() == 1 {
+                out.vstack_mut(&part).unwrap();
+                break;
+            }
+        }
+        assert_eq!(run.consumed(), 5, "the loaded skip not yet applied counts");
+        let state = run.save_bytes_with(run.consumed(), false).unwrap();
+        // Run 3 on the whole input: the rest, as one run would give it.
+        let mut run = WindowsRun::load_bytes(&state, config(FORWARD), df.schema()).unwrap();
+        let mut rest = run.feed(&df, None).unwrap();
+        rest.vstack_mut(&run.finish().unwrap()).unwrap();
+        out.vstack_mut(&rest).unwrap();
+        assert!(out.equals_missing(&whole), "{out} against {whole}");
+    }
+
+    /// Review R5, C3/C4 and C6: a sliced state knows its input by the rows it
+    /// held and its first clock, and refuses another input by name; a state
+    /// cut short is reported as damaged.
+    #[test]
+    fn a_sliced_state_refuses_another_input_and_a_damaged_file_says_so() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut run = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        run.feed(&df, Some(2)).unwrap();
+        let state = run.save_bytes_with(run.consumed(), false).unwrap();
+        // The same first clock, other rows after it.
+        let other = frame(&[0.0, 1.5, 2.5, 3.5, 4.5, 5.5, 6.5]);
+        let mut run = WindowsRun::load_bytes(&state, config(FORWARD), other.schema()).unwrap();
+        let err = run.feed(&other, None).expect_err("refused");
+        assert!(err.to_string().contains("another input"), "{err}");
+        // The input sliced by hand.
+        let mut run = WindowsRun::load_bytes(&state, config(FORWARD), df.schema()).unwrap();
+        let err = run.feed(&df.slice(2, 5), None).expect_err("refused");
+        assert!(err.to_string().contains("another input"), "{err}");
+        // A file cut short.
+        let cut = &state[..state.len() / 2];
+        let err = WindowsRun::load_bytes(cut, config(FORWARD), df.schema())
+            .err()
+            .expect("refused");
+        assert!(err.contains("damaged"), "{err}");
+    }
+
+    /// Review R4, A2 and R6, D5: a windows state version moves the bank's
+    /// schema with it, since a bank file embeds one per formula target and
+    /// refuses an older form by number, not at a group's first chunk.
+    #[test]
+    fn a_windows_state_version_moves_the_banks_schema_with_it() {
+        // 28 to 39 moved for `ew_cov`'s PCA cadence,
+        // `micro`'s pruning, the models' window cadence, `lasso`'s
+        // per-target thresholds, the windows' stamps, the quantile fit's
+        // band systems, the embargo's elapsed clock, `coef_every` on the
+        // clock, `bocpd`'s hazard on the clock, the solve, component and
+        // checkpoint cadences on the exact clock, `ewridge`'s kept
+        // systems, the stream's and the bank's state and task 195's
+        // residual scales, scaler, warm-up and per-target thresholds (tasks
+        // 161, 163, 162, 174, 175, 170, 176, 178, 179, 180, 186, 194, 195),
+        // and 41 for the models' window edge and task 196's names, the
+        // windows state unchanged: a schema may move alone, a windows
+        // version may not. 42 (task 200) moved with windows state 8, an
+        // integer clock held as an integer in its rows; 43 for the relative
+        // targets' removal (task 201), 44 for task 202's target spreads,
+        // 45 for task 116's readiness statistics, 46 for the readiness
+        // notices' waits (task 208) and 47 for task 206's warm-up of a
+        // standardizing fit, the windows state unchanged; 48 (task 212)
+        // with windows state 9, a variance's queue six wide; 49 for task
+        // 211's `kalman` anchor and clocks, 50 for task 214's `kalman`
+        // prior from a median, 51 for task 215's `ftrl` without its
+        // penalty scale and the clusters' centres as pairs, 52 for task
+        // 217's row counts in `ewridge`'s and `lasso`'s cross-moments, and
+        // 54 for task 223 (b)'s `audit`, 55 for task 221's diagnostics
+        // with a memory of their own, 56 for its parts (d)-(h), 57 for
+        // review round 6's tails and scored inflation, 59 for task 233's
+        // smallest change in an audit, 60 for task 232's Newey-West sums
+        // and 61 for review round 7's residual lag products on a quantile
+        // fit (A-2), task 244's `bias` in an `ew_cov` and its 1.0 names, and
+        // 62 for task 257's held targets of a blocked `ewridge`, the first
+        // change since 1.0, whose loader reads 61, and 63 for task 271's
+        // Huber scale, whose loader reads 62: the windows state unchanged.
+        // Windows state 10 (task 272 (d), a quantile's sketches) within
+        // schema 63: this build reads a 9 core as a 10 without a quantile,
+        // so a 62 or 63 bank holding window targets resumes here, and no
+        // released build reads a 63 bank (1.2.0 refuses it by number), so
+        // none meets a 10 core at a group's first chunk. 64 for task 277's
+        // refit of `huber`'s and `sgd`'s first rows, whose loader reads 63:
+        // the windows state unchanged. 65 for task 323's MAD read exactly
+        // from a refit's held `|e|`, whose loader reads 64: unchanged too.
+        // 66 for task 327's diagonal `hmm` and `ew_class` states and task
+        // 328's count of the rows `corrchange`'s window ring has taken,
+        // whose loaders read 65: unchanged too. 67 for task 340's pending
+        // notices saved with a stream and `marginal`'s mark cleared at its
+        // freeze, whose loaders read 66: unchanged too.
+        assert_eq!((WINDOWS_VERSION, rheon_core::SCHEMA_VERSION), (10, 67));
+        assert_eq!(MIN_WINDOWS_VERSION, 9);
+    }
+
+    /// Review R6, D2: a run on the next file under a slice keeps the first
+    /// file's unresolved rows held ahead of its own -- rows go out in order,
+    /// so none of its own went out while one of theirs waited -- and the
+    /// state then holds more rows than it consumed of this input. The
+    /// identity is the last `consumed` of the held rows, this input's own;
+    /// a resume on the second file goes on.
+    #[test]
+    fn a_sliced_run_on_the_next_file_resumes_with_the_first_files_rows_held() {
+        let first = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let second = frame(&[10.0, 11.0, 12.0]);
+        let whole = first.vstack(&second).unwrap();
+        let mut one = WindowsRun::new(config(FORWARD), whole.schema()).unwrap();
+        let mut want = one.feed(&whole, None).unwrap();
+        want.vstack_mut(&one.finish().unwrap()).unwrap();
+        // The first file, unsliced: rows 3..6 stay held, their windows open.
+        let mut run = WindowsRun::new(config(FORWARD), first.schema()).unwrap();
+        let mut out = run.feed(&first, None).unwrap();
+        assert_eq!(run.held(), 3);
+        let state = run.save_bytes().unwrap();
+        // The second file under head(1): its first row closes the three, one
+        // goes out, two stay held ahead of it; one row of it consumed.
+        let mut run = WindowsRun::load_bytes(&state, config(FORWARD), second.schema()).unwrap();
+        out.vstack_mut(&run.feed(&second, Some(1)).unwrap())
+            .unwrap();
+        assert_eq!((run.consumed(), run.held()), (1, 3));
+        let state = run.save_bytes_with(run.consumed(), false).unwrap();
+        // The second file resumed, unsliced: the rest, as one run would give it.
+        let mut run = WindowsRun::load_bytes(&state, config(FORWARD), second.schema()).unwrap();
+        out.vstack_mut(&run.feed(&second, None).unwrap()).unwrap();
+        out.vstack_mut(&run.finish().unwrap()).unwrap();
+        assert!(out.equals_missing(&want), "{out} against {want}");
+    }
+
+    /// Review R6, D1: a backward operator under "left" resolves a row at its
+    /// own push, so a sliced run holds no row, and the held rows identify
+    /// nothing; the state keeps the last row it read and refuses another
+    /// input by it, with a clock column and without (a row-count clock
+    /// repeats no stamp, so every operator resolves at the push).
+    #[test]
+    fn a_sliced_state_that_holds_no_rows_knows_its_input_by_its_last_row() {
+        const LEFT: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1, "closed": "left"}]}], "clock": "t", "gap_cap": 100}"#;
+        const BARE: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1}]}]}"#;
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let other = frame(&[0.0, 1.5, 2.5, 3.5, 4.5]);
+        for (cfg, other) in [(LEFT, other), (BARE, df.slice(3, 4))] {
+            let mut one = WindowsRun::new(config(cfg), df.schema()).unwrap();
+            let mut want = one.feed(&df, None).unwrap();
+            want.vstack_mut(&one.finish().unwrap()).unwrap();
+            let mut run = WindowsRun::new(config(cfg), df.schema()).unwrap();
+            let mut out = run.feed(&df, Some(3)).unwrap();
+            assert_eq!(
+                (out.height(), run.consumed(), run.held()),
+                (3, 3, 0),
+                "{cfg}"
+            );
+            let state = run.save_bytes_with(run.consumed(), false).unwrap();
+            let mut run = WindowsRun::load_bytes(&state, config(cfg), df.schema()).unwrap();
+            let err = run.feed(&other, None).expect_err("refused");
+            assert!(err.to_string().contains("another input"), "{cfg}: {err}");
+            let mut run = WindowsRun::load_bytes(&state, config(cfg), df.schema()).unwrap();
+            out.vstack_mut(&run.feed(&df, None).unwrap()).unwrap();
+            out.vstack_mut(&run.finish().unwrap()).unwrap();
+            assert!(out.equals_missing(&want), "{cfg}: {out} against {want}");
+        }
+    }
+
+    /// Review R6, D3 and D4: an input that starts elsewhere is the next file
+    /// when the clock policy takes its first row as a step forward or a new
+    /// start (a step back past `restart_after_step_back`, a new session),
+    /// and is refused when it starts at the last stamp the state read (a
+    /// file boundary inside a tied stamp cannot be told from the same input
+    /// sliced inside it) or steps back where the policy refuses it.
+    #[test]
+    fn a_sliced_state_takes_a_new_start_by_the_policys_word_for_the_next_file() {
+        let day = |t: &[f64], s: &str| {
+            df!(
+                "t" => t,
+                "x" => t.iter().map(|v| v * 10.0).collect::<Vec<_>>(),
+                "s" => vec![s; t.len()],
+            )
+            .unwrap()
+        };
+        let day1 = day(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "a");
+        let day2 = day(&[0.5, 1.5, 2.5, 3.5], "b");
+        let restart = r#"{"formulas": [{"name": "f", "tree": ["rewm_mean", ["col", "x"],
+            {"half_life": 1, "window_size": 2}]}], "clock": "t", "gap_cap": 100,
+            "restart_after_step_back": 2}"#;
+        let session = r#"{"formulas": [{"name": "f", "tree": ["rewm_mean", ["col", "x"],
+            {"half_life": 1, "window_size": 2}]}], "clock": "t", "gap_cap": 100,
+            "session": "s"}"#;
+        for cfg in [restart, session] {
+            let whole = day1.vstack(&day2).unwrap();
+            let mut one = WindowsRun::new(config(cfg), whole.schema()).unwrap();
+            let mut want = one.feed(&whole, None).unwrap();
+            want.vstack_mut(&one.finish().unwrap()).unwrap();
+            // Day 1 under a slice its input exhausts: a state with a skip.
+            let mut run = WindowsRun::new(config(cfg), day1.schema()).unwrap();
+            let mut out = run.feed(&day1, Some(100)).unwrap();
+            assert!(run.held() > 0 && run.consumed() == 7);
+            let state = run.save_bytes_with(run.consumed(), true).unwrap();
+            // Day 2 steps back: a new start by the policy's word, the next file.
+            let mut run = WindowsRun::load_bytes(&state, config(cfg), day2.schema()).unwrap();
+            out.vstack_mut(&run.feed(&day2, None).unwrap()).unwrap();
+            out.vstack_mut(&run.finish().unwrap()).unwrap();
+            assert!(out.equals_missing(&want), "{cfg}: {out} against {want}");
+        }
+        // Review R7, E2: day 2 at the same first stamp as day 1. With a
+        // session column the first row's session tells the file from the
+        // saved input, and the policy takes it; without one it is the saved
+        // input until the rows differ, refused by name.
+        let same = day(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0], "b");
+        let whole = day1.vstack(&same).unwrap();
+        let mut one = WindowsRun::new(config(session), whole.schema()).unwrap();
+        let mut want = one.feed(&whole, None).unwrap();
+        want.vstack_mut(&one.finish().unwrap()).unwrap();
+        let mut run = WindowsRun::new(config(session), day1.schema()).unwrap();
+        let mut out = run.feed(&day1, Some(100)).unwrap();
+        let state = run.save_bytes_with(run.consumed(), true).unwrap();
+        let mut run = WindowsRun::load_bytes(&state, config(session), same.schema()).unwrap();
+        out.vstack_mut(&run.feed(&same, None).unwrap()).unwrap();
+        out.vstack_mut(&run.finish().unwrap()).unwrap();
+        assert!(out.equals_missing(&want), "{out} against {want}");
+        let mut run = WindowsRun::new(config(restart), day1.schema()).unwrap();
+        run.feed(&day1, Some(100)).unwrap();
+        let state = run.save_bytes_with(run.consumed(), true).unwrap();
+        let mut run = WindowsRun::load_bytes(&state, config(restart), same.schema()).unwrap();
+        let err = run.feed(&same, None).expect_err("refused");
+        assert!(err.to_string().contains("another input"), "{err}");
+        // Under the default policy a step back is refused, and so is a tie.
+        let plain = r#"{"formulas": [{"name": "f", "tree": ["rewm_mean", ["col", "x"],
+            {"half_life": 1, "window_size": 2}]}], "clock": "t", "gap_cap": 100}"#;
+        let mut run = WindowsRun::new(config(plain), day1.schema()).unwrap();
+        run.feed(&day1, Some(100)).unwrap();
+        let state = run.save_bytes_with(run.consumed(), true).unwrap();
+        let mut run = WindowsRun::load_bytes(&state, config(plain), day2.schema()).unwrap();
+        let err = run.feed(&day2, None).expect_err("refused");
+        assert!(
+            err.to_string()
+                .contains("before the last row the state read"),
+            "{err}"
+        );
+        let tied = day(&[6.0, 7.0, 8.0], "a");
+        let mut run = WindowsRun::load_bytes(&state, config(plain), tied.schema()).unwrap();
+        let err = run.feed(&tied, None).expect_err("refused");
+        assert!(
+            err.to_string()
+                .contains("at the last clock value the state read"),
+            "{err}"
+        );
+    }
+
+    /// Review R5, C1 (the plan's row, unpinned) and C3: a resumed run that
+    /// saw no row saves the identity it loaded, so the chain goes on from
+    /// that state as from the one before it; a save that says the input
+    /// ended refuses a skip still pending, one that does not takes it.
+    #[test]
+    fn a_resumed_run_that_saw_no_row_saves_the_identity_it_loaded() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 10.0, 11.0, 12.0]);
+        let mut one = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let mut whole = one.feed(&df, None).unwrap();
+        whole.vstack_mut(&one.finish().unwrap()).unwrap();
+        let mut run = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let mut out = run.feed(&df, Some(2)).unwrap();
+        assert_eq!(run.consumed(), 5);
+        let first = run.save_bytes_with(run.consumed(), false).unwrap();
+        // Loaded and saved again without a row: the same identity and count.
+        let run = WindowsRun::load_bytes(&first, config(FORWARD), df.schema()).unwrap();
+        assert_eq!(run.consumed(), 5);
+        let again = run.save_bytes_with(run.consumed(), false).unwrap();
+        let mut run = WindowsRun::load_bytes(&again, config(FORWARD), df.schema()).unwrap();
+        out.vstack_mut(&run.feed(&df, None).unwrap()).unwrap();
+        out.vstack_mut(&run.finish().unwrap()).unwrap();
+        assert!(out.equals_missing(&whole), "{out} against {whole}");
+        // Mid-skip: the input is not over unless the caller says so.
+        let mut run = WindowsRun::load_bytes(&first, config(FORWARD), df.schema()).unwrap();
+        run.feed(&df.slice(0, 2), None).unwrap();
+        assert_eq!(run.consumed(), 5);
+        run.save_bytes_with(run.consumed(), false)
+            .expect("a slice satisfied mid-skip");
+        let err = run
+            .save_bytes_with(run.consumed(), true)
+            .expect_err("refused");
+        assert!(err.contains("ended after 2"), "{err}");
+        // Review R7, E5: the identity itself survives a re-save without a
+        // row -- the last row read, where nothing is held, refuses another
+        // input with the same first clock.
+        const LEFT: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1, "closed": "left"}]}], "clock": "t", "gap_cap": 100}"#;
+        let mut run = WindowsRun::new(config(LEFT), df.schema()).unwrap();
+        run.feed(&df, Some(3)).unwrap();
+        let first = run.save_bytes_with(run.consumed(), false).unwrap();
+        let run = WindowsRun::load_bytes(&first, config(LEFT), df.schema()).unwrap();
+        let again = run.save_bytes_with(run.consumed(), false).unwrap();
+        let other = frame(&[0.0, 1.5, 2.5, 3.5, 4.5]);
+        let mut run = WindowsRun::load_bytes(&again, config(LEFT), other.schema()).unwrap();
+        let err = run.feed(&other, None).expect_err("refused");
+        assert!(err.to_string().contains("another input"), "{err}");
+    }
+
+    /// Review R7, E3: the last row read is a sliced state's identity and
+    /// nothing else's, so an unsliced state that holds no rows resumes on an
+    /// input with a column more, as it did before the row was kept; a
+    /// sliced one names the columns it has against the frame's.
+    #[test]
+    fn the_last_row_binds_a_sliced_state_only() {
+        const LEFT: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1, "closed": "left"}]}], "clock": "t", "gap_cap": 100}"#;
+        let df = frame(&[0.0, 1.0, 2.0, 3.0]);
+        let mut run = WindowsRun::new(config(LEFT), df.schema()).unwrap();
+        run.feed(&df, None).unwrap();
+        assert_eq!(run.held(), 0);
+        let state = run.save_bytes().unwrap();
+        // The next file, with a column more.
+        let wider = frame(&[4.0, 5.0, 6.0, 7.0])
+            .lazy()
+            .with_columns([lit(1.0).alias("extra")])
+            .collect()
+            .unwrap();
+        let mut run = WindowsRun::load_bytes(&state, config(LEFT), wider.schema()).unwrap();
+        let out = run.feed(&wider, None).unwrap();
+        assert_eq!(out.height(), 4);
+        assert!(out.get_column_names().iter().any(|c| c.as_str() == "extra"));
+        let mut run = WindowsRun::new(config(LEFT), df.schema()).unwrap();
+        run.feed(&df, Some(2)).unwrap();
+        let state = run.save_bytes_with(run.consumed(), false).unwrap();
+        let err = WindowsRun::load_bytes(&state, config(LEFT), wider.schema())
+            .err()
+            .expect("refused");
+        assert!(
+            err.contains("the last row the state read has columns"),
+            "{err}"
+        );
+    }
+
+    /// Task 158, E13: a state saved without a slice refuses an input that
+    /// starts at the last stamp it read -- here one that repeats its last
+    /// row, which came out twice -- as a sliced state does, and goes on with
+    /// one that starts after it.
+    #[test]
+    fn an_unsliced_state_refuses_an_input_at_the_last_stamp_it_read() {
+        const LEFT: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1, "closed": "left"}]}], "clock": "t", "gap_cap": 100}"#;
+        let df = frame(&[0.0, 1.0, 2.0, 3.0]);
+        let mut run = WindowsRun::new(config(LEFT), df.schema()).unwrap();
+        run.feed(&df, None).unwrap();
+        let state = run.save_bytes().unwrap();
+        let again = frame(&[3.0, 4.0, 5.0]);
+        let mut run = WindowsRun::load_bytes(&state, config(LEFT), again.schema()).unwrap();
+        let err = run.feed(&again, None).expect_err("refused");
+        assert!(
+            err.to_string()
+                .contains("at the last clock value the state read"),
+            "{err}"
+        );
+        let next = frame(&[4.0, 5.0, 6.0]);
+        let mut run = WindowsRun::load_bytes(&state, config(LEFT), next.schema()).unwrap();
+        assert_eq!(run.feed(&next, None).unwrap().height(), 3);
+        // A fresh run has read no stamp.
+        let mut run = WindowsRun::new(config(LEFT), again.schema()).unwrap();
+        assert_eq!(run.feed(&again, None).unwrap().height(), 3);
+    }
+
+    /// Task 159 (F1): a run marked itself started, and kept its input's
+    /// first row, before the identity verdict, so a refused first chunk was
+    /// taken whole on the next call. A refused first chunk leaves the run as
+    /// it was: fed again, it is refused again, with the same words.
+    #[test]
+    fn a_refused_first_chunk_is_refused_again() {
+        const LEFT: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1, "closed": "left"}]}], "clock": "t", "gap_cap": 100}"#;
+        let df = frame(&[0.0, 1.0, 2.0, 3.0]);
+        let mut run = WindowsRun::new(config(LEFT), df.schema()).unwrap();
+        run.feed(&df, None).unwrap();
+        let state = run.save_bytes().unwrap();
+        let again = frame(&[3.0, 4.0, 5.0]);
+        let mut run = WindowsRun::load_bytes(&state, config(LEFT), again.schema()).unwrap();
+        let first = run.feed(&again, None).expect_err("refused").to_string();
+        let second = run
+            .feed(&again, None)
+            .expect_err("refused again")
+            .to_string();
+        assert!(
+            first.contains("at the last clock value the state read"),
+            "{first}"
+        );
+        assert_eq!(first, second);
+        // And the run goes on with the next file as if nothing had been fed.
+        let next = frame(&[4.0, 5.0, 6.0]);
+        assert_eq!(run.feed(&next, None).unwrap().height(), 3);
+    }
+
+    /// Task 159 (W1): a restart on the stream's clock starts every group's
+    /// clock over with its windows, so a group's next row within
+    /// `restart_after_step_back` of its last is the first on a fresh clock,
+    /// not a late row: C at 52, 8 after C at 60, once B at 50 restarted the
+    /// stream after A at 100.
+    #[test]
+    fn a_stream_restart_restarts_every_groups_clock() {
+        const GROUPED: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_sum", ["col", "x"],
+            {"half_life": 1e300}]}], "clock": "t", "gap_cap": 1e9, "group": "g",
+            "restart_after_step_back": 10}"#;
+        let df = df!(
+            "t" => [0.0, 60.0, 100.0, 50.0, 52.0],
+            "g" => ["A", "C", "A", "B", "C"],
+            "x" => [1.0; 5]
+        )
+        .unwrap();
+        let mut run = WindowsRun::new(config(GROUPED), df.schema()).unwrap();
+        let fed = run.feed(&df, None).expect("every row taken").height();
+        let rest = run.finish().unwrap().height();
+        assert_eq!(fed + rest, 5);
+    }
+
+    /// Task 159 (F2): a key is its value's text, so a group column of another
+    /// dtype on a resumed input started every key over, silently. The state
+    /// carries the group and session columns' dtypes, and refuses another.
+    #[test]
+    fn a_state_refuses_a_group_column_of_another_dtype() {
+        const GROUPED: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1}]}], "clock": "t", "gap_cap": 100, "group": "g"}"#;
+        let df =
+            df!("t" => [0.0, 1.0, 2.0, 3.0], "x" => [1.0, 2.0, 3.0, 4.0], "g" => [1i64, 1, 2, 2])
+                .unwrap();
+        let mut run = WindowsRun::new(config(GROUPED), df.schema()).unwrap();
+        run.feed(&df, None).unwrap();
+        let state = run.save_bytes().unwrap();
+        let next = df!("t" => [4.0, 5.0], "x" => [5.0, 6.0], "g" => [1.0f64, 2.0]).unwrap();
+        let err = WindowsRun::load_bytes(&state, config(GROUPED), next.schema())
+            .err()
+            .expect("refused");
+        assert!(
+            err.contains("group column \"g\": i64") && err.contains("f64"),
+            "{err}"
+        );
+        let same = df!("t" => [4.0, 5.0], "x" => [5.0, 6.0], "g" => [1i64, 2]).unwrap();
+        WindowsRun::load_bytes(&state, config(GROUPED), same.schema()).unwrap();
+    }
+
+    /// Review R8, F1: on a row-count clock every row is a step forward, so
+    /// a step forward says nothing; without a clock column the next file
+    /// begins with a new session, and a hand slice starting in the session
+    /// the state last read is refused.
+    #[test]
+    fn without_a_clock_the_next_file_begins_with_a_new_session() {
+        const ROWS: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1}]}], "session": "s"}"#;
+        let rows = |x: &[f64], s: &[&str]| df!("x" => x, "s" => s).unwrap();
+        let df = rows(
+            &[1.0, 2.0, 3.0, 4.0, 5.0, 6.0],
+            &["a", "a", "a", "b", "b", "b"],
+        );
+        let mut run = WindowsRun::new(config(ROWS), df.schema()).unwrap();
+        let mut out = run.feed(&df, Some(4)).unwrap();
+        assert_eq!((out.height(), run.consumed(), run.held()), (4, 4, 0));
+        let state = run.save_bytes_with(run.consumed(), false).unwrap();
+        for cut in [3, 5] {
+            let mut run = WindowsRun::load_bytes(&state, config(ROWS), df.schema()).unwrap();
+            let err = run
+                .feed(&df.slice(cut, df.height() - cut as usize), None)
+                .expect_err("refused");
+            assert!(
+                err.to_string().contains("continues the session last read"),
+                "{cut}: {err}"
+            );
+        }
+        let next = rows(&[7.0, 8.0], &["c", "c"]);
+        let whole = df.head(Some(4)).vstack(&next).unwrap();
+        let mut one = WindowsRun::new(config(ROWS), whole.schema()).unwrap();
+        let mut want = one.feed(&whole, None).unwrap();
+        want.vstack_mut(&one.finish().unwrap()).unwrap();
+        let mut run = WindowsRun::load_bytes(&state, config(ROWS), next.schema()).unwrap();
+        out.vstack_mut(&run.feed(&next, None).unwrap()).unwrap();
+        out.vstack_mut(&run.finish().unwrap()).unwrap();
+        assert!(out.equals_missing(&want), "{out} against {want}");
+    }
+
+    /// Review R8, F2: where the policy refuses the first row of an input
+    /// that starts elsewhere, the refusal says what the policy said -- under
+    /// `group` a next-day file's step back is refused on the stream's clock
+    /// whatever its session, as the unsliced path refuses it, naming
+    /// `restart_after_step_back`.
+    #[test]
+    fn a_refused_first_row_carries_the_policys_words() {
+        const GROUPED: &str = r#"{"formulas": [{"name": "f", "tree": ["rewm_mean", ["col", "x"],
+            {"half_life": 1, "window_size": 2}]}], "clock": "t", "gap_cap": 100,
+            "group": "g", "session": "s"}"#;
+        let day = |t: &[f64], s: &str| {
+            df!(
+                "t" => t,
+                "x" => t.iter().map(|v| v * 10.0).collect::<Vec<_>>(),
+                "g" => vec!["k"; t.len()],
+                "s" => vec![s; t.len()],
+            )
+            .unwrap()
+        };
+        let day1 = day(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0], "a");
+        let day2 = day(&[0.0, 1.0, 2.0, 3.0], "b");
+        let mut run = WindowsRun::new(config(GROUPED), day1.schema()).unwrap();
+        run.feed(&day1, Some(100)).unwrap();
+        let state = run.save_bytes_with(run.consumed(), true).unwrap();
+        let mut run = WindowsRun::load_bytes(&state, config(GROUPED), day2.schema()).unwrap();
+        let err = run.feed(&day2, None).expect_err("refused").to_string();
+        assert!(
+            err.contains("starts before the last row the state read")
+                && err.contains("restart_after_step_back"),
+            "{err}"
+        );
+    }
+
+    /// Review R7, E4 and R8, F3: a run that stops inside the skip (a limit
+    /// of 0 on a chunk shorter than the skip) saves the count and the
+    /// identity it loaded, not the partial skip's last row, so the next
+    /// resume on the same input goes on.
+    #[test]
+    fn a_save_inside_a_pending_skip_keeps_the_loaded_identity() {
+        const LEFT: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1, "closed": "left"}]}], "clock": "t", "gap_cap": 100}"#;
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        let mut one = WindowsRun::new(config(LEFT), df.schema()).unwrap();
+        let mut whole = one.feed(&df, None).unwrap();
+        whole.vstack_mut(&one.finish().unwrap()).unwrap();
+        let mut run = WindowsRun::new(config(LEFT), df.schema()).unwrap();
+        let mut out = run.feed(&df, Some(3)).unwrap();
+        let state = run.save_bytes_with(run.consumed(), false).unwrap();
+        let mut run = WindowsRun::load_bytes(&state, config(LEFT), df.schema()).unwrap();
+        assert_eq!(run.feed(&df.slice(0, 1), Some(0)).unwrap().height(), 0);
+        assert_eq!(run.consumed(), 3);
+        let state = run.save_bytes_with(run.consumed(), false).unwrap();
+        let mut run = WindowsRun::load_bytes(&state, config(LEFT), df.schema()).unwrap();
+        out.vstack_mut(&run.feed(&df, None).unwrap()).unwrap();
+        out.vstack_mut(&run.finish().unwrap()).unwrap();
+        assert!(out.equals_missing(&whole), "{out} against {whole}");
+    }
+
+    /// Review R8, F5: a state saved under a slice carries the rows it knows
+    /// its input by; one that carries none is damaged, refused at load.
+    #[test]
+    fn a_sliced_state_without_its_identity_is_damaged() {
+        const LEFT: &str = r#"{"formulas": [{"name": "f", "tree": ["ewm_mean", ["col", "x"],
+            {"half_life": 1, "closed": "left"}]}], "clock": "t", "gap_cap": 100}"#;
+        let df = frame(&[0.0, 1.0, 2.0, 3.0]);
+        let mut run = WindowsRun::new(config(LEFT), df.schema()).unwrap();
+        run.feed(&df, Some(2)).unwrap();
+        let state = run.save_bytes_with(run.consumed(), false).unwrap();
+        let file: FileIn = rmp_serde::from_slice(&state).unwrap();
+        let stripped = rmp_serde::to_vec_named(&FileOut {
+            magic: WINDOWS_MAGIC,
+            version: WINDOWS_VERSION,
+            config: &file.config,
+            core: &file.core,
+            held: &file.held,
+            increments: &file.increments,
+            stream_clock: file.stream_clock,
+            key_dtypes: &file.key_dtypes,
+            resume_skip: file.resume_skip,
+            resume_first: file.resume_first,
+            resume_first_session: file.resume_first_session,
+            last_row: &[],
+        })
+        .unwrap();
+        let err = WindowsRun::load_bytes(&stripped, config(LEFT), df.schema())
+            .err()
+            .expect("refused");
+        assert!(err.contains("damaged"), "{err}");
+    }
+
+    /// Review 2026-10-06, PD1: the core a state carries is held to its own
+    /// invariants at load, beyond the kernels, the operators, the clock and
+    /// the held count the loader compared: a held value short, an output
+    /// count below the operators, a queue of another width, a silent-list
+    /// link past the groups, more rows ready than held, or a waiting row
+    /// before the held ones loaded, and `finish`'s `emit` or the next
+    /// `push` indexed `held_values[r * n_out + o]` past its end.
+    #[test]
+    fn a_state_whose_core_is_damaged_is_refused() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let mut first = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        first.feed(&df.slice(0, 4), None).unwrap();
+        let bytes = first.save_bytes().unwrap();
+        let file: FileIn = rmp_serde::from_slice(&bytes).unwrap();
+        assert!(file.core.held() > 0, "rows wait for their forward windows");
+        for what in [
+            "held_values",
+            "n_outputs",
+            "queue",
+            "link",
+            "ready",
+            "waiting",
+        ] {
+            let mut core = file.core.clone();
+            core.damage(what);
+            let damaged = rmp_serde::to_vec_named(&FileOut {
+                magic: WINDOWS_MAGIC,
+                version: WINDOWS_VERSION,
+                config: &file.config,
+                core: &core,
+                held: &file.held,
+                increments: &file.increments,
+                stream_clock: file.stream_clock,
+                key_dtypes: &file.key_dtypes,
+                resume_skip: file.resume_skip,
+                resume_first: file.resume_first,
+                resume_first_session: file.resume_first_session,
+                last_row: &file.last_row,
+            })
+            .unwrap();
+            match WindowsRun::load_bytes(&damaged, config(FORWARD), df.schema()) {
+                Err(err) => assert!(err.contains("the state is damaged"), "{what}: {err}"),
+                Ok(mut run) => {
+                    let fed = run.feed(&df.slice(4, 2), None).map(|f| f.height());
+                    let done = run.finish().map(|f| f.height());
+                    panic!("{what}: loaded, fed {fed:?} and finished {done:?}");
+                }
+            }
+        }
+        assert!(WindowsRun::load_bytes(&bytes, config(FORWARD), df.schema()).is_ok());
+    }
+
+    /// A run over the whole of `df` in one chunk, then the end of input.
+    fn run_whole(cfg: &str, df: &DataFrame) -> DataFrame {
+        let mut run = WindowsRun::new(config(cfg), df.schema()).unwrap();
+        let mut out = run.feed(df, None).unwrap();
+        out.vstack_mut(&run.finish().unwrap()).unwrap();
+        out
+    }
+
+    fn values_of(df: &DataFrame, c: &str) -> Vec<Option<f64>> {
+        df.column(c).unwrap().f64().unwrap().iter().collect()
+    }
+
+    /// A formula whose value is its row's increment of `input`: a sum over
+    /// `(t - w, t]` holds only the row itself when stamps are at least `w`
+    /// apart, at weight `2^0 = 1`, and is null where the increment is.
+    fn increment_formula(input: &str, half_life: &str, window: &str) -> String {
+        format!(
+            r#"{{"name": "d", "tree": ["ewm_sum", ["increment", {input}],
+            {{"half_life": {half_life}, "window_size": {window}, "min_samples": 1}}]}}"#
+        )
+    }
+
+    /// Task 252: the refusals of a call's plan no other test reached, each
+    /// by its words: an output named nothing or under a reserved prefix, an
+    /// increment of an increment, an increment or an operator whose input
+    /// Polars cannot type or that is text, a clock or group column the
+    /// frame has not got, and a `like=` spec reading a column it has not.
+    #[test]
+    fn a_call_the_plan_cannot_run_is_refused_by_name() {
+        let df = df!(
+            "t" => [0.0, 1.0],
+            "x" => [1.0, 2.0],
+            "s" => ["a", "b"],
+        )
+        .unwrap();
+        let one = |name: &str, tree: &str, policy: &str| {
+            format!(r#"{{"formulas": [{{"name": "{name}", "tree": {tree}}}]{policy}}}"#)
+        };
+        let clocked = r#", "clock": "t", "gap_cap": 10"#;
+        let sum = r#"["ewm_sum", ["col", "x"], {"half_life": 1}]"#;
+        for (json, says) in [
+            (one("", sum, clocked), "an output cannot be named \"\""),
+            (
+                one("@po:y", sum, clocked),
+                "an output cannot be named \"@po:y\"",
+            ),
+            (
+                one("@in:0", sum, clocked),
+                "an output cannot be named \"@in:0\"",
+            ),
+            (
+                one(
+                    "d",
+                    r#"["ewm_sum", ["increment", ["increment", ["col", "x"]]], {"half_life": 1}]"#,
+                    clocked,
+                ),
+                "d: an increment's input holds another increment",
+            ),
+            (
+                one("d", r#"["increment", ["col", "s"]]"#, clocked),
+                "d: an increment's input must be a number or a temporal column, but it is String",
+            ),
+            (
+                one(
+                    "d",
+                    r#"["increment", ["-", ["col", "s"], ["lit", 1]]]"#,
+                    clocked,
+                ),
+                "d: Polars cannot compute the increment's input (",
+            ),
+            (
+                one(
+                    "m",
+                    r#"["ewm_sum", ["-", ["col", "s"], ["lit", 1]], {"half_life": 1}]"#,
+                    clocked,
+                ),
+                "m: Polars cannot compute ewm_sum's input (",
+            ),
+            (
+                one("m", sum, r#", "clock": "nope", "gap_cap": 10"#),
+                "with_windows: the clock column \"nope\" is not in the input, whose columns are \
+                 [\"t\", \"x\", \"s\"]. Name a column the input has, or add \"nope\" to it.",
+            ),
+            (
+                one("m", sum, r#", "group": "g""#),
+                "with_windows: the group column \"g\" is not in the input",
+            ),
+            (
+                one(
+                    "m",
+                    sum,
+                    r#", "clock": "t", "gap_cap": 10, "like": {"spec": "fit", "accept": ["x", "w"]}"#,
+                ),
+                "with_windows: the spec \"fit\" given as like= reads column \"w\", which is not in \
+                 the input",
+            ),
+        ] {
+            let err = WindowsRun::new(config(&json), df.schema())
+                .err()
+                .unwrap_or_else(|| panic!("{json}: ran"));
+            assert!(err.contains(says), "{json}: {err}");
+        }
+    }
+
+    /// Task 252: on one clock every clock parameter is written the same
+    /// way, as a spec's are: a duration needs a temporal clock column,
+    /// named or not, and a number needs a numeric one; and on a `Date`
+    /// clock, whose smallest step is a day, a cap or a restart below a day
+    /// is refused, saying why.
+    #[test]
+    fn durations_and_numbers_must_match_the_clock() {
+        let day = |d: &[i32]| {
+            Series::new("d".into(), d)
+                .cast(&DataType::Date)
+                .unwrap()
+                .into_column()
+        };
+        let ms = Series::new("t".into(), [0i64, 1_000])
+            .cast(&DataType::Datetime(TimeUnit::Milliseconds, None))
+            .unwrap()
+            .into_column();
+        let df = DataFrame::new(
+            2,
+            vec![
+                ms,
+                day(&[19_723, 19_724]),
+                Column::new("f".into(), [0.0, 1.0]),
+                Column::new("x".into(), [1.0, 2.0]),
+            ],
+        )
+        .unwrap();
+        let call = |half_life: &str, policy: &str| {
+            format!(
+                r#"{{"formulas": [{{"name": "m", "tree": ["ewm_sum", ["col", "x"],
+                {{"half_life": {half_life}}}]}}]{policy}}}"#
+            )
+        };
+        for (json, says) in [
+            (
+                call(r#""1s""#, r#", "clock": "f", "gap_cap": "10s""#),
+                "with_windows: half_life is a duration, which needs a temporal clock column \
+                 (Datetime, Date or Duration), but clock is \"f\" (Float64)",
+            ),
+            (
+                call(r#""1s""#, ""),
+                "with_windows: half_life is a duration, which needs a temporal clock column \
+                 (Datetime, Date or Duration), but clock is not given",
+            ),
+            (
+                call("1", r#", "clock": "t", "gap_cap": 10"#),
+                "with_windows: half_life is a number, but clock column \"t\" is Datetime(\"ms\"), \
+                 which measures time. Give half_life as a duration",
+            ),
+            (
+                call(r#""3d""#, r#", "clock": "d", "gap_cap": "1h""#),
+                "with_windows: gap_cap is 1h, less than a day, the smallest step clock column \
+                 \"d\" (Date) can take, so every step would be cut to it",
+            ),
+            (
+                call(
+                    r#""3d""#,
+                    r#", "clock": "d", "gap_cap": "5d", "restart_after_step_back": "1h""#,
+                ),
+                "with_windows: restart_after_step_back is 1h, less than a day, the smallest step \
+                 clock column \"d\" (Date) can take, so no step back could be as small and every \
+                 one would reset the windows. Set restart_after_step_back to at least a day, or \
+                 to 0 to reset at every step back.",
+            ),
+        ] {
+            let err = WindowsRun::new(config(&json), df.schema())
+                .err()
+                .unwrap_or_else(|| panic!("{json}: ran"));
+            assert!(err.contains(says), "{json}: {err}");
+        }
+        // A day and more is a step a `Date` clock can take.
+        let ok = call(
+            r#""3d""#,
+            r#", "clock": "d", "gap_cap": "5d", "restart_after_step_back": "1d""#,
+        );
+        let out = run_whole(&ok, &df);
+        assert_eq!(values_of(&out, "m").len(), 2);
+    }
+
+    /// Task 270 (review round 9, F-1): two finite clock values whose
+    /// difference is past the largest double are refused by row, naming
+    /// both, where the step was taken at the cap and left every later
+    /// stamp's removed time infinite.
+    #[test]
+    fn a_step_past_the_largest_double_is_refused_by_row() {
+        let cfg = r#"{"formulas": [{"name": "m", "tree": ["ewm_sum", ["col", "x"],
+            {"half_life": 10, "window_size": 3}]}], "clock": "t", "gap_cap": 100}"#;
+        let df = df!("t" => [-1e308, 1e308, 1e308], "x" => [1.0, 2.0, 3.0]).unwrap();
+        let mut run = WindowsRun::new(config(cfg), df.schema()).unwrap();
+        let err = run.feed(&df, None).unwrap_err().to_string();
+        assert!(
+            err.contains("with_windows: clock column \"t\" steps from")
+                && err.contains("at row 1 (counting from 0), a difference past the largest float"),
+            "{err}"
+        );
+    }
+
+    /// Task 252: an integer clock is read as its integers: a null on it is
+    /// refused by row, an unsigned value past an `Int64` by row with the
+    /// ceiling, and a step back by its size in integers; a refused first
+    /// row of a chunk leaves the run where the chunk before left it.
+    #[test]
+    fn an_integer_clock_is_refused_by_row_in_its_own_integers() {
+        let cfg = r#"{"formulas": [{"name": "m", "tree": ["ewm_sum", ["col", "x"],
+            {"half_life": 10, "window_size": 3}]}], "clock": "t", "gap_cap": 100}"#;
+        let refused = |df: DataFrame| {
+            let mut run = WindowsRun::new(config(cfg), df.schema()).unwrap();
+            run.feed(&df, None).unwrap_err().to_string()
+        };
+        let nulls = df!("t" => [Some(1i64), None, Some(3)], "x" => [1.0, 2.0, 3.0]).unwrap();
+        let err = refused(nulls);
+        assert!(
+            err.contains("with_windows: clock column \"t\" is null, NaN or infinite at row 1"),
+            "{err}"
+        );
+        let past = df!("t" => [1u64, u64::MAX], "x" => [1.0, 2.0]).unwrap();
+        let err = refused(past);
+        assert!(
+            err.contains(&format!(
+                "with_windows: clock column \"t\" is {} at row 1 (counting from 0), past \
+                 9223372036854775807, the largest value an integer clock holds (an Int64's)",
+                u64::MAX
+            )),
+            "{err}"
+        );
+        // Near 2^62, where a double resolves 1024: the step back is 3, said
+        // as the integers' difference.
+        const T0: i64 = 1 << 62;
+        let df = df!(
+            "t" => [T0, T0 + 5, T0 + 9, T0 + 6, T0 + 10],
+            "x" => [1.0, 2.0, 4.0, 8.0, 16.0],
+        )
+        .unwrap();
+        let mut run = WindowsRun::new(config(cfg), df.schema()).unwrap();
+        let mut out = run.feed(&df.slice(0, 3), None).unwrap();
+        let err = run.feed(&df.slice(3, 2), None).unwrap_err().to_string();
+        assert!(
+            err.contains("clock column \"t\" steps back by 3 at row 3"),
+            "{err}"
+        );
+        // The refused chunk changed nothing: the chunk that follows the
+        // first in clock order goes on as one run of both would.
+        let next = df!("t" => [T0 + 10], "x" => [16.0]).unwrap();
+        out.vstack_mut(&run.feed(&next, None).unwrap()).unwrap();
+        out.vstack_mut(&run.finish().unwrap()).unwrap();
+        let mut whole = df.slice(0, 3);
+        whole.vstack_mut(&next).unwrap();
+        assert!(out.equals_missing(&run_whole(cfg, &whole)));
+        // Sums over `(t - 3, t]`, from the definition: weights 2^(-d/10).
+        let got = values_of(&out, "m");
+        assert_eq!(got[..3], [Some(1.0), Some(2.0), Some(4.0)]);
+        let last = got[3].unwrap();
+        let want = 16.0 + 4.0 * 0.5f64.powf(0.1);
+        assert!((last - want).abs() < 1e-12, "{last} vs {want}");
+    }
+
+    /// Task 252: a step back larger than `restart_after_step_back` starts
+    /// an increment over -- the step taken in integers on an integer clock
+    /// and in integer nanoseconds on a temporal one -- so the row after it
+    /// has no increment, and the next one steps from it.
+    #[test]
+    fn a_restart_starts_the_increments_over_on_integer_and_temporal_clocks() {
+        let x = [1.0, 2.0, 4.0, 8.0, 16.0];
+        let want = [None, Some(1.0), Some(2.0), None, Some(8.0)];
+        // An integer clock near 2^62: steps back of 7 restart under 2.
+        const T0: i64 = 1 << 62;
+        let int = df!("t" => [T0 + 10, T0 + 11, T0 + 12, T0 + 5, T0 + 6], "x" => x).unwrap();
+        let cfg = format!(
+            r#"{{"formulas": [{}], "clock": "t", "gap_cap": 100,
+            "restart_after_step_back": 2}}"#,
+            increment_formula(r#"["col", "x"]"#, "1000", "0.5")
+        );
+        assert_eq!(values_of(&run_whole(&cfg, &int), "d"), want);
+        // A temporal clock: a step back of 7 s restarts under 2 s.
+        let ns = Series::new("t".into(), [10i64, 11, 12, 5, 6].map(|s| s * 1_000_000_000))
+            .cast(&DataType::Datetime(TimeUnit::Nanoseconds, None))
+            .unwrap();
+        let temporal = df!("t" => ns, "x" => x).unwrap();
+        let cfg = format!(
+            r#"{{"formulas": [{}], "clock": "t", "gap_cap": "100s",
+            "restart_after_step_back": "2s"}}"#,
+            increment_formula(r#"["col", "x"]"#, r#""1000s""#, r#""500ms""#)
+        );
+        assert_eq!(values_of(&run_whole(&cfg, &temporal), "d"), want);
+    }
+
+    /// Task 252: a null input of an integer or a temporal increment is no
+    /// step: its row's increment is null, and the next row steps from the
+    /// last value -- an integer one in integers, a temporal one in seconds.
+    #[test]
+    fn a_null_integer_or_temporal_input_is_no_step() {
+        let at = Series::new("at".into(), [Some(0i64), None, Some(2_500), Some(4_000)])
+            .cast(&DataType::Datetime(TimeUnit::Milliseconds, None))
+            .unwrap();
+        let df = df!(
+            "t" => [0.0, 1.0, 2.0, 3.0],
+            "y" => [Some(1i64), None, Some(4), Some(10)],
+            "at" => at,
+        )
+        .unwrap();
+        let cfg = format!(
+            r#"{{"formulas": [{}, {}], "clock": "t", "gap_cap": 100}}"#,
+            increment_formula(r#"["col", "y"]"#, "1000", "0.5"),
+            increment_formula(r#"["col", "at"]"#, "1000", "0.5").replace("\"d\"", "\"e\"")
+        );
+        let out = run_whole(&cfg, &df);
+        assert_eq!(values_of(&out, "d"), [None, None, Some(3.0), Some(6.0)]);
+        assert_eq!(values_of(&out, "e"), [None, None, Some(2.5), Some(1.5)]);
+    }
+
+    /// Task 252: a null group key is a group of its own -- for the
+    /// increments as for the windows -- and keeps its increment across a
+    /// save and a load; the next file's first row, of that group, is put
+    /// to the clock policy as that group's (a step forward, which runs).
+    #[test]
+    fn a_null_group_keeps_its_increments_across_a_save() {
+        let df = df!(
+            "t" => [0.0, 1.0, 2.0, 3.0, 4.0, 5.0],
+            "g" => [Some("a"), None, None, Some("a"), None, Some("a")],
+            "x" => [1.0, 2.0, 4.0, 8.0, 16.0, 32.0],
+        )
+        .unwrap();
+        let cfg = format!(
+            r#"{{"formulas": [{}], "clock": "t", "gap_cap": 100, "group": "g"}}"#,
+            increment_formula(r#"["col", "x"]"#, "1000", "0.5")
+        );
+        // From the definition: each group's own previous value.
+        let want = [None, None, Some(2.0), Some(7.0), Some(12.0), Some(24.0)];
+        assert_eq!(values_of(&run_whole(&cfg, &df), "d"), want);
+        let mut first = WindowsRun::new(config(&cfg), df.schema()).unwrap();
+        let mut out = first.feed(&df.slice(0, 3), None).unwrap();
+        let state = first.save_bytes().unwrap();
+        let mut second = WindowsRun::load_bytes(&state, config(&cfg), df.schema()).unwrap();
+        // The next file begins with the null group's row.
+        let tail = df!(
+            "t" => [4.0, 5.0],
+            "g" => [None, Some("a")],
+            "x" => [16.0, 32.0],
+        )
+        .unwrap();
+        out.vstack_mut(&second.feed(&tail, None).unwrap()).unwrap();
+        out.vstack_mut(&second.finish().unwrap()).unwrap();
+        // Rows 0..3 and then 4, 5: the null group's 16 steps from its 4.
+        assert_eq!(
+            values_of(&out, "d"),
+            [None, None, Some(2.0), Some(12.0), Some(31.0)]
+        );
+    }
+
+    /// Task 252: what a run reports of its windows' cost, the rows their
+    /// queues hold: a window of 2 over rows a unit apart holds the two rows
+    /// of the window the last stamp resolved and the row that waits for the
+    /// next stamp, three; at the end of input, the last row's window, two,
+    /// kept for a next file.
+    #[test]
+    fn a_run_counts_the_rows_its_windows_hold() {
+        let cfg = r#"{"formulas": [{"name": "m", "tree": ["ewm_sum", ["col", "x"],
+            {"half_life": 10, "window_size": 2}]}], "clock": "t", "gap_cap": 100}"#;
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let mut run = WindowsRun::new(config(cfg), df.schema()).unwrap();
+        assert_eq!(run.queued(), 0);
+        run.feed(&df, None).unwrap();
+        assert_eq!(run.queued(), 3);
+        run.finish().unwrap();
+        assert_eq!(run.queued(), 2);
+    }
+
+    /// Task 252: `save` writes what `save_bytes` returns, to a file a run
+    /// loads and goes on from as one run would.
+    #[test]
+    fn a_state_saved_to_a_file_resumes() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let mut first = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        let mut out = first.feed(&df.slice(0, 4), None).unwrap();
+        let dir = std::env::temp_dir().join(format!("po-windows-save-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("state.msgpack");
+        first.save(&path).unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(bytes, first.save_bytes().unwrap());
+        let mut second = WindowsRun::load_bytes(&bytes, config(FORWARD), df.schema()).unwrap();
+        out.vstack_mut(&second.feed(&df.slice(4, 2), None).unwrap())
+            .unwrap();
+        out.vstack_mut(&second.finish().unwrap()).unwrap();
+        assert!(out.equals_missing(&run_whole(FORWARD, &df)));
+    }
+
+    /// Task 252: a state is refused, by name, when its body does not decode
+    /// though its header does, when its core is not its own call's, when it
+    /// holds another count of rows than its core, when the rows it holds
+    /// are of another schema than the frame, and when it was fed another
+    /// kind of clock than the frame's.
+    #[test]
+    fn a_state_that_does_not_fit_its_call_or_its_frame_is_refused() {
+        let df = frame(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0]);
+        let mut first = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        first.feed(&df.slice(0, 4), None).unwrap();
+        let bytes = first.save_bytes().unwrap();
+        let file: FileIn = rmp_serde::from_slice(&bytes).unwrap();
+        let load = |b: &[u8]| {
+            WindowsRun::load_bytes(b, config(FORWARD), df.schema())
+                .err()
+                .expect("refused")
+        };
+        // The header alone.
+        #[derive(Serialize)]
+        struct Only<'a> {
+            magic: &'a str,
+            version: u32,
+        }
+        let header = rmp_serde::to_vec_named(&Only {
+            magic: WINDOWS_MAGIC,
+            version: WINDOWS_VERSION,
+        })
+        .unwrap();
+        let err = load(&header);
+        assert!(
+            err.starts_with("with_windows: the state cannot be read ("),
+            "{err}"
+        );
+        let encode = |core: &Windows, held: &[u8]| {
+            rmp_serde::to_vec_named(&FileOut {
+                magic: WINDOWS_MAGIC,
+                version: WINDOWS_VERSION,
+                config: &file.config,
+                core,
+                held,
+                increments: &file.increments,
+                stream_clock: file.stream_clock,
+                key_dtypes: &file.key_dtypes,
+                resume_skip: file.resume_skip,
+                resume_first: file.resume_first,
+                resume_first_session: file.resume_first_session,
+                last_row: &file.last_row,
+            })
+            .unwrap()
+        };
+        // The core of another call: a window of 3 under this call's 2.
+        let other = FORWARD.replace("\"window_size\": 2", "\"window_size\": 3");
+        assert_ne!(other, FORWARD);
+        let mut run3 = WindowsRun::new(config(&other), df.schema()).unwrap();
+        run3.feed(&df.slice(0, 4), None).unwrap();
+        let file3: FileIn = rmp_serde::from_slice(&run3.save_bytes().unwrap()).unwrap();
+        let err = load(&encode(&file3.core, &file.held));
+        assert_eq!(
+            err,
+            "with_windows: the state's window operators are not those of the call that saved \
+             it, so the state is damaged. Load an undamaged copy of the state file, or leave out \
+             load_state to start over."
+        );
+        // Held rows of another count than the core's.
+        let mut fewer = IpcReader::new(Cursor::new(file.held.clone()))
+            .finish()
+            .unwrap();
+        assert!(fewer.height() > 1);
+        fewer = fewer.slice(0, 1);
+        let mut ipc = Vec::new();
+        IpcWriter::new(&mut ipc).finish(&mut fewer).unwrap();
+        let err = load(&encode(&file.core, &ipc));
+        assert_eq!(
+            err,
+            format!(
+                "with_windows: the state holds 1 rows but counts {}, so it is damaged. Load an \
+                 undamaged copy of the state file, or leave out load_state to start over.",
+                file.core.held()
+            )
+        );
+        // Held rows of another schema than the frame: `t` an integer.
+        let int = df!(
+            "t" => [0i64, 1, 2, 3, 4, 5],
+            "x" => [0.0, 10.0, 20.0, 30.0, 40.0, 50.0],
+            "wide" => df.column("wide").unwrap().as_materialized_series().clone(),
+        )
+        .unwrap();
+        let err = WindowsRun::load_bytes(&bytes, config(FORWARD), int.schema())
+            .err()
+            .expect("refused");
+        assert!(
+            err.contains(&format!(
+                "with_windows: the state holds {} rows with columns [\"t: Float64\", \"x: Float64\", \
+                 \"wide: String\"], but the input has [\"t: Int64\", \"x: Float64\", \"wide: String\"]",
+                file.core.held()
+            )),
+            "{err}"
+        );
+        // A state that holds no row loads on that frame, and its first chunk
+        // is refused there: it was fed a float clock.
+        let mut done = WindowsRun::new(config(FORWARD), df.schema()).unwrap();
+        done.feed(&df.slice(0, 4), None).unwrap();
+        done.finish().unwrap();
+        assert_eq!(done.held(), 0);
+        let mut resumed =
+            WindowsRun::load_bytes(&done.save_bytes().unwrap(), config(FORWARD), int.schema())
+                .unwrap();
+        let err = resumed
+            .feed(&int.slice(4, 2), None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains(
+                "with_windows: clock column \"t\" is Int64, but the state it resumes read a \
+                 float one. Resume the state on a clock of the kind it was saved with."
+            ),
+            "{err}"
+        );
+        // And the other way: a state fed an integer clock refuses a float one.
+        let mut done = WindowsRun::new(config(FORWARD), int.schema()).unwrap();
+        done.feed(&int.slice(0, 4), None).unwrap();
+        done.finish().unwrap();
+        let mut resumed =
+            WindowsRun::load_bytes(&done.save_bytes().unwrap(), config(FORWARD), df.schema())
+                .unwrap();
+        let err = resumed.feed(&df.slice(4, 2), None).unwrap_err().to_string();
+        assert!(
+            err.contains(
+                "with_windows: clock column \"t\" is Float64, but the state it resumes read an \
+                 integer one"
+            ),
+            "{err}"
+        );
+    }
+}

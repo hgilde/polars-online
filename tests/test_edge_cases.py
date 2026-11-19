@@ -8,7 +8,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -114,7 +114,7 @@ class TestWeights:
 
     # A fit a thousand half-lives stale has no data behind it, which is the
     # point here, and the readiness notice says so.
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     @pytest.mark.parametrize("model", ["ewridge", "ew_cov"])
     def test_a_zero_weight_row_forgets_the_history_its_decay_takes(self, model):
         """docs/PLAN.md task 115 (c), decided 2026-09-28 (§12 found it): a
@@ -124,7 +124,7 @@ class TestWeights:
         the mean-form update is 0/0 (``lam*W + w = 0``), and the guard used to
         refuse it and keep the history un-aged, so the next row saw the old
         count. Now the row is the decay alone, as one half-life short of it all
-        but is. `crates/online-core/tests/model_contract.rs` holds every model
+        but is. `crates/rheon-core/tests/model_contract.rs` holds every model
         to it."""
         n0 = 40
 

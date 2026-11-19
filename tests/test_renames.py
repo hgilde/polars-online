@@ -21,8 +21,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online._spec import _RENAMED
+import rheon as po
+from rheon._spec import _RENAMED
 
 TIER = "essential"
 
@@ -32,7 +32,7 @@ assert _spec and _spec.loader
 probe = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(probe)
 
-pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+pytestmark = pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
 
 #: The parameter table of docs/PLAN.md task 144: old name -> new name.
 RENAMED = {
@@ -144,7 +144,7 @@ def test_a_spec_dict_with_an_old_name_is_refused_naming_the_new_one(spec, old):
         po.ModelBank([spec])
 
 
-def test_rls_ridge_is_refused_naming_delta(tmp_path, online_cli):
+def test_rls_ridge_is_refused_naming_delta(tmp_path, rheon_cli):
     """docs/PLAN.md task 195 (N11; review round 4, CA7): ``rls``'s prior
     strength is ``delta``, the classic RLS name for ``P₀ = I/δ``, and not
     ``ridge``, which in ``ewridge``, ``huber`` and ``quantile`` is a
@@ -165,7 +165,7 @@ def test_rls_ridge_is_refused_naming_delta(tmp_path, online_cli):
     df = pl.DataFrame({"x": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0]})
     df.write_parquet(tmp_path / "in.parquet")
     res = run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [raw],
         input=tmp_path / "in.parquet",

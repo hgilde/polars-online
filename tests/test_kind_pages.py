@@ -102,9 +102,9 @@ SHELL = [
 
 @pytest.mark.parametrize(("page", "line", "code", "shown"), SHELL)
 def test_a_pages_shell_recipe_prints_what_it_shows(
-    page, line, code, shown, tmp_path, monkeypatch, online_cli
+    page, line, code, shown, tmp_path, monkeypatch, rheon_cli
 ):
-    monkeypatch.setenv("PATH", f"{online_cli.parent}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("PATH", f"{rheon_cli.parent}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.chdir(tmp_path)
     _readme_namespace(tmp_path)  # writes job.toml, run.state and the inputs
     printed = ""

@@ -29,7 +29,7 @@ adds Higham's ``gamma_{3k+1}`` (Theorem 10.4). So ``eta =
 gamma_{4n + 3k + 1 + degree}``, worst-case, growing with the rows.
 
 The Rust side holds the same solves to task 274's componentwise bounds
-(``crates/online-core/src/ewridge/tests.rs``,
+(``crates/rheon-core/src/ewridge/tests.rs``,
 ``a_conditioned_design_is_solved_within_its_closed_form_bound``), where the
 mutation run sees them. The gradient models and every standardized model are
 free of the features' units to the bit (class 6,
@@ -47,8 +47,8 @@ import polars as pl
 import pytest
 
 import ledger
-import polars_online as po
-import polars_online.gram as gram
+import rheon as po
+import rheon.gram as gram
 from data import STRD_LINEAR, nist_strd_linear_or_skip
 
 TIER = "mixed"
@@ -513,7 +513,7 @@ class TestIllConditioned:
     The solve now estimates the equilibrated system's ``||H^-1||_1`` from its
     factor (Hager and Higham's estimator) and withholds the fit where the
     forward-error bound of the solve reaches 1, ``3 k gamma_{3k+1}
-    ||H^-1||_1 >= 1`` (``crates/online-core/src/solve/condition.rs`` derives
+    ||H^-1||_1 >= 1`` (``crates/rheon-core/src/solve/condition.rs`` derives
     it): ``coef``, ``pred`` and ``support_coef`` null, ``withheld_reason``
     ``ill_conditioned``, and the solve counted in ``solve_failures``. A row's
     prediction comes from the fit before it, so the last row's own solve is

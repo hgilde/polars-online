@@ -10,7 +10,7 @@ name: CPU paths
 # that L3 found it. This workflow takes the paths in turn instead, weekly and
 # by hand, on Windows, whose math library is the one the tests know least:
 #
-#   sde      online-core's numeric tests (the modules that run faer's
+#   sde      rheon-core's numeric tests (the modules that run faer's
 #            products and factorizations or compare against `crate::oracle`)
 #            under Intel's Software Development Emulator, posing as a chip
 #            without AVX2, one with AVX2, two with AVX-512, and two with a
@@ -46,13 +46,13 @@ env:
 
 jobs:
   sde:
-    name: online-core under SDE (${{ matrix.leg }})
+    name: rheon-core under SDE (${{ matrix.leg }})
     runs-on: windows-latest
     # The tests took 6.1 s natively in this build on an Apple M4 Pro at a
-    # load of 30 on its 14 cores, best of five (910 of online-core's 1,745
+    # load of 30 on its 14 cores, best of five (910 of rheon-core's 1,745
     # unit tests, 2026-10-24); SDE runs code 10 to 100 times slower,
     # slowest where it emulates AVX-512 on a host without it. The release
-    # build of online-core's tests took 4.5 minutes there, and a runner has
+    # build of rheon-core's tests took 4.5 minutes there, and a runner has
     # four cores.
     timeout-minutes: 120
     permissions:
@@ -86,7 +86,7 @@ jobs:
             l3_kib: 2048
             expect: avx2=true avx512f=true l3_kib=2048
     env:
-      # Every module of online-core whose tests run faer's products or
+      # Every module of rheon-core whose tests run faer's products or
       # factorizations, compare against `crate::oracle`, or dispatch on the
       # CPU's vector units (`pulp`, `is_x86_feature_detected`), as libtest
       # filters: the last so that the Sandy Bridge leg, the one CPU here
@@ -141,10 +141,10 @@ jobs:
           if ($hash -ne $env:SDE_SHA256) { throw "SDE kit SHA-256 $hash is not Intel's $env:SDE_SHA256" }
           "SDE $env:SDE_VERSION, SHA-256 $hash, at $env:SDE_PATH"
 
-      - name: build online-core's tests
+      - name: build rheon-core's tests
         shell: bash
         run: |
-          cargo build --release --locked -p online-core --tests --message-format=json > cargo.json
+          cargo build --release --locked -p rheon-core --tests --message-format=json > cargo.json
           echo "TESTS_EXE=$(uv run --no-project python scripts/cpu_paths.py lib-tests < cargo.json)" >> "$GITHUB_ENV"
           rustc -O --edition 2024 scripts/cpu_probe.rs -o cpu_probe.exe
 
@@ -174,7 +174,7 @@ jobs:
       # keeps a packing buffer of twice the L3 the CPU reports.
       - name: the tests under SDE
         shell: bash
-        working-directory: crates/online-core
+        working-directory: crates/rheon-core
         run: |
           uv run --no-project python ../../scripts/cpu_paths.py sde-tests "$TESTS_EXE" \
             --sde "$SDE_PATH/sde.exe" --sde-args="$SDE_ARGS" --filters "$SDE_TESTS"
@@ -251,7 +251,7 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       - name: build the extension
-        run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+        run: uv run maturin develop --release -m crates/rheon-py/Cargo.toml
       # As the `sde` job's: Intel's kit, checked by Intel's SHA-256.
       - name: Intel SDE
         if: matrix.sde != ''

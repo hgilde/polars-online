@@ -53,9 +53,9 @@ in any minor release:
 
 | | what it covers |
 |---|---|
-| **stable** | everything in `polars_online.__all__`; the `po.spec` constructors, their keywords and their defaults; the functions of the helper modules `po.eval`, `po.gram`, `po.ops` and `po.stream`; the `.online` namespace; the [output field names](how-to/find-an-output-field.md); the columns, and their types, of the frames a bank and `po.spec` return, and of the closed-groups frame; the words each string-valued parameter takes; the TOML config keys; the command line's flags, its exit status and the files it writes; and the environment variables the package reads |
+| **stable** | everything in `rheon.__all__`; the `po.spec` constructors, their keywords and their defaults; the functions of the helper modules `po.eval`, `po.gram`, `po.ops` and `po.stream`; the `.online` namespace; the [output field names](how-to/find-an-output-field.md); the columns, and their types, of the frames a bank and `po.spec` return, and of the closed-groups frame; the words each string-valued parameter takes; the TOML config keys; the command line's flags, its exit status and the files it writes; and the environment variables the package reads |
 | **unstable** | the file format of a window run's state (`with_windows(save_state=...)`); the written form of a formula target, in a TOML config or inside a bank's state; the Arrow export: `fit_predict_arrow`, `predict_arrow` and `ArrowStruct`; and the modules `po.sim`, `po.corr` and `po.gbdt`. Each says so in its docstring, and warns with `UnstableWarning` when used with `POLARS_ONLINE_WARN_UNSTABLE=1` set |
-| **not stable** | any name that starts with an underscore, apart from the two columns `po.stream.embargo` adds, `_online_role` and `_online_role_weight`, which are stable; the Rust crates (`online-core`, `online-polars`, `online-cli` and `online-py`), which are not published to crates.io, so nothing outside this repository builds against them; a model's numbers within the 1e-12 tolerance its stored reference results are held to, which depend on the platform and the Polars version; and the text the command line prints (its summary, readiness warnings and errors) and the timing lines `POLARS_ONLINE_TIMING=1` asks for, which are written for a person and may be reworded in a minor release |
+| **not stable** | any name that starts with an underscore, apart from the two columns `po.stream.embargo` adds, `_online_role` and `_online_role_weight`, which are stable; the Rust crates (`rheon-core`, `rheon-polars`, `rheon-cli` and `rheon-py`), which are not published to crates.io, so nothing outside this repository builds against them; a model's numbers within the 1e-12 tolerance its stored reference results are held to, which depend on the platform and the Polars version; and the text the command line prints (its summary, readiness warnings and errors) and the timing lines `POLARS_ONLINE_TIMING=1` asks for, which are written for a person and may be reworded in a minor release |
 
 **Each unstable part is unstable for a reason that a promise would make
 costly.** The window run's state reached version 10 in under four weeks
@@ -72,7 +72,7 @@ release of this package.
 
 ### What the API is
 
-**The API is bigger than `polars_online.__all__`: four surfaces can break
+**The API is bigger than `rheon.__all__`: four surfaces can break
 your code with no error at import.** Each is stable, and each
 change to one shows as a diff in the snapshot:
 
@@ -465,7 +465,7 @@ the Polars range makes.
 **The x86-64 wheels of `polars-online` need a CPU with AVX2, FMA and the
 rest of Polars' default feature set, and `polars-online-compat` is the same
 package for every x86-64 CPU.** Both are built from one source at one
-version, and both are imported as `polars_online`. A Linux (glibc and musl),
+version, and both are imported as `rheon`. A Linux (glibc and musl),
 Windows or macOS Intel wheel of `polars-online` is compiled for the features
 below, which are the ones Polars builds its own default runtime
 (`polars-runtime-32`) for, as its wheels record them in
@@ -498,7 +498,7 @@ written out in the library, after which it ran at about 0.93 of the baseline
 build's time. Only Intel was measured: no AMD machine was available.
 
 **A CPU that lacks a feature gets a warning at import, before the extension
-loads.** `import polars_online` reads the CPU's features with the `cpuid`
+loads.** `import rheon` reads the CPU's features with the `cpuid`
 instruction, in pure Python, and compares them with the list the wheel was
 built for. A feature missing from the CPU issues a `RuntimeWarning` that
 names it and says to install `polars-online-compat`; going on would end in an
@@ -510,7 +510,7 @@ cannot read, because the system refuses executable memory, is not a reason to
 refuse the import: it warns of nothing.
 
 **To change from one package to the other, uninstall the first.** The two
-install the same files under `polars_online/`, so pip does not stop both being
+install the same files under `rheon/`, so pip does not stop both being
 installed, and the second install's files replace the first's; uninstalling
 either then removes files the other needs. Run `pip uninstall polars-online`
 before `pip install polars-online-compat`, and the reverse. Both have wheels

@@ -6,7 +6,7 @@ what the identities found when the implementation was held to them, which
 changed one claim in §2.1. Every number below was measured in this
 repository, not recalled; the design-time numbers (2026-09-20) are
 reproducible from `bank.gram()` and the emitted `weight_sum`, the build-time
-ones from `crates/online-core/tests/readiness.rs` and
+ones from `crates/rheon-core/tests/readiness.rs` and
 `tests/test_readiness.py`. Section 5 is the evidence. Section 6 is what was
 tried and dropped, with the measurement that dropped it, so it is not
 proposed again without new evidence. Section 7 holds the questions the
@@ -281,7 +281,7 @@ carry what it reads.
 The conditions do not silence a true positive on a settled fit: a duplicated
 pair under a ridge of 0.5 reads `a/(2a + 0.5)`, below the cut on every row,
 and is named on the first row 95% settled (`tests/test_readiness_models.py`,
-`crates/online-polars/tests/summary.rs`). (At a ridge of `1e-8` a duplicated
+`crates/rheon-polars/tests/summary.rs`). (At a ridge of `1e-8` a duplicated
 pair reads 0.5 to rounding, on either side of it, so whether it is named is
 the rounding's.) `tests/test_window_budget.py`'s spec, which this section
 once named as the true positive, no longer is one: it set `min_weight = 0`
@@ -850,7 +850,7 @@ are emitted? Answered: built, on every model that writes a row (the user
 wanted it "more obvious"); an Enum keeps it cheap.
 
 **7.4 Verifying `h(x)` — identities, not calibration (done, 2026-09-21;
-`crates/online-core/tests/readiness.rs`).** The tests hold the
+`crates/rheon-core/tests/readiness.rs`).** The tests hold the
 implementation to what the theory predicts, and each fails loudly if
 `s₂`, the weights or the ridge are wired wrongly. What they found:
 (i) on a stationary design at `n_Kish/k_eff ≈ 12` the mean per-row `h`
@@ -944,7 +944,7 @@ reads back as an `Enum` over exactly the three names. `ew_class`'s
   `h = inf` (withheld). Under `window_size` the weights are a hard cutoff, so
   `s₂` is the same accumulator with the same cutoff. Confirmed since it was
   built: `the_window_kish_and_spread_are_the_rows_inside_it`
-  (`crates/online-core/src/ewridge/tests.rs`) holds the window's Kish size,
+  (`crates/rheon-core/src/ewridge/tests.rs`) holds the window's Kish size,
   `weight_sum² / s₂`, to the rows inside the window.
 - **Predict:** `predict()` on a not-settled or too-noisy bank returns null
   with the reason, consistently with `min_weight` today.

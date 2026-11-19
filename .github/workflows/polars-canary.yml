@@ -74,7 +74,7 @@ jobs:
       # the user's -- data crosses on the Arrow C Data Interface -- so the
       # Polars release that can break a user is py-polars, and that is the
       # one this job installs. The Rust copy moves by hand: pyo3-polars pins
-      # its polars (0.28 wants ^0.55.1) and `crates/online-polars` pins
+      # its polars (0.28 wants ^0.55.1) and `crates/rheon-polars` pins
       # polars-arrow, polars-parquet and polars-utils to the same release, so
       # the `version = "*"` + `cargo update -p polars` this step used to do
       # would have put two polars in the tree the day 0.56 shipped and failed
@@ -110,12 +110,12 @@ jobs:
           uv run python -c "import polars; print('py-polars', polars.__version__)"
           cargo tree -p polars --depth 0 || true
 
-      # online-py is left out, as in ci.yml's test job, which says why. The
+      # rheon-py is left out, as in ci.yml's test job, which says why. The
       # canary is a pre-release check, so it runs the extended tier:
       # `--include-ignored` here, and pytest's `-m` below leaves `extended`
       # in (docs/TESTING.md, "Two tiers").
-      - run: uv run cargo test --workspace --exclude online-py -- --include-ignored
-      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+      - run: uv run cargo test --workspace --exclude rheon-py -- --include-ignored
+      - run: uv run maturin develop --release -m crates/rheon-py/Cargo.toml
       # `-m` replaces the `-m 'not soak and not oracle_grid'` in pyproject's
       # addopts rather than adding to it, so all go here: the oracle grids
       # run in oracles.yml, against the pinned versions. `pins` marks the seven tests that can
@@ -150,7 +150,7 @@ jobs:
       - run: uv sync --prerelease=allow --upgrade-package numpy
       - name: versions in play
         run: uv run python -c "import numpy, polars; print('numpy', numpy.__version__, '| py-polars', polars.__version__)"
-      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+      - run: uv run maturin develop --release -m crates/rheon-py/Cargo.toml
       - run: uv run pytest -q -m "not soak and not pins and not oracle_grid"
 
   floor-polars:
@@ -178,5 +178,5 @@ jobs:
         env:
           FLOOR: ${{ steps.floor.outputs.version }}
         run: uv run python -c "import os, polars; print('py-polars', polars.__version__); assert polars.__version__ == os.environ['FLOOR']"
-      - run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+      - run: uv run maturin develop --release -m crates/rheon-py/Cargo.toml
       - run: uv run pytest -q -m "not soak and not pins and not oracle_grid"

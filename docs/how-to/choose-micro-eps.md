@@ -60,7 +60,7 @@ fits again with `macro_link=2`. It prints what each finds on the last 1,000 rows
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # Three round clusters of spread 0.3, 5 apart.
 rng = np.random.default_rng(6)
@@ -104,4 +104,4 @@ of the scattered rows were flagged and 0.3% of the rest.
 
 The fields are defined in [OUTPUTS.md](../OUTPUTS.md#micro), and every
 parameter, `beta_mu` and `macro_link` among them, in `micro`'s
-[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.micro).
+[docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.micro).

@@ -18,8 +18,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online import gram as pg
+import rheon as po
+from rheon import gram as pg
 
 TIER = "essential"
 
@@ -473,7 +473,7 @@ def test_a_job_naming_a_column_twice_is_refused_naming_the_job(path):
 def test_the_native_fits_refuse_a_column_twice():
     """The native calls, reached without the Python check, refuse a slot
     named twice too."""
-    from polars_online import _polars_online as native
+    from rheon import _rheon as native
 
     grams = blocks(frame(seed=23))
     cols = grams[0]["columns"]

@@ -31,7 +31,7 @@ are in its builder's docstring.
 
    * - page
      - what it documents
-   * - :doc:`polars_online`
+   * - :doc:`rheon`
      - ``ModelBank``, the package's own functions (``fit_predict``,
        ``predict``, ``unnest``, ``target``), its errors, its warnings and
        its versions
@@ -67,7 +67,7 @@ are in its builder's docstring.
    :maxdepth: 2
    :hidden:
 
-   polars_online
+   rheon
    spec
    namespaces
    stream

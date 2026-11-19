@@ -6,7 +6,7 @@ Each is held to a reference built from a model that already has the
 property: ``ewridge`` fed the rows at the weights the largest set's
 residuals give, ``rls`` and ``ewridge(ridge_scale="sum")`` at
 ``huber_delta=inf``, the same stream without the delay. The core's own
-references are ``crates/online-core/src/robust/options_tests.rs``.
+references are ``crates/rheon-core/src/robust/options_tests.rs``.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from reference import robust_ref
 
 TIER = "essential"
@@ -392,7 +392,7 @@ class TestEmittedScale:
 class TestDelayedLabels:
     """Under ``embargo`` a row is scored where it arrives and learned once
     its label matures, the held rows in arrival order
-    (``crates/online-polars/src/stream/label_delay.rs``), each stepping the
+    (``crates/rheon-polars/src/stream/label_delay.rs``), each stepping the
     model as an undelayed row would (``Robust::step``). Its Huber weight is
     therefore read when it is learned, from the fit of every row before it
     and of none after it, which is the fit an undelayed run weighs it by,

@@ -13,8 +13,8 @@ import typing
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online import _kwargs, _spec
+import rheon as po
+from rheon import _kwargs, _spec
 
 TIER = "mixed"
 
@@ -102,7 +102,7 @@ def test_the_typed_dicts_change_nothing_at_runtime():
 _TARGET_FORMS = """
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 t = po.target("y", name="m")
 cols: list[str] = ["y"]
@@ -141,15 +141,15 @@ def test_every_documented_target_form_type_checks(tmp_path, monkeypatch):
 
 
 def test_the_native_stub_names_the_built_module():
-    # `_polars_online.pyi` is what a type checker sees of the pyo3 module; it
+    # `_rheon.pyi` is what a type checker sees of the pyo3 module; it
     # went stale once (no gram, no spec_output_index), so it is checked
     # against what the built module actually exports.
     import ast
     from pathlib import Path
 
-    from polars_online import _polars_online as native
+    from rheon import _rheon as native
 
-    stub = Path(native.__file__).with_name("_polars_online.pyi").read_text(encoding="utf-8")
+    stub = Path(native.__file__).with_name("_rheon.pyi").read_text(encoding="utf-8")
     tree = ast.parse(stub)
     functions = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
     classes = {n.name: n for n in tree.body if isinstance(n, ast.ClassDef)}
@@ -178,7 +178,7 @@ def test_each_native_item_carries_its_own_docstring():
     """Review 2026-10-05 (YA9): ``format_of_path``'s doc comment sat above the
     ``RefreshTime`` class in ``lib.rs``, so the class's docstring opened with
     the function's text and the function had none."""
-    from polars_online import _polars_online as native
+    from rheon import _rheon as native
 
     undocumented = [
         n for n in dir(native) if not n.startswith("_") and not getattr(native, n).__doc__

@@ -22,7 +22,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -118,7 +118,7 @@ def test_a_spec_dict_refuses_a_relative_table_by_name(table):
         po.eval.metrics(out, spec)
 
 
-def test_the_cli_refuses_a_relative_table_by_name(tmp_path, online_cli):
+def test_the_cli_refuses_a_relative_table_by_name(tmp_path, rheon_cli):
     src, dst, cfg = tmp_path / "in.parquet", tmp_path / "out.parquet", tmp_path / "bank.toml"
     frame().write_parquet(src)
     cfg.write_text(
@@ -140,7 +140,7 @@ def test_the_cli_refuses_a_relative_table_by_name(tmp_path, online_cli):
         encoding="utf-8",
     )
     res = subprocess.run(
-        [str(online_cli), "--config", str(cfg)],
+        [str(rheon_cli), "--config", str(cfg)],
         capture_output=True,
         text=True,
         encoding="utf-8",
@@ -204,7 +204,7 @@ def test_a_saved_bank_resumes_on_a_column_made_upstream(tmp_path):
     assert pl.concat([first, second]).equals(whole, null_equal=True)
 
 
-def test_the_cli_reads_a_target_made_upstream(tmp_path, online_cli):
+def test_the_cli_reads_a_target_made_upstream(tmp_path, rheon_cli):
     """The command line has no ``with_columns``: the column is made before
     the file it reads, and its output is the Python bank's, to the bit."""
     df = frame().with_columns(ret=HOW["log_ratio"])
@@ -228,7 +228,7 @@ def test_the_cli_reads_a_target_made_upstream(tmp_path, online_cli):
         ),
         encoding="utf-8",
     )
-    subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
+    subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
     spec = po.spec.ewridge("m", targets=["x1", "ret"], **common(emit_sigma=False, features=["x0"]))
     want = po.ModelBank([spec]).fit_predict(df)
     got = pl.read_parquet(dst)

@@ -18,7 +18,7 @@ import numpy as np
 import polars as pl
 from sklearn.linear_model import LinearRegression
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 

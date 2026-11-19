@@ -29,7 +29,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from data import synthetic
 from reference import compute_dclock, kalman_ref
 
@@ -589,7 +589,7 @@ class TestPlumbing:
         got = df.lazy().online.fit_predict([spec]).collect()
         assert got.equals(want, null_equal=True)
 
-    def test_cli_toml(self, tmp_path, online_cli):
+    def test_cli_toml(self, tmp_path, rheon_cli):
         df, _ = synthetic(seed=113, n_groups=2, n_rows=300, k=3, null_frac=0.0)
         spec = self._spec()
         want = po.ModelBank([spec]).fit_predict(df)
@@ -619,7 +619,7 @@ revert_half_life = ["inf", 40.0, 40.0, 10.0]
 """,
             encoding="utf-8",
         )
-        subprocess.run([online_cli, "--config", str(tmp_path / "bank.toml")], check=True)
+        subprocess.run([rheon_cli, "--config", str(tmp_path / "bank.toml")], check=True)
         got = pl.read_parquet(dst)
         assert got.select("m").equals(want.select("m"), null_equal=True)
 

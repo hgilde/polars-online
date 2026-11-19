@@ -36,7 +36,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from conftest import _toml_value, spec_toml
 
 TIER = "mixed"
@@ -1004,8 +1004,8 @@ ESSENTIAL = {"ewridge"}
     ],
     ids=[c.label for c in CASES],
 )
-def test_the_cli_writes_what_the_bank_does(index, online_cli, tmp_path):
-    check_the_cli_writes_what_the_bank_does(CASES[index], index, online_cli, tmp_path)
+def test_the_cli_writes_what_the_bank_does(index, rheon_cli, tmp_path):
+    check_the_cli_writes_what_the_bank_does(CASES[index], index, rheon_cli, tmp_path)
 
 
 # ----------------------------------------------------------------- coverage

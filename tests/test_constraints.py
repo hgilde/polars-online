@@ -31,8 +31,8 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
 import reference
+import rheon as po
 from reference_paths import _age_and_learn, _ew_variance
 
 TIER = "mixed"
@@ -984,7 +984,7 @@ class TestEdgeCases:
         lazy = df.lazy().online.fit_predict([spec]).collect()
         assert want.equals(lazy, null_equal=True)
 
-    def test_the_cli_runs_it(self, tmp_path, online_cli):
+    def test_the_cli_runs_it(self, tmp_path, rheon_cli):
         X, y, t, w = _stream(400, 3, seed=21)
         df = _frame(X, y, t, w)
         src, dst, cfg = tmp_path / "in.parquet", tmp_path / "out.parquet", tmp_path / "bank.toml"
@@ -1013,7 +1013,7 @@ class TestEdgeCases:
             ),
             encoding="utf-8",
         )
-        subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
+        subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
         spec = po.spec.sgd(  # the default step, as the TOML file takes it
             "m", coef_min=[0.0, 0.0, -0.1], coef_max=INF, coef_sum=1.0, **_clocked(half_life=40.0)
         )

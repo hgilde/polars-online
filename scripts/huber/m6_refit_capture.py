@@ -23,7 +23,7 @@ import polars as pl
 import statsmodels.api as sm
 from statsmodels.robust.norms import HuberT
 
-import polars_online as po
+import rheon as po
 
 warnings.simplefilter("ignore")
 DELTA = 1.345

@@ -55,7 +55,7 @@ root-mean-square distance from the curve, beside the best straight line's:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # 1,200 noisy points on sin(x), saved.
 rng = np.random.default_rng(1)

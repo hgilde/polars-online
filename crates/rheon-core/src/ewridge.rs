@@ -1,0 +1,3244 @@
+//! EW-ridge on sufficient statistics (docs/PLAN.md §4.1) — the workhorse.
+//!
+//! Math (per row, decay factor `lam = decay.factor(d_clock)`, weight `w`,
+//! `z = [1, x]` when the intercept is configured):
+//!
+//! ```text
+//! W'   = lam W + w                          (n_eff, over every row)
+//! S'   = (lam W_S S + w z z^T) / W_S'       (EW mean of z z^T over its Gram's rows)
+//! W_j' = lam W_j + w                        (only when y_j present)
+//! r_j' = (lam W_j r_j + w z y_j) / W_j'     (per target: EW mean of z y_j)
+//! ```
+//!
+//! Which rows a Gram `S` learns is `target_gaps` (docs/PLAN.md task 81,
+//! [`TargetGaps`]). Under `own_rows`, the default, a target's Gram learns
+//! exactly the rows the target is present on and ages over the rest, so its
+//! fit is the fit of its rows; targets present on the same rows share one.
+//! Under `pairwise` one Gram learns every row. A target present on every row
+//! reads the same Gram either way (`crate::gaps` has the bookkeeping).
+//!
+//! `S` is kept centred, as [`EwCov`] keeps it, and so is each `r_j` (review
+//! 2026-09-12, N1): over the rows target `j` was present on, the EW mean
+//! `ȳ_j`, the mean `m_j` of `z` there, and `c_j = E[(z − m_j)(y_j − ȳ_j)]`,
+//! each by the weighted Welford step with `a = lam W_j / W_j'` and
+//! `b = w / W_j'`, so that `r_j = c_j + m_j ȳ_j` (`crate::gaps::Cross`).
+//!
+//! Solve (per grid combo = feature set x ridge value), scheduled by
+//! `solve_every` clock units / `max_rows_between_solves`, one system per
+//! Gram for the targets that read it:
+//! - plain:        `(S + ridge D) beta = r_j`, D = I minus the intercept slot;
+//! - standardized: the same system scaled to correlation form, solved,
+//!   unscaled; ~zero-variance features dropped;
+//! - ridge_scale:  `(W_S S + prior_scale * ridge I) beta = W_S r_j` — a
+//!   decaying prior on the sum scale, penalizing the intercept: exactly
+//!   classic RLS regularization (used by the RLS agreement test, task 9).
+//!
+//! With an intercept, and without `ridge_scale`, the unpenalized intercept is
+//! eliminated and the slopes are solved on the centred system
+//!
+//! ```text
+//! (C + ridge I) beta = c_j        beta_0 = ȳ_j − m_j · beta
+//! ```
+//!
+//! `C` the centred co-moments of the target's Gram. Under `own_rows` that is
+//! the plain system exactly, with nothing in it the size of `level²`: the raw
+//! normal equations, or a right-hand side formed as `E[z y] − m ȳ`, lose
+//! `level²·ε`, which at `1e8` is the whole fit. Under `pairwise` it is the
+//! same formula on the Gram of every row. Through the origin, and under
+//! `ridge_scale`, there is no intercept to eliminate and the raw system is
+//! solved: the Gram's `E[z zᵀ]` against the target's `E[z·y_j]`.
+//!
+//! Predictions use the last solved coefficients (out-of-sample by construction:
+//! the solve happens after the row's update, the pred before it).
+//!
+//! A solve a weight share brings due while the weight is below `(1 − s)` of
+//! the lowest floor any read of the fit uses is not run: every row until
+//! the next solve comes due is then below that floor, so nothing reads it.
+//! The schedule and the Gram's block move as after it, so every served
+//! number is the same to the bit; `coef` there is the last fit solved
+//! (`unread`'s module docs have the argument).
+
+use std::borrow::Cow;
+use std::sync::{Arc, OnceLock};
+
+use serde::{Deserialize, Serialize};
+
+use crate::gaps::{Acc, AccSnap, AccView, Cross, gram_parts};
+use crate::model::{Fit, ModelState, OnlineModel, State, StateError, Step, check_schema};
+use crate::since::Since;
+use crate::solve::{FactorWork, OverMoments, QuadWork, SpdFactor, dot_aug};
+use crate::{Decay, EwCov, GramPart, TargetGaps, TargetMoments};
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EwRidgeCfg {
+    pub n_features: usize,
+    pub n_targets: usize,
+    pub fit_intercept: bool,
+    pub decay: Decay,
+    /// Ridge grid, expanded at solve time; length >= 1.
+    pub ridge: Vec<f64>,
+    /// Named subsets of feature indices (0-based, excluding the intercept).
+    /// Empty means one full set named "all".
+    pub feature_sets: Vec<(String, Vec<usize>)>,
+    pub standardize: bool,
+    /// Decaying sum-scale prior (classic RLS regularization). Incompatible with
+    /// `standardize` and with grids; the intercept is penalized.
+    pub ridge_scale: bool,
+    /// Shrink toward these coefficients instead of toward zero
+    /// (ENHANCEMENTS E15): the solve becomes `(S + ridge·D)β = r + ridge·D·β₀`.
+    /// One vector per target, each `k_total` long, in the features' original
+    /// units. The intercept slot is read only under `ridge_scale`, the one
+    /// solve that penalizes the intercept; elsewhere it is unpenalized and
+    /// the slot is ignored.
+    ///
+    /// **Whether the prior fades depends on `ridge_scale`, and the difference
+    /// matters.** `S` here is a weighted *mean*, not a sum, so it does not grow
+    /// with the sample: a plain `ridge` is a fixed per-observation penalty and
+    /// its pull toward `coef_prior` is **permanent** — "always stay near this
+    /// belief". With `ridge_scale` the prior sits on the sum scale and its
+    /// weight decays with the data, which is the usual warm start: "begin at
+    /// yesterday's fit and let evidence take over".
+    #[serde(default)]
+    pub coef_prior: Option<Vec<Vec<f64>>>,
+    /// Blend toward a slow-moving twin on a session change, instead of the
+    /// all-or-nothing choice between `session_gap` and a full reset
+    /// (ENHANCEMENTS E6, PLAN §12 open question 1).
+    ///
+    /// A second accumulator runs alongside the main one with `long_half_life`,
+    /// representing the long-run relationship. On a session boundary the main
+    /// accumulators' moments become a mixture of the two data sets, `1 − f` of
+    /// today's and `f` of the long run's, with `f = session_shrink`:
+    ///
+    /// ```text
+    /// m' = (1−f)·m_fast + f·m_slow
+    /// C' = (1−f)·C_fast + f·C_slow + f·(1−f)·(m_fast − m_slow)(m_fast − m_slow)ᵀ
+    /// ```
+    ///
+    /// for the means and the centred moments, the cross-moments with the
+    /// targets alike. The weight, the Kish sums and the `ridge_scale` prior
+    /// scale stay today's, so `n_eff`, the warm-up gates and the solve
+    /// schedule do not move: `0` keeps today's fit, `1` takes the long run's
+    /// moments at today's weight, and `f` between fits on that share of the
+    /// long run (docs/PLAN.md task 145). Unlike `session_gap` this changes
+    /// *what the model believes*, not how confident it is.
+    ///
+    /// The blend moves the moments only. The coefficients stay as last
+    /// solved until the next solve the schedule brings due, which reads the
+    /// blended moments with every row learned since; the schedule counts
+    /// from the last solve as it would without the blend (task 278). So the
+    /// output is continuous in `f`, and `0` is no blend to the bit.
+    /// `max_rows_between_solves = 1` solves on the open's row, and the next
+    /// row reads the blend.
+    #[serde(default)]
+    pub session_shrink: Option<f64>,
+    /// Half-life of the slow twin. Required by `session_shrink`.
+    #[serde(default)]
+    pub long_half_life: Option<f64>,
+    /// Outputs are null until `n_eff` (before the row's update) reaches this.
+    pub min_weight: f64,
+    /// Solve cadence in clock units; <= 0 solves every row. Measured from
+    /// the last solve on the rows' stamps, the decayed clock held exactly,
+    /// where the caller hands them (`since::Since`, docs/PLAN.md task 180).
+    /// A row of weight 0 never solves: a solve due on one waits for the next
+    /// row with weight (hard rule 9, docs/PLAN.md task 214).
+    #[serde(with = "crate::humanfloat::f64_or_tag")]
+    pub solve_every: f64,
+    /// Row cap between solves, counted on the rows with weight; 1 brings a
+    /// solve due on every such row. Under a weight share, one it brings due
+    /// below the floor is not run, as the share's is not (`unread`'s item 8,
+    /// docs/PLAN.md task 364).
+    pub max_rows_between_solves: u32,
+    /// The default cadence (docs/PLAN.md task 115 (b)): solve once the weight
+    /// learned since the last solve reaches this share of the weight the fit
+    /// holds, in place of `solve_every`'s clock. In steady state that is the
+    /// clock's own `half_life / 50` at a share of `ln 2 / 50`; where they part
+    /// -- warm-up, after a gap, a half-life far longer than the stream -- it
+    /// keeps the fit that close to its data, where the clock solved once and
+    /// never again. `None` keeps the clock. Under a share of at most `1/2`,
+    /// a due solve no row can read before the next comes due -- the weight
+    /// below `(1 − share)(1 − 2⁻¹⁶)` of the lowest floor a read uses -- is
+    /// not run, and the schedule moves on as after it (`unread`'s module
+    /// docs); above `1/2` every due solve runs.
+    #[serde(default)]
+    pub solve_share: Option<f64>,
+    /// Rows of the Gram update held back and merged as one block
+    /// (docs/ENHANCEMENTS.md E51, docs/PLAN.md task 71). `0`, the default,
+    /// updates the `k×k` matrix on every row. With `B` here, a row's `z` is
+    /// buffered and the matrix is brought up to date once per `B` rows by a
+    /// `k×B` times `B×k` product, `6.6×` faster than the rank-one updates at
+    /// `k = 1,000` with `B = 256`; the four scalars still run per row, so
+    /// `n_eff` and `min_weight` are unchanged to the bit. Each target's
+    /// centred cross-moments and feature means wait with the block too,
+    /// merged from the same pass over its rows (`gaps::Held`, docs/PLAN.md
+    /// task 257), while its weight, its mean and its moments take every row.
+    ///
+    /// The matrix is also brought up to date before every solve, so the
+    /// effective block is `min(B, rows between solves)` and the option pays
+    /// only with a solve cadence: it is refused with `solve_every <= 0` or
+    /// `max_rows_between_solves <= 1`, and with `window`, which reads the
+    /// matrix on every row. A row a Gram skips under `target_gaps =
+    /// "own_rows"` is held as a zero-weight row rather than flushing the
+    /// block. Memory: `B × k_total` floats per Gram -- one, or under
+    /// `own_rows` one per pattern of missing targets -- and `B` per target,
+    /// twice with `session_shrink`'s twin, held in the state file mid-block,
+    /// and refused over 256 MiB in all, counting under `own_rows` a block
+    /// for each target, the most Grams there can be. The block's product is a floating-point sum in a
+    /// different order from the per-row one, so a blocked fit is not
+    /// bit-identical to an unblocked one and its last bits may differ across
+    /// CPUs; it is identical whichever way the stream is chunked.
+    #[serde(default)]
+    pub gram_block_rows: usize,
+    /// Which rows a target's Gram is taken over where the target is null on
+    /// some (docs/PLAN.md task 81; [`TargetGaps`]): its own, the default, or
+    /// every row.
+    #[serde(default)]
+    pub target_gaps: TargetGaps,
+    /// Clock units of history the fit is computed from, with a *hard* cutoff:
+    /// a row older than this contributes nothing to the Gram, where the
+    /// exponential weight alone would leave `0.5^(age/half_life)` of it
+    /// (docs/PLAN.md §13). Inside the window the weights are still
+    /// exponential. A half-life grid is one model instance per entry, so each
+    /// carries its own ring.
+    ///
+    /// **Last, with `window_every` and `max_rows_between_snapshots`, and
+    /// they must stay last.** The compact msgpack encoding writes a struct as
+    /// an *array*, so a `skip_serializing_if` field anywhere but the end
+    /// shifts every field after it when absent: only the row cap skips, and
+    /// `window` and `window_every` are written as nil.
+    #[serde(default)]
+    pub window: Option<f64>,
+    /// Clock units between the snapshots the window is computed from, as
+    /// `solve_every` is between solves (docs/PLAN.md task 162): `0` is every
+    /// row. With `max_rows_between_snapshots` too, whichever comes first;
+    /// with neither, every row, the tightest boundary. A coarser cadence
+    /// divides the memory and only ever shortens the effective window, to
+    /// no less than `window - window_every`. The clock is the one the model
+    /// is stepped on, so a gap capped at `gap_cap` counts as the cap.
+    #[serde(default)]
+    pub window_every: Option<f64>,
+    /// At most this many rows between the window's snapshots, as
+    /// `max_rows_between_solves` is between solves, counted on every row the
+    /// model is stepped with, rows of weight zero included; `1` is every
+    /// row, and `0` is refused (docs/PLAN.md tasks 162 and 196).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_rows_between_snapshots: Option<usize>,
+}
+
+/// The most a held Gram block may take before the model refuses to build,
+/// on the pattern of `marginal`'s bins: `k` can be 10,000 here, and silently
+/// allocating gigabytes is a worse outcome than an error that names the
+/// number.
+const GRAM_BLOCK_BUDGET: usize = 256 << 20;
+
+impl EwRidgeCfg {
+    pub fn k_total(&self) -> usize {
+        self.n_features + usize::from(self.fit_intercept)
+    }
+
+    /// (feature-set index, ridge index) pairs in output order, written into
+    /// `out`.
+    fn combos_into(&self, out: &mut Vec<(usize, usize)>) {
+        let nf = self.feature_sets.len().max(1);
+        let nr = self.ridge.len();
+        out.clear();
+        out.extend((0..nf).flat_map(|f| (0..nr).map(move |r| (f, r))));
+    }
+
+    pub fn n_combos(&self) -> usize {
+        self.feature_sets.len().max(1) * self.ridge.len()
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        let mut no = crate::Refusals::new();
+        // The decay first: every model checks it in its own `new`, where only
+        // the bank's spec did (review 2026-10-05, CF5).
+        no.take(self.decay.check().map_err(|e| format!("ewridge: {e}")));
+        no.take(crate::model::check_solve_share("ewridge", self.solve_share));
+        no.take(crate::model::check_dims(
+            "ewridge",
+            self.n_features,
+            self.n_targets,
+        ));
+        if self.ridge.is_empty() {
+            no.refuse(
+                "ewridge: ridge must list at least one value, but it lists none. Set ridge to \
+                 0 for no shrinkage, or to one or more positive values.",
+            );
+        }
+        // What the spec layer refuses, refused here too, so the Rust API and
+        // a state file are held to it (review 2026-10-06, CA6): a negative
+        // ridge makes the system indefinite, and NaN or inf poisons every
+        // solve; a NaN `min_weight` is never reached.
+        let bad: Vec<String> = self
+            .ridge
+            .iter()
+            .filter(|r| !(r.is_finite() && **r >= 0.0))
+            .map(f64::to_string)
+            .collect();
+        if let [r] = bad.as_slice() {
+            no.refuse(if self.ridge.len() == 1 {
+                format!(
+                    "ewridge: ridge must be finite and at least 0, but it is {r}. Set ridge \
+                     to 0 for no shrinkage, or to a finite positive value."
+                )
+            } else {
+                format!(
+                    "ewridge: ridge must be finite and at least 0, but one of its values is \
+                     {r}. Set that value to 0 for no shrinkage, or to a finite positive value."
+                )
+            });
+        } else if !bad.is_empty() {
+            no.refuse(format!(
+                "ewridge: ridge must be finite and at least 0, but its values {} are not. Set \
+                 those values to 0 for no shrinkage, or to finite positive values.",
+                crate::model::listed(&bad)
+            ));
+        }
+        no.take(crate::model::check_min_weight("ewridge", self.min_weight));
+        // A NaN cadence never comes due on the clock, and left the row cap
+        // alone to schedule the solves, with no word (review round 5, C6).
+        // `<= 0` solves every row and `inf` leaves the cadence to the row
+        // cap on purpose.
+        no.take(crate::model::check_solve_every("ewridge", self.solve_every));
+        if let Some(w) = self.window {
+            if !w.is_finite() || w <= 0.0 {
+                no.refuse(format!(
+                    "ewridge: window_size must be finite and above 0, but it is {w}. Set \
+                     window_size to the age, in clock units, past which a row counts for \
+                     nothing, or leave it out for no hard window."
+                ));
+            }
+            if self.ridge_scale {
+                no.refuse(
+                    "ewridge: window_size and ridge_scale=\"sum\" cannot both be set: under \
+                     ridge_scale=\"sum\" the ridge fades with every decay the stream applies, \
+                     and a hard window drops rows without restoring it. Leave out window_size, \
+                     or ridge_scale.",
+                );
+            }
+            if self.session_shrink.is_some() {
+                no.refuse(
+                    "ewridge: window_size and session_shrink cannot both be set: \
+                     session_shrink blends in the long-run running sums, which the hard \
+                     window would not cut. Leave out window_size, or session_shrink.",
+                );
+            }
+        }
+        no.take(crate::window::check_cadence(
+            "ewridge",
+            self.window,
+            self.window_every,
+            self.max_rows_between_snapshots,
+        ));
+        if self.gram_block_rows > 0 {
+            if self.window.is_some() {
+                no.refuse(
+                    "ewridge: gram_block_rows and window_size cannot both be set: a hard \
+                     window keeps its Gram whole for its snapshots and holds no rows back. \
+                     Leave out gram_block_rows, or window_size.",
+                );
+            }
+            if self.solve_every <= 0.0 {
+                // The default named only under the decay the reader set.
+                let default = match self.decay {
+                    crate::Decay::Lam(_) => ", as the default under lam does",
+                    crate::Decay::Halflife(h) if h.is_infinite() => {
+                        ", as the default under half_life=inf does"
+                    }
+                    crate::Decay::Halflife(_) => "",
+                };
+                no.refuse(format!(
+                    "ewridge: gram_block_rows holds rows back until the next solve, but \
+                     solve_every is {}, which solves every row{default}. Set solve_every \
+                     above 0, or leave gram_block_rows out.",
+                    self.solve_every
+                ));
+            }
+            if self.max_rows_between_solves <= 1 {
+                no.refuse(format!(
+                    "ewridge: gram_block_rows holds rows back until the next solve, but \
+                     max_rows_between_solves is {}, which solves every row. Set \
+                     max_rows_between_solves above 1, or leave gram_block_rows out.",
+                    self.max_rows_between_solves
+                ));
+            }
+            // Held rows: `B × k_total` per accumulator, the slow twin
+            // included, and per Gram: under `own_rows` each pattern of
+            // missing rows has a Gram of its own holding its own block, and
+            // Grams only ever split, a target to one, so `n_targets` of them
+            // at most (docs/PLAN.md task 270, review round 9 A-1: one block
+            // was counted, and ten targets held ten times the budget).
+            let twins = 1 + usize::from(self.session_shrink.is_some());
+            let grams = match self.target_gaps {
+                TargetGaps::OwnRows => self.n_targets,
+                TargetGaps::Pairwise => 1,
+            };
+            let per_row = self
+                .k_total()
+                .saturating_mul(twins)
+                .saturating_mul(grams)
+                .saturating_mul(std::mem::size_of::<f64>());
+            let bytes = self.gram_block_rows.saturating_mul(per_row);
+            if bytes > GRAM_BLOCK_BUDGET {
+                let most = GRAM_BLOCK_BUDGET / per_row.max(1);
+                let pairwise = if grams > 1 {
+                    ", or set target_gaps=\"pairwise\" to hold one block for every target"
+                } else {
+                    ""
+                };
+                no.refuse(if most == 0 {
+                    format!(
+                        "ewridge: gram_block_rows = {} would hold {:.1} GiB of rows, over the \
+                         {} MiB limit, and even one row is over it. Leave gram_block_rows \
+                         out, or use fewer features{pairwise}.",
+                        self.gram_block_rows,
+                        bytes as f64 / (1u64 << 30) as f64,
+                        GRAM_BLOCK_BUDGET >> 20,
+                    )
+                } else {
+                    format!(
+                        "ewridge: gram_block_rows = {} would hold {:.1} GiB of rows, over the \
+                         {} MiB limit. Lower gram_block_rows to {most} or below, or use fewer \
+                         features{pairwise}.",
+                        self.gram_block_rows,
+                        bytes as f64 / (1u64 << 30) as f64,
+                        GRAM_BLOCK_BUDGET >> 20,
+                    )
+                });
+            }
+        }
+        // Each cause its own problem, both where both hold.
+        if self.ridge_scale && self.standardize {
+            no.refuse(
+                "ewridge: ridge_scale=\"sum\" fits one ridge on unscaled features, but \
+                 standardize is set. Leave out ridge_scale, or set standardize=False.",
+            );
+        }
+        if self.ridge_scale && self.n_combos() > 1 {
+            no.refuse(
+                "ewridge: ridge_scale=\"sum\" fits one ridge on unscaled features, but the \
+                 spec has a grid of ridges or feature sets. Leave out ridge_scale, or give one \
+                 ridge and one feature set.",
+            );
+        }
+        // Each check of its own, so a bad session_shrink does not hide a bad
+        // long_half_life.
+        if let Some(f) = self.session_shrink.filter(|f| !(0.0..=1.0).contains(f)) {
+            no.refuse(format!(
+                "ewridge: session_shrink must be from 0 to 1, but it is {f}. Set \
+                 session_shrink to the share of the long-run running sums to blend in at \
+                 each session change: 0 for none, 1 for all of them."
+            ));
+        }
+        match (self.session_shrink, self.long_half_life) {
+            (Some(_), None) => {
+                no.refuse(
+                    "ewridge: session_shrink blends in the long-run running sums, but \
+                     long_half_life, their half-life, is not set. Set long_half_life, or \
+                     leave session_shrink out.",
+                );
+            }
+            (None, Some(_)) => {
+                no.refuse(
+                    "ewridge: long_half_life sets the half-life of the long-run running sums \
+                     session_shrink blends in, but session_shrink is not set. Set \
+                     session_shrink, or leave long_half_life out.",
+                );
+            }
+            _ => {}
+        }
+        if let Some(h) = self.long_half_life.filter(|h| *h <= 0.0 || h.is_nan()) {
+            no.refuse(format!(
+                "ewridge: long_half_life must be above 0, but it is {h}. Set long_half_life \
+                 to a positive number of clock units, or to inf for long-run running sums of \
+                 every row."
+            ));
+        }
+        if let Some(c) = &self.coef_prior {
+            no.take(crate::model::check_coef_prior(
+                "ewridge",
+                c,
+                self.n_targets,
+                self.k_total(),
+                self.fit_intercept,
+            ));
+        }
+        for (name, idx) in &self.feature_sets {
+            // Empty is its own message: an empty set has no index to be out
+            // of range (review 2026-09-12, S7).
+            no.take(crate::model::check_feature_set(
+                "ewridge",
+                name,
+                idx,
+                self.n_features,
+                false,
+            ));
+        }
+        no.finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EwRidge {
+    cfg: EwRidgeCfg,
+    /// The Grams, and per target its weight, centred cross-moments and
+    /// moments (see `crate::gaps::Acc`).
+    acc: Acc,
+    /// Per-target EW residual variance and its weight sum.
+    wsig: Vec<f64>,
+    sig2: Vec<f64>,
+    /// Last solved coefficients per output slot (target-major, then combo),
+    /// each of length `k_total` (zeros outside a combo's feature set; NaN
+    /// in a slot no solve gave a fit).
+    beta: Option<Fit<Vec<Vec<f64>>>>,
+    /// Slow-moving twin for `session_shrink`: the same accumulators under
+    /// `long_half_life`, representing the long-run relationship.
+    #[serde(default)]
+    slow: Option<Box<Acc>>,
+    /// Where `solve_every`'s clock stands: the stamp of the last solve, the
+    /// decayed clock held exactly (docs/PLAN.md task 180).
+    since_solve: Since,
+    rows_since_solve: u32,
+    /// Weight learned since the last solve, for `solve_share`.
+    #[serde(default)]
+    weight_since_solve: f64,
+    pub solve_failures: u64,
+    /// What the last solve left for the readiness statistics
+    /// (docs/WARMUP-AND-CONVERGENCE.md §2): the effective degrees of freedom
+    /// and each coefficient's data share per slot, and -- under
+    /// `keep_factor` -- the systems the per-row leverage is read against.
+    /// A solve's shares wait until something reads them, and a save writes
+    /// them as a read would (`Pending`, `serialize_settled`).
+    #[serde(default, serialize_with = "serialize_settled")]
+    ready: Readiness,
+    /// Keep each solve's system so the per-row leverage can be answered
+    /// ([`EwRidge::set_keep_factor`]). Configuration that travels with the
+    /// state, since the systems it keeps do.
+    #[serde(default)]
+    keep_factor: bool,
+    /// Per target, the threshold its own weight is checked against, as a
+    /// bank checks it on the output (hard rule 8): the weight at which a
+    /// target no solve has fit has its own first solve (docs/PLAN.md task
+    /// 195, S9b; [`EwRidge::set_target_min_weight`]). Empty: `min_weight`
+    /// for every target.
+    #[serde(default)]
+    target_min_weight: Vec<f64>,
+    /// Whether `min_weight` withholds the output alone
+    /// ([`EwRidge::set_min_weight_output_only`]; task 278): the residual
+    /// variance folds the model's prediction at its own floor
+    /// ([`EwRidge::own_floor`]) on the rows `min_weight` withholds, and the
+    /// first solve, a fresh model's or a late target's, falls on the row the
+    /// weight reaches that floor, so the state is the same at any
+    /// `min_weight` above it. A spec that gives `min_weight` sets it. Schema
+    /// 64; `false` in a state written before it, which goes on holding both
+    /// back to `min_weight`, to the bit. Always written ([`Self::win`] says
+    /// what the encoding does with a field that skips).
+    #[serde(default)]
+    min_weight_output_only: bool,
+    /// Whether the explicit cadence's first period runs on the default
+    /// weight-share schedule ([`EwRidge::set_first_period_by_share`]; task
+    /// 278): set by a spec with a `solve_every` of its own, and cleared on
+    /// the row that period ends. Schema 64; `false` in a state written
+    /// before it, and in one of 64 saved before the rule, which go on with
+    /// the explicit cadence from their first solve, to the bit. Always
+    /// written, for the reason [`Self::min_weight_output_only`] gives.
+    #[serde(default)]
+    first_period_by_share: bool,
+    /// The hard-cutoff window, when the spec asks for one (docs/PLAN.md §13).
+    /// Absent otherwise, so an ordinary fit writes no ring.
+    ///
+    /// **The encoding.** A state file is written with
+    /// `rmp_serde::to_vec_named`, which writes a struct as a map: its fields
+    /// are read back by name, and `skip_serializing_if` decides only whether
+    /// this key is written, so where a field sits does not move the file's
+    /// layout (review round 10, S4-1; the v63 fixtures open with field-name
+    /// keys). Kept last all the same: the compact encoding, `rmp_serde::to_vec`,
+    /// writes a struct as an array, positionally, and some round-trip tests
+    /// here (`state_roundtrip_continues_identically`) use it, where a field
+    /// that skips anywhere but the end shifts the fields after it -- "invalid
+    /// type: boolean, expected f64" is what that looks like.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    win: Option<Windowed>,
+    // scratch buffers (serialized for simplicity; tiny)
+    #[serde(skip)]
+    zbuf: Vec<f64>,
+    /// The factors of `ready.systems`, rebuilt from them on load.
+    #[serde(skip)]
+    factors: Factors,
+    /// The window's view a solve reads, kept between solves and written
+    /// over ([`EwRidge::view_into`]). Not state.
+    #[serde(skip)]
+    view: crate::window::Kept<RidgeView>,
+    /// The storage of the fit before the last, which the next solve writes
+    /// its fit over: the fit's lists, the last solve's staying the model's
+    /// until then. Not state, and boxed with the rest of what a model
+    /// keeps that way ([`crate::window::Kept`]).
+    #[serde(skip)]
+    spare_fit: crate::window::Kept<Vec<Vec<f64>>>,
+}
+
+/// What a window needs beyond the accumulators: where the clock has got to,
+/// and the snapshots to subtract.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Windowed {
+    clock: f64,
+    snaps: crate::Snapshots<RidgeMoments>,
+}
+
+/// Every accumulator a fit is read from, as it stood before a row and decayed
+/// to that row's clock. The Grams and the per-target cross-moments are what
+/// the solve reads; the residual variance is what `sigma` and `zscore` read,
+/// and truncating one without the other would report a windowed fit beside an
+/// unwindowed spread.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct RidgeMoments {
+    acc: AccSnap,
+    wsig: Vec<f64>,
+    sig2: Vec<f64>,
+}
+
+crate::pack_fields!(RidgeMoments { acc, wsig, sig2 });
+
+/// The window's snapshot as a view: [`RidgeMoments`]' words, written
+/// straight from the model's accumulators ([`crate::Offer`]).
+#[derive(Clone, Copy)]
+struct RidgeOf<'a> {
+    acc: crate::gaps::AccSnapOf<'a>,
+    wsig: &'a [f64],
+    sig2: &'a [f64],
+}
+
+impl crate::Offer<RidgeMoments> for RidgeOf<'_> {
+    fn bytes(&self) -> usize {
+        self.acc.bytes() + crate::window::floats(self.wsig) + crate::window::floats(self.sig2)
+    }
+
+    fn write(&self, out: &mut crate::Packer) {
+        self.acc.write(out);
+        out.dim(self.wsig.len());
+        for w in self.wsig {
+            out.f64(w * self.acc.lam);
+        }
+        out.dim(self.sig2.len());
+        out.f64s(self.sig2);
+    }
+
+    fn into_snapshot(self) -> RidgeMoments {
+        RidgeMoments {
+            acc: self.acc.owned(),
+            wsig: self.wsig.iter().map(|w| w * self.acc.lam).collect(),
+            sig2: self.sig2.to_vec(),
+        }
+    }
+}
+
+impl crate::Footprint for RidgeMoments {
+    fn footprint(&self) -> usize {
+        crate::Footprint::footprint(&self.acc)
+            + crate::window::floats(&self.wsig)
+            + crate::window::floats(&self.sig2)
+    }
+}
+
+impl RidgeMoments {
+    /// Whether a snapshot is the shape of `n` targets over `k` slots, as the
+    /// live accumulators are: what [`EwRidge::view`] reads of the boundary.
+    fn has_shape(&self, n: usize, k: usize) -> bool {
+        self.acc.has_shape(n, k) && self.wsig.len() == n && self.sig2.len() == n
+    }
+}
+
+/// The accumulators a windowed fit reads, with everything older than the
+/// window subtracted off.
+#[derive(Default)]
+struct RidgeView {
+    /// A target with no row left in the window has weight 0 here, and then
+    /// reports nothing (review 2026-09-12, C2).
+    acc: AccView,
+    sig2: Vec<f64>,
+}
+
+impl EwRidge {
+    /// The snapshot the window's ring would take of the model as it
+    /// stands, undecayed: what its shadow sizes the next snapshot by.
+    fn next_snapshot(&self) -> RidgeMoments {
+        RidgeMoments {
+            acc: self.acc.snapshot(1.0),
+            wsig: self.wsig.clone(),
+            sig2: self.sig2.clone(),
+        }
+    }
+
+    pub fn new(cfg: EwRidgeCfg) -> Result<Self, String> {
+        cfg.validate()?;
+        let k_total = cfg.k_total();
+        let m = cfg.n_targets;
+        // Blocked or not, the twin runs the same accumulators as the main
+        // ones: its update is the same cost, and its matrices are read only at
+        // a blend.
+        let block = cfg.gram_block_rows;
+        let windowed = cfg.window.is_some();
+        let acc = move || Acc::new(m, k_total, block, windowed);
+        let slow = cfg.session_shrink.map(|_| Box::new(acc()));
+        let cadence = crate::Cadence::of(cfg.window_every, cfg.max_rows_between_snapshots);
+        let win = match cfg.window {
+            Some(w) => Some(Windowed {
+                clock: 0.0,
+                snaps: crate::Snapshots::with_cadence(w, cadence)?,
+            }),
+            None => None,
+        };
+        Ok(Self {
+            acc: acc(),
+            slow,
+            wsig: vec![0.0; m],
+            sig2: vec![0.0; m],
+            beta: None,
+            since_solve: Since::default(),
+            rows_since_solve: 0,
+            weight_since_solve: 0.0,
+            solve_failures: 0,
+            win,
+            zbuf: vec![0.0; k_total],
+            ready: Readiness::default(),
+            keep_factor: false,
+            target_min_weight: Vec::new(),
+            min_weight_output_only: false,
+            first_period_by_share: false,
+            factors: Factors::default(),
+            view: crate::window::Kept::default(),
+            spare_fit: crate::window::Kept::default(),
+            cfg,
+        })
+    }
+
+    pub fn cfg(&self) -> &EwRidgeCfg {
+        &self.cfg
+    }
+
+    /// Each target's own `min_weight`, as a bank holds a list of them: one
+    /// value `>= 0` per target, or none for `min_weight` everywhere. A
+    /// target no solve has fit is solved on the row its own weight first
+    /// reaches its own threshold, as a fresh model's first solve fires on
+    /// the row its weight reaches `min_weight` (docs/PLAN.md task 195, S9b).
+    pub fn set_target_min_weight(&mut self, own: Vec<f64>) -> Result<(), String> {
+        crate::model::check_target_min_weight("ewridge", &own, self.cfg.n_targets)?;
+        self.target_min_weight = own;
+        Ok(())
+    }
+
+    /// Let `min_weight` withhold the output alone, as it does in every
+    /// model (task 278, the user's decision of 2026-10-26): the residual
+    /// variance `sig2` folds the prediction the model makes at its own
+    /// floor ([`Self::own_floor`]) on a row `min_weight` withholds, and the
+    /// first solve -- a fresh model's, or a target's own -- falls on the
+    /// row the weight reaches that floor. With it, the state is the one the
+    /// same model keeps with `min_weight` at the floor, to the bit, whatever
+    /// `min_weight` above it withholds. Without it, as in a state written
+    /// before schema 64, both wait for `min_weight`.
+    pub fn set_min_weight_output_only(&mut self, on: bool) {
+        self.min_weight_output_only = on;
+    }
+
+    /// Whether the model is still in its explicit cadence's first period,
+    /// solving on the default weight-share schedule
+    /// ([`OnlineModel::set_first_period_by_share`]).
+    pub fn in_first_period(&self) -> bool {
+        self.first_period_by_share && self.cfg.solve_share.is_none()
+    }
+
+    /// The floor the model learns at ([`Self::set_min_weight_output_only`]):
+    /// a row per unknown -- below it the system has fewer rows than
+    /// unknowns, and the model with no `min_weight` given withholds there --
+    /// or `min_weight` where that is lower and so lowers the model's own
+    /// floor. A weight, as `min_weight` is. `min_weight` itself where it
+    /// holds learning back.
+    fn own_floor(&self) -> f64 {
+        self.capped(self.cfg.min_weight)
+    }
+
+    /// A `min_weight` threshold as the floor learning reads: no higher than
+    /// a row per unknown under [`Self::set_min_weight_output_only`], the
+    /// threshold itself otherwise.
+    fn capped(&self, threshold: f64) -> f64 {
+        if self.min_weight_output_only {
+            threshold.min(self.cfg.k_total() as f64)
+        } else {
+            threshold
+        }
+    }
+
+    /// Whether a row carrying the targets `y` at `weight` takes a target's
+    /// own weight across its own threshold while no solve has fit it: the
+    /// row its own first solve falls on (S9b). Read before the row is
+    /// learned; a target's weight grows only on a row that carries it, `lam
+    /// · W_j + w` there as `Acc::learn` forms it. The accumulator's weight,
+    /// not a window's: a target that has just joined has all its rows in
+    /// the window.
+    fn own_first_solve(&self, y: &[Option<f64>], lam: f64, weight: f64) -> bool {
+        if !(weight > 0.0 && weight.is_finite()) {
+            return false;
+        }
+        let nc = self.cfg.n_combos();
+        y.iter().enumerate().any(|(j, yj)| {
+            // Under the output-only floor, no higher than a row per unknown.
+            let t = self.capped(crate::model::min_weight_of(
+                &self.target_min_weight,
+                self.cfg.min_weight,
+                j,
+            ));
+            let reached = |w: f64| w >= t && w > 0.0;
+            let before = self.acc.wj[j];
+            yj.is_some()
+                && !reached(before)
+                && reached(lam * before + weight)
+                && !self.beta.as_ref().is_some_and(|b| {
+                    b[j * nc..(j + 1) * nc]
+                        .iter()
+                        .all(|slot| slot.iter().all(|v| !v.is_nan()))
+                })
+        })
+    }
+
+    /// Per-target EW residual variance of the first slot's prediction; under
+    /// a `window`, the variance *inside* it. The bank's `sigma` and `zscore`
+    /// are not this: they are the stream's spread per slot, cut at the same
+    /// boundary by a ring of its own (`rheon-polars`' `resid_window`; review
+    /// 2026-09-12, S1).
+    pub fn sigma2(&self) -> std::borrow::Cow<'_, [f64]> {
+        match self.view() {
+            Some(v) => std::borrow::Cow::Owned(v.sig2),
+            None => std::borrow::Cow::Borrowed(&self.sig2),
+        }
+    }
+
+    /// The Grams the fit is read from, one entry per Gram with the targets
+    /// that read it ([`GramPart`]), and the target moments: what `Bank::gram`
+    /// and a closed row report. Under a `window` that has truncated the
+    /// accumulators, every number is the window's, the target moments
+    /// included (docs/PLAN.md task 136), so each Gram solves to the fit
+    /// `coef` reports (review 2026-09-12, S19).
+    pub fn gram_parts(&self) -> (Vec<GramPart>, Option<TargetMoments>) {
+        let (of, gaps) = (&self.acc.grams.of, self.cfg.target_gaps);
+        match self.view() {
+            Some(v) => (
+                gram_parts(&v.acc.grams, of, &v.acc.cross, &v.acc.wj, gaps),
+                v.acc.tm,
+            ),
+            // A held block is merged into a copy, the targets' part of it
+            // with it (docs/PLAN.md task 257), leaving the model's block
+            // where it was.
+            None => {
+                let acc = self.acc.flushed();
+                (
+                    gram_parts(&acc.grams.grams, of, &acc.cross, &acc.wj, gaps),
+                    Some(acc.tm.clone()),
+                )
+            }
+        }
+    }
+
+    /// The accumulated weight over every row, whatever the targets (hard rule
+    /// 8): under a `window`, the weight *inside* it, which stops growing once
+    /// the window fills. That is what `min_weight` then gates on.
+    pub fn n_eff(&self) -> f64 {
+        self.window_weights().map_or(self.acc.cross.w, |(w, _)| w)
+    }
+
+    /// Per-target **uncentered** cross-moments `r[t]`, each `k_total` long:
+    /// the EW mean of `z·y_t` over the rows target `t` was present on, where
+    /// `z` is the feature row with the intercept slot as a constant 1. Formed
+    /// from the centred moments the model keeps, `r = c + m_t·ȳ` (see
+    /// `crate::gaps::Cross`), so at a level `L` it carries the `L²·ε` of
+    /// rounding that the model's own solves with an intercept do not see
+    /// (review 2026-09-12, N1). [`Self::gram_parts`] pairs each with the Gram
+    /// it is solved against.
+    pub fn cross_moments(&self) -> Vec<Vec<f64>> {
+        let acc = self.acc.flushed();
+        (0..self.cfg.n_targets).map(|j| acc.cross.raw(j)).collect()
+    }
+
+    /// Per-target accumulated weight, the denominator behind
+    /// [`Self::cross_moments`]. This is `n_eff` *per target*, which differs
+    /// from the shared [`Self::n_eff`] when targets have different null
+    /// patterns.
+    pub fn target_weights(&self) -> &[f64] {
+        &self.acc.wj
+    }
+
+    /// Per-target mean, variance and `Sum w^2` -- the other half of what a
+    /// saved Gram needs (docs/ENHANCEMENTS.md E45).
+    pub fn target_moments(&self) -> Option<&TargetMoments> {
+        Some(&self.acc.tm)
+    }
+
+    /// Current coefficients per output slot, if solved.
+    pub fn coefficients(&self) -> Option<&[Vec<f64>]> {
+        self.beta.as_deref().map(Vec::as_slice)
+    }
+
+    /// Gram `g` of the live accumulators. Test helper.
+    #[cfg(test)]
+    pub(crate) fn gram(&self, g: usize) -> &EwCov {
+        &self.acc.grams.grams[g]
+    }
+
+    /// Re-solve and return the first target's first slope. Test helper. A
+    /// blend now re-solves on its own (review 2026-09-12, C3), so the solve
+    /// here repeats one on the same accumulators and changes nothing.
+    #[cfg(test)]
+    pub(crate) fn coefficients_after_blend(&mut self) -> f64 {
+        self.solve();
+        self.coefficients().unwrap()[0][1]
+    }
+
+    /// Mix the main accumulators toward the slow twin, as a session boundary
+    /// asks for (see [`EwRidgeCfg::session_shrink`]). A no-op when the twin is
+    /// not configured, or before it has seen anything.
+    pub fn blend_toward_long_run(&mut self) {
+        let Some(f) = self.cfg.session_shrink else {
+            return;
+        };
+        if f <= 0.0 {
+            return;
+        }
+        let Some(slow) = self.slow.as_mut() else {
+            return;
+        };
+        // Every matrix is read in full; a held block goes in first.
+        slow.flush();
+        self.acc.flush();
+        let Some(slow) = self.slow.as_deref() else {
+            return;
+        };
+        // The blend moves the moments and nothing else: the fit stands until
+        // the next scheduled solve, which reads them, and the schedule counts
+        // on from the last solve as it would without the blend. It used to
+        // re-solve here (review 2026-09-12, C3), which made the output jump
+        // between `f = 0`, which returns above, and any `f > 0`: 0.48 in a
+        // prediction at `f = 1e-12` on 3,000 rows, 1.43 under `solve_every =
+        // 50` (task 278; the user chose the schedule over the forced solve,
+        // 2026-10-25). Now the output is continuous in `f`. A blend with no
+        // weight on either side changes nothing.
+        self.acc.blend(slow, f);
+    }
+
+    fn z(&mut self, x: &[f64]) {
+        if self.cfg.fit_intercept {
+            self.zbuf[0] = 1.0;
+            self.zbuf[1..].copy_from_slice(x);
+        } else {
+            self.zbuf.copy_from_slice(x);
+        }
+    }
+
+    /// Indices into z for a combo's feature set (intercept first if
+    /// configured), written into `idx`.
+    fn combo_z_indices_into(&self, fs_idx: usize, idx: &mut Vec<usize>) {
+        let off = usize::from(self.cfg.fit_intercept);
+        idx.clear();
+        if self.cfg.fit_intercept {
+            idx.push(0);
+        }
+        if self.cfg.feature_sets.is_empty() {
+            idx.extend((0..self.cfg.n_features).map(|i| i + off));
+        } else {
+            idx.extend(self.cfg.feature_sets[fs_idx].1.iter().map(|&i| i + off));
+        }
+    }
+
+    /// The accumulators a fit is read from: the live ones, or -- with a
+    /// `window` -- the same ones with everything older than the window
+    /// subtracted off (docs/PLAN.md §13).
+    ///
+    /// The Grams, the per-target cross-moments and the residual variance are
+    /// all sums of per-row contributions, so each is truncated by the same
+    /// identity, `A(t) - lam^(t-u)·A(u)` for the boundary snapshot at `u` --
+    /// the first two in the centred form they are kept in, by the pooling
+    /// identity (`crate::truncated`, `Acc::window`). The solve then runs on
+    /// Grams that provably contain no row older than the window, which is the
+    /// whole point -- a rolling regression with a guarantee rather than a
+    /// decay. `None` when there is no window or nothing has aged out of it;
+    /// nothing inside the window at all -- a clock gap longer than it -- is an
+    /// *empty* view, never the live state (review 2026-09-12, C2).
+    fn view(&self) -> Option<RidgeView> {
+        let mut view = RidgeView::default();
+        self.view_into(&mut view).then_some(view)
+    }
+
+    /// [`Self::view`] into `view`, written over in place once it has its
+    /// shape ([`crate::gaps::Acc::window_into`]): `false`, and `view` not to
+    /// be read, where that is `None`.
+    fn view_into(&self, view: &mut RidgeView) -> bool {
+        let Some(win) = self.win.as_ref() else {
+            return false;
+        };
+        let Some((f, old)) = win.snaps.cut(win.clock, self.cfg.decay, 0) else {
+            return false;
+        };
+        let RidgeView { acc, sig2 } = view;
+        if !self.acc.window_into(&old.acc, f, acc) {
+            return false;
+        }
+        let m = self.cfg.n_targets;
+        sig2.clear();
+        if acc.cross.w > 0.0 {
+            // The residual variance is one number per target, so the same
+            // subtraction on a one-element mean. A target whose residual
+            // history is entirely outside the window reports no spread rather
+            // than a stale one: one with no row inside it, counted
+            // (`gaps::Acc::holds_rows_of`; task 217), has no residual there.
+            // `crate::truncated_mean` of the one element, to the bit.
+            sig2.extend((0..m).map(|j| {
+                if acc.wj[j] == 0.0 {
+                    return 0.0;
+                }
+                crate::truncated_scalar(self.wsig[j], self.sig2[j], old.wsig[j], old.sig2[j], f)
+                    .map_or(0.0, |(_w, s2)| s2.max(0.0))
+            }));
+        } else {
+            sig2.resize(m, 0.0);
+        }
+        true
+    }
+
+    /// The window's weights alone, over every row and per target, as
+    /// [`Self::view`] has them: what `predict` and `n_eff` read on every row,
+    /// without the view's O(k²) truncation (review 2026-09-12, P1). `None`
+    /// where the live accumulators are the answer.
+    fn window_weights(&self) -> Option<(f64, Vec<f64>)> {
+        let win = self.win.as_ref()?;
+        let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
+        self.acc.window_weights(&old.acc, f)
+    }
+
+    fn solve(&mut self) {
+        // The view is kept between solves and written over; taken out while
+        // the solve borrows the model.
+        let mut view = self.view.take();
+        // The thread's lists, lent to this solve: none are left in the cell
+        // while it runs, so a solve that starts on this thread meanwhile (a
+        // pool thread waiting on a parallel factorization takes other work)
+        // forms its own and leaves them for the next.
+        let mut bufs = SOLVE_BUFS.take().unwrap_or_default();
+        self.solve_in(&mut view, &mut bufs);
+        SOLVE_BUFS.set(Some(bufs));
+        self.view.put(view);
+    }
+
+    /// [`Self::solve`], reading the window's view into `kept` and forming
+    /// its lists in `bufs`.
+    fn solve_in(&mut self, kept: &mut crate::window::Kept<RidgeView>, bufs: &mut SolveBufs) {
+        #[cfg(test)]
+        unread::SOLVED.with(|c| c.set(c.get() + 1));
+        // A held Gram block goes in before the matrix is read. Solves are
+        // scheduled by the clock and the row count, never by a chunk end, so
+        // the block boundary this moves is the same whichever way the stream
+        // was chunked.
+        self.acc.flush();
+        let k_total = self.cfg.k_total();
+        let m = self.cfg.n_targets;
+        let SolveBufs {
+            combos,
+            readers,
+            zidx,
+            sup0,
+            cert,
+            r,
+            parts,
+        } = bufs;
+        self.cfg.combos_into(combos);
+        let nc = combos.len();
+        // Zeros outside each combo's feature set, which no solve writes; a
+        // slot no system solves has no fit, NaN, which predicts nothing (a
+        // combo skipped for no weight, a first solve that fails, a target
+        // with no row: below). Written over the storage of the fit before
+        // the last, which the last solve's replaces ([`SolveBufs::beta`]).
+        let mut beta = std::mem::take(self.spare_fit.get());
+        beta.resize_with(m * nc, Vec::new);
+        for b in &mut beta {
+            b.clear();
+            b.resize(k_total, 0.0);
+        }
+        // The readiness statistics of the last solve, carried forward for a
+        // combo whose solve fails at every jitter (it keeps its previous
+        // coefficients, and so its previous shares), and resized on the
+        // first. Taken out first: the loop below borrows the accumulators.
+        let mut ready = std::mem::take(&mut self.ready);
+        ready.edf.resize(m * nc, f64::NAN);
+        if ready.support.len() != m * nc {
+            ready.support.resize(m * nc, vec![f64::NAN; k_total]);
+        }
+        ready.system_of.resize(m * nc, usize::MAX);
+        ready.pending.resize(m * nc, None);
+        let Factors {
+            kept: mut factors,
+            work,
+        } = std::mem::take(&mut self.factors);
+        let mut work = work.unwrap_or_default();
+        let keep_factor = self.keep_factor;
+        // With a `window`, the fit is solved from the truncated accumulators:
+        // no row older than the window is in a Gram at all. Without one, and
+        // before anything has aged out, these borrow the live state.
+        let view = match self.win {
+            Some(_) => {
+                let view = kept.get();
+                self.view_into(view).then_some(&*view)
+            }
+            None => None,
+        };
+        if view.is_some_and(|v| v.acc.cross.w <= 0.0) {
+            // An empty window has nothing to solve and no fit to report
+            // (C2), and no readiness shares beside it: the last solve's
+            // stood there, so the row after a gap reported the row before's
+            // `support_coef` beside a fit of NaN (review round 4, CA1).
+            self.beta = Some(Fit(vec![vec![f64::NAN; k_total]; m * nc]));
+            *self.spare_fit.get() = beta;
+            for slot in 0..m * nc {
+                ready.clear(slot, &mut work);
+            }
+            // Nothing pending: the next settle will not look at the spares.
+            work.drop_spares();
+            self.ready = ready;
+            self.factors = Factors {
+                kept: factors,
+                work: Some(work),
+            };
+            self.restart_schedule();
+            return;
+        }
+        let mut failures = 0u64;
+        let (grams, cross) = match view.as_ref() {
+            Some(v) => (v.acc.grams.as_slice(), &v.acc.cross),
+            None => (self.acc.grams.grams.as_slice(), &self.acc.cross),
+        };
+        let n_systems = grams.len() * nc;
+        ready.systems.resize(n_systems, None);
+        factors.resize(n_systems, None);
+        // With an intercept the slopes are solved on the centred system (see
+        // the module docs). The rest read the raw normal equations and need
+        // the uncentred cross-moments: `ridge_scale`, whose intercept is
+        // penalized and so part of the system rather than eliminated from it,
+        // and the two solves through the origin, which centre nothing.
+        let centred = self.cfg.fit_intercept && !self.cfg.ridge_scale;
+
+        // One system per Gram, for the targets that read it.
+        for (g, cov) in grams.iter().enumerate() {
+            self.acc.grams.readers_into(g, readers);
+            // Whether the centred solve may read this Gram's system as a
+            // ridge over semidefinite co-moments: a live one, built row by
+            // row since it was empty or merged block by block -- not a
+            // window's truncation, not one `session_shrink`'s blend
+            // rewrites (the condition module's docs, *The ridge's
+            // shortcut*).
+            let over_moments = view.is_none() && self.slow.is_none();
+            let mr = readers.len();
+            // The uncentred right-hand sides, formed only where they are read.
+            if !centred {
+                r.resize_with(mr, Vec::new);
+                for (rj, &j) in r.iter_mut().zip(readers.iter()) {
+                    cross.raw_into(j, rj);
+                }
+            }
+            for (ci, &(fs_idx, r_idx)) in combos.iter().enumerate() {
+                let ridge = self.cfg.ridge[r_idx];
+                // A Gram with no weight and no penalty has no system to
+                // solve: under `own_rows` a target not seen yet is alone in
+                // one, and its slots have no fit, NaN. They kept zeros --
+                // what the jittered solve of an empty matrix gave, at one
+                // counted failure a solve -- until review round 4 (CC1).
+                // With a penalty the fit is the prior, `coef_prior` or zero,
+                // and is solved; a target with no weight keeps that fit only
+                // where a solve fit it before or the caller gave the prior
+                // (below). No system, so no
+                // readiness shares either: the last solve's stood beside the
+                // zeros, a share of data under no fit (review 2026-10-05,
+                // CA6).
+                if ridge == 0.0 && cov.n_eff() <= 0.0 {
+                    for &j in readers.iter() {
+                        beta[j * nc + ci].fill(f64::NAN);
+                        ready.clear(j * nc + ci, &mut work);
+                    }
+                    continue;
+                }
+                self.combo_z_indices_into(fs_idx, zidx);
+                let kc = zidx.len();
+
+                let solved: Option<Solved> = if centred {
+                    self.solve_centred(
+                        cov,
+                        cross,
+                        readers,
+                        &mut failures,
+                        &mut work,
+                        parts,
+                        zidx,
+                        ridge,
+                        over_moments,
+                    )
+                } else {
+                    // Gather the sub-block of S and the per-target rhs.
+                    parts.a.clear();
+                    parts.a.resize(kc * kc, 0.0);
+                    for (ai, &zi) in zidx.iter().enumerate() {
+                        for (aj, &zj) in zidx.iter().enumerate() {
+                            parts.a[ai * kc + aj] = cov.raw(zi, zj);
+                        }
+                    }
+                    parts.b.clear();
+                    parts.b.resize(kc * mr, 0.0);
+                    for (jj, rj) in r.iter().enumerate() {
+                        for (ai, &zi) in zidx.iter().enumerate() {
+                            parts.b[jj * kc + ai] = rj[zi];
+                        }
+                    }
+                    if self.cfg.ridge_scale {
+                        // (W S + prior_scale * ridge I) beta = W r  — intercept
+                        // penalized, `W` the Gram's weight: under `own_rows`
+                        // the target's own, so both sides are sums over its
+                        // rows.
+                        let w = cov.n_eff();
+                        let ps = cov.prior_scale();
+                        for i in 0..kc {
+                            for j in 0..kc {
+                                parts.a[i * kc + j] *= w;
+                            }
+                            parts.a[i * kc + i] += ps * ridge;
+                        }
+                        for v in parts.b.iter_mut() {
+                            *v *= w;
+                        }
+                        // Warm start: the prior enters on the same decaying sum
+                        // scale, so its weight falls away as data accumulates.
+                        if let Some(c0) = &self.cfg.coef_prior {
+                            for (jj, &j) in readers.iter().enumerate() {
+                                for (ai, &zi) in zidx.iter().enumerate() {
+                                    parts.b[jj * kc + ai] += ps * ridge * c0[j][zi];
+                                }
+                            }
+                        }
+                        // The system is on the sum scale, so a row form
+                        // against it is scaled back by `W` (see `System`).
+                        Self::solve_raw(&mut failures, &mut work, parts, kc, mr, ps * ridge, w)
+                    } else if !self.cfg.standardize {
+                        // Through the origin every slot is a slope, and every
+                        // slot is penalized.
+                        for i in 0..kc {
+                            parts.a[i * kc + i] += ridge;
+                        }
+                        // Warm prior: shrink toward coef_prior rather than
+                        // toward zero, by moving the penalty's target into the
+                        // right-hand side.
+                        if let Some(c0) = &self.cfg.coef_prior {
+                            for (jj, &j) in readers.iter().enumerate() {
+                                for (ai, &zi) in zidx.iter().enumerate() {
+                                    parts.b[jj * kc + ai] += ridge * c0[j][zi];
+                                }
+                            }
+                        }
+                        Self::solve_raw(&mut failures, &mut work, parts, kc, mr, ridge, 1.0)
+                    } else {
+                        Self::solve_scaled_through_origin(
+                            cov,
+                            &mut failures,
+                            &mut work,
+                            parts,
+                            zidx,
+                            readers,
+                            self.cfg.coef_prior.as_deref(),
+                            ridge,
+                        )
+                    }
+                };
+
+                if solved.as_ref().is_some_and(|s| s.ill) {
+                    // Past the condition at which the solve keeps a digit:
+                    // no fit, so no prediction and no readiness shares, as a
+                    // slot with no system has none -- but the slot names the
+                    // system it was solved from, which is how a withheld fit
+                    // is told from a missing one ([`EwRidge::ill_conditioned`])
+                    // with no field added to the state. No system is kept for
+                    // the leverage either: there is no fit to read it against.
+                    let at = g * nc + ci;
+                    for &j in readers.iter() {
+                        let slot = j * nc + ci;
+                        beta[slot].fill(f64::NAN);
+                        ready.clear(slot, &mut work);
+                        ready.system_of[slot] = at;
+                    }
+                    if keep_factor {
+                        ready.systems[at] = None;
+                        if let Some(old) = factors[at].take() {
+                            work.give(old);
+                        }
+                    }
+                    if let Some(mut solved) = solved {
+                        if let Some(f) = solved.factor.take() {
+                            work.give(f);
+                        }
+                        parts.reclaim(solved);
+                    }
+                } else if let Some(mut solved) = solved {
+                    for (jj, &j) in readers.iter().enumerate() {
+                        for (ai, &zi) in zidx.iter().enumerate() {
+                            beta[j * nc + ci][zi] = solved.sol[jj * kc + ai];
+                        }
+                    }
+                    // What the readiness statistics read from this system
+                    // (docs/WARMUP-AND-CONVERGENCE.md §2.2): each kept
+                    // column's data share `1 − λ (A⁻¹)_jj`, with `λ` the
+                    // penalty on the diagonal plus the jitter the factor
+                    // needed, since that is what it carries; a column the
+                    // standardiser dropped has share 0; the intercept is not
+                    // a share. The effective degrees of freedom are the
+                    // shares summed, plus one for an eliminated intercept,
+                    // which the data alone determines. `A⁻¹`'s diagonal is
+                    // `O(k³)`, and a solve runs every few rows, so it is
+                    // taken when something reads it: a `coef` row, the
+                    // noise gate where its bound does not decide, `summary`,
+                    // a save, or the end of the stream's chunk (`Pending`;
+                    // docs/PLAN.md tasks 140 and 265).
+                    let is_intercept = |pos: usize| self.cfg.fit_intercept && pos == 0;
+                    sup0.clear();
+                    sup0.resize(k_total, f64::NAN);
+                    for (pos, &zi) in zidx.iter().enumerate() {
+                        if !is_intercept(pos) {
+                            sup0[zi] = 0.0;
+                        }
+                    }
+                    let edf0 = if solved.centred { 1.0 } else { 0.0 };
+                    let factor = solved.factor.take();
+                    let kept = if keep_factor {
+                        factor.as_ref().map(|f| work.copy(f))
+                    } else {
+                        None
+                    };
+                    let pending = factor.map(|factor| {
+                        let lam = solved.shift + factor.jitter();
+                        ready.spare.get().pending(
+                            factor,
+                            lam,
+                            solved
+                                .keep
+                                .iter()
+                                .map(|&pos| (!is_intercept(pos)).then(|| zidx[pos])),
+                            edf0,
+                            sup0.as_slice(),
+                            cert,
+                        )
+                    });
+                    let at = g * nc + ci;
+                    for &j in readers.iter() {
+                        let slot = j * nc + ci;
+                        match &pending {
+                            Some(p) => ready.set_pending(slot, Some(Arc::clone(p)), &mut work),
+                            None => {
+                                ready.edf[slot] = edf0;
+                                ready.support[slot].clone_from(&*sup0);
+                                ready.set_pending(slot, None, &mut work);
+                            }
+                        }
+                        ready.system_of[slot] = at;
+                    }
+                    if keep_factor {
+                        // The system the last solve kept for this slot is
+                        // written over, its lists as they were.
+                        match &mut ready.systems[at] {
+                            Some(sys) => {
+                                sys.a.set_from_square(&solved.a);
+                                sys.z.clear();
+                                sys.z.extend(solved.keep.iter().map(|&p| zidx[p]));
+                                sys.s.clone_from(&solved.s);
+                                sys.mean.clone_from(&solved.mean);
+                                sys.centred = solved.centred;
+                                sys.scale = solved.scale;
+                            }
+                            none => {
+                                *none = Some(System {
+                                    a: solved.a.as_slice().to_vec().into(),
+                                    z: solved.keep.iter().map(|&p| zidx[p]).collect(),
+                                    s: solved.s.clone(),
+                                    mean: solved.mean.clone(),
+                                    centred: solved.centred,
+                                    scale: solved.scale,
+                                });
+                            }
+                        }
+                        if let Some(old) = std::mem::replace(&mut factors[at], kept) {
+                            work.give(old);
+                        }
+                    }
+                    parts.reclaim(solved);
+                } else if let Some(prev) = &self.beta {
+                    // Total failure even with jitter: keep the previous
+                    // coefficients.
+                    for &j in readers.iter() {
+                        beta[j * nc + ci].clone_from(&prev[j * nc + ci]);
+                    }
+                } else {
+                    // And with no fit before it, no fit: the zeros `beta`
+                    // starts at predicted 0.0 as though they had been
+                    // learned (review 2026-10-05, CA5).
+                    for &j in readers.iter() {
+                        beta[j * nc + ci].fill(f64::NAN);
+                    }
+                }
+            }
+        }
+        // A target with no weight in the accumulators the fit is read from
+        // has no fit to report, and no readiness shares beside it, under a
+        // window -- no row inside it (C2) -- and without one where no solve
+        // has fit it: a target not seen yet, whose solve read cross-moments
+        // of zero as data. Once its rows arrived those zeros were predicted
+        // as exactly 0.0 until the next solve, 56 rows of 80 under
+        // `solve_every = 1000` (review round 4, CC1); it now waits for the
+        // cadence's next solve. Outside a window, a slot a solve has fit
+        // keeps this solve's fit: its mean-form moments hold the history,
+        // which a gap ages and does not move (hard rule 8), and a weight
+        // past the underflow forgets as one just short of it does
+        // (docs/PLAN.md task 115 (c)). So does a prior the caller gave
+        // (`coef_prior`, under a ridge that reads it), a fit before any row,
+        // as a fresh model's first solve reports it.
+        let wj = view.as_ref().map_or(&self.acc.wj, |v| &v.acc.wj);
+        for (j, &w) in wj.iter().enumerate() {
+            if w > 0.0 {
+                continue;
+            }
+            for (ci, &(_, r_idx)) in combos.iter().enumerate() {
+                let slot = j * nc + ci;
+                let prior = self.cfg.coef_prior.is_some() && self.cfg.ridge[r_idx] > 0.0;
+                let fit_before = self
+                    .beta
+                    .as_ref()
+                    .is_some_and(|b| !b[slot].iter().any(|v| v.is_nan()));
+                if view.is_none() && (prior || fit_before) {
+                    continue;
+                }
+                beta[slot].fill(f64::NAN);
+                ready.clear(slot, &mut work);
+            }
+        }
+        if !keep_factor {
+            ready.systems.clear();
+            factors.clear();
+        }
+        // Nothing pending: the next settle will not look at the spares.
+        if !ready.has_pending() {
+            work.drop_spares();
+        }
+        self.solve_failures += failures;
+        // The fit this one replaces keeps its storage for the next solve's.
+        let spare = self.spare_fit.get();
+        *spare = self.beta.replace(Fit(beta)).map_or_else(Vec::new, |f| f.0);
+        if spare.len() * k_total > KEEP_ENTRIES {
+            *spare = Vec::new();
+        }
+        parts.release();
+        self.ready = ready;
+        self.factors = Factors {
+            kept: factors,
+            work: Some(work),
+        };
+        self.restart_schedule();
+    }
+
+    /// Restart the solve schedule as a solve does: its clock, its row count
+    /// and the weight learned since, from this row. A solve run, an empty
+    /// window's and a solve passed as unread (`unread.rs`) all end here.
+    fn restart_schedule(&mut self) {
+        self.since_solve.restart();
+        self.rows_since_solve = 0;
+        self.weight_since_solve = 0.0;
+    }
+
+    /// Factorize and solve, counting the jitter it took; the factor comes
+    /// back with the solution so the readiness statistics can read it
+    /// (docs/WARMUP-AND-CONVERGENCE.md §2.1). The solution is
+    /// `crate::solve_spd`'s to the bit: both are the same factor's `solve`.
+    ///
+    /// A factorization that succeeded on a system past the condition at
+    /// which its solve keeps a digit ([`SpdFactor::carries_no_digit`]) is
+    /// not solved: it is counted as a failure, the solution is NaN, and the
+    /// flag that comes back says so, so the caller withholds the fit
+    /// (docs/PLAN.md task 278, D4). Every other solve is untouched, to the
+    /// bit: the estimate reads the factor and changes nothing. `over` is
+    /// what the centred solve knows of a live Gram's system, which lets a
+    /// ridge settle the condition in `k` reads with the same answer
+    /// ([`SpdFactor::carries_no_digit_over`]); `None` elsewhere.
+    #[allow(clippy::too_many_arguments)]
+    fn run_solve(
+        failures: &mut u64,
+        work: &mut FactorWork,
+        quads: &mut Quads,
+        a: &[f64],
+        b: &[f64],
+        k: usize,
+        m: usize,
+        over: Option<OverMoments>,
+        sol: &mut Vec<f64>,
+    ) -> Option<(SpdFactor, bool)> {
+        match work.factor(a, k) {
+            Some(f) => {
+                *failures += u64::from(f.attempts());
+                sol.clear();
+                if f.carries_no_digit_over(a, over) {
+                    *failures += 1;
+                    sol.resize(k * m, f64::NAN);
+                    return Some((f, true));
+                }
+                if k > crate::solve::KEPT_ORDER {
+                    // Past the order a kept space is held for.
+                    *sol = f.solve(b, k, m);
+                } else {
+                    f.solve_into(b, k, m, quad_for(quads, k, m), sol);
+                }
+                Some((f, false))
+            }
+            None => {
+                *failures += 1;
+                None
+            }
+        }
+    }
+
+    /// The solve of the raw system in `parts.a` and `parts.b` (`kc` columns,
+    /// `mr` right-hand sides): [`Self::run_solve`] on them, as the solve
+    /// through the origin and the sum scale pose it.
+    fn solve_raw(
+        failures: &mut u64,
+        work: &mut FactorWork,
+        parts: &mut Parts,
+        kc: usize,
+        mr: usize,
+        shift: f64,
+        scale: f64,
+    ) -> Option<Solved> {
+        let Parts {
+            a, b, out, quads, ..
+        } = &mut *parts;
+        let (factor, ill) = Self::run_solve(failures, work, quads, a, b, kc, mr, None, out)?;
+        Some(parts.raw(factor, kc, shift, scale, ill))
+    }
+
+    /// The standardized solve through the origin, on one combo's raw
+    /// sub-block: scaled by the raw second-moment diagonals -- there is no
+    /// centering here, so no cancellation either -- solved and unscaled. `b`
+    /// is the reader-major uncentred right-hand side, `readers` the targets
+    /// it holds, and `zidx` maps the combo's slots to accumulator indices.
+    /// A warm prior shrinks toward `coef_prior` rather than toward zero,
+    /// entering the right-hand side on the standardized scale as
+    /// `ridge · c0 · s` (a coefficient there is `beta · s`), the same form
+    /// as [`EwRidge::solve_centred`]'s. This branch alone never read the
+    /// prior, so a standardized fit through the origin was un-warmed with
+    /// no error (review 2026-09-18, B2).
+    #[allow(clippy::too_many_arguments)]
+    fn solve_scaled_through_origin(
+        cov: &EwCov,
+        failures: &mut u64,
+        work: &mut FactorWork,
+        parts: &mut Parts,
+        zidx: &[usize],
+        readers: &[usize],
+        coef_prior: Option<&[Vec<f64>]>,
+        ridge: f64,
+    ) -> Option<Solved> {
+        let kc = zidx.len();
+        let m = readers.len();
+        let Parts {
+            scale,
+            cols,
+            a,
+            b,
+            bs,
+            sol,
+            out,
+            pos,
+            kept_s,
+            mean,
+            quads,
+        } = &mut *parts;
+        // `b` is the uncentred right-hand side, `kc` slots a reader; the
+        // system's own is formed in `bs`.
+        let b = &*b;
+        scale.clear();
+        scale.extend((0..kc).map(|i| cov.raw(zidx[i], zidx[i]).max(0.0).sqrt()));
+        // No centering here, so no cancellation: any strictly positive raw
+        // moment is usable.
+        cols.clear();
+        cols.extend((0..kc).filter(|&i| scale[i] > 0.0));
+        let kk = cols.len();
+        if kk == 0 {
+            out.clear();
+            out.resize(kc * m, 0.0);
+            return Some(Solved {
+                sol: std::mem::take(out),
+                factor: None,
+                a: Vec::new(),
+                keep: Vec::new(),
+                s: Vec::new(),
+                mean: Vec::new(),
+                centred: false,
+                shift: ridge,
+                scale: 1.0,
+                ill: false,
+            });
+        }
+        // The lower triangle alone, each entry once; the upper stays 0
+        // (task 314; see `solve_centred`, and `Solved::a`).
+        a.clear();
+        a.resize(kk * kk, 0.0);
+        for (i2, &i) in cols.iter().enumerate() {
+            for (j2, &j) in cols[..=i2].iter().enumerate() {
+                a[i2 * kk + j2] = cov.raw(zidx[i], zidx[j]) / (scale[i] * scale[j]);
+            }
+        }
+        for i2 in 0..kk {
+            a[i2 * kk + i2] += ridge;
+        }
+        bs.clear();
+        bs.resize(kk * m, 0.0);
+        for (jj, &j) in readers.iter().enumerate() {
+            for (i2, &i) in cols.iter().enumerate() {
+                bs[jj * kk + i2] = b[jj * kc + i] / scale[i];
+                if let Some(c0) = coef_prior {
+                    bs[jj * kk + i2] += ridge * c0[j][zidx[i]] * scale[i];
+                }
+            }
+        }
+        let (factor, ill) = Self::run_solve(failures, work, quads, a, bs, kk, m, None, sol)?;
+        out.clear();
+        out.resize(kc * m, 0.0);
+        for j in 0..m {
+            for (i2, &i) in cols.iter().enumerate() {
+                out[j * kc + i] = sol[j * kk + i2] / scale[i];
+            }
+        }
+        kept_s.clear();
+        kept_s.extend(cols.iter().map(|&i| scale[i]));
+        mean.clear();
+        mean.resize(kk, 0.0);
+        pos.clear();
+        pos.extend(cols.iter().copied());
+        Some(Solved {
+            sol: std::mem::take(out),
+            factor: Some(factor),
+            a: std::mem::take(a),
+            keep: std::mem::take(pos),
+            s: std::mem::take(kept_s),
+            mean: std::mem::take(mean),
+            centred: false,
+            shift: ridge,
+            scale: 1.0,
+            ill,
+        })
+    }
+
+    /// The two solves with an intercept, plain and standardized, on the
+    /// centred system (see the module docs) for the targets `readers` of one
+    /// Gram: the slopes from `C`, the Gram's centred co-moments over the
+    /// combo's features, and each target's centred cross-moment `c_j`; then
+    /// `beta_0 = ȳ_j − m_j·beta`, `m_j` the target's own column means.
+    /// Standardized, `C` is scaled to correlation form and ~zero-variance
+    /// features are dropped (coefficient 0); plain, the scale is 1 and
+    /// nothing is dropped, as the raw system had it. The result is
+    /// reader-major, `k_c` slots each.
+    ///
+    /// Every statistic comes from `cov` and `cross`, the accumulators `solve`
+    /// handed in: the truncated view under a `window`, the live state
+    /// otherwise. The standardized solve once read the means and the centred
+    /// Gram from the live accumulator while its right-hand side came from the
+    /// view, so a windowed fit mixed two histories and the window's guarantee
+    /// failed silently (review 2026-09-12, C1).
+    #[allow(clippy::too_many_arguments)]
+    fn solve_centred(
+        &self,
+        cov: &EwCov,
+        cross: &Cross,
+        readers: &[usize],
+        failures: &mut u64,
+        work: &mut FactorWork,
+        parts: &mut Parts,
+        zidx: &[usize],
+        ridge: f64,
+        over_moments: bool,
+    ) -> Option<Solved> {
+        let Parts {
+            scale: s,
+            cols: keep,
+            a: asub,
+            b: bsub,
+            sol,
+            out,
+            pos,
+            kept_s,
+            mean,
+            quads,
+            ..
+        } = &mut *parts;
+        // Feature slots are 1..kc; slot 0 is the intercept.
+        let kc = zidx.len();
+        let kf = kc - 1;
+        let mr = readers.len();
+        // The system is read straight from the Gram, `C`'s entries as they
+        // are needed: the scales and the kept columns need only its
+        // diagonal. Unstandardized, every scale is 1 and every column is
+        // kept, and a division or product by 1 gives back the same bits, so
+        // none is made: at a solve a row the `k²` copy and divisions were a
+        // sixth of the solve (docs/records/PERFORMANCE-LOG.md §29).
+        let standardize = self.cfg.standardize;
+        let var = |i: usize| cov.cov(zidx[i + 1], zidx[i + 1]);
+        s.clear();
+        keep.clear();
+        if standardize {
+            s.extend((0..kf).map(|i| var(i).max(0.0).sqrt()));
+            // A genuinely constant feature is dropped (coefficient 0) rather
+            // than blowing up; with centered accumulators its variance is
+            // exactly zero.
+            keep.extend(
+                (0..kf).filter(|&i| {
+                    crate::variance_is_usable(var(i), cov.raw(zidx[i + 1], zidx[i + 1]))
+                }),
+            );
+        } else {
+            s.resize(kf, 1.0);
+            keep.extend(0..kf);
+        }
+        let kk = keep.len();
+        out.clear();
+        out.resize(kc * mr, 0.0);
+        let mut factor = None;
+        let mut ill = false;
+        if kk > 0 {
+            // The lower triangle alone, each entry once; the upper stays 0.
+            // Nothing reads it: the factorization's rungs read the lower
+            // triangle and the readiness check the diagonal, and a kept
+            // system is a `LowerTriangle`, which mirrors the lower over it
+            // (`Solved::a`). Read whole, each upper entry was a read across
+            // the triangle's rows and a second division: at 200 features
+            // solving every row, 7 µs of a 147 µs row on arm64 (task 314);
+            // written as the lower's mirror, it was `k(k − 1)/2` strided
+            // stores a solve that nothing read (task 316).
+            asub.clear();
+            asub.resize(kk * kk, 0.0);
+            for (i2, &i) in keep.iter().enumerate() {
+                let zi = zidx[i + 1];
+                for (j2, &j) in keep[..=i2].iter().enumerate() {
+                    let c = cov.cov(zi, zidx[j + 1]);
+                    asub[i2 * kk + j2] = if standardize { c / (s[i] * s[j]) } else { c };
+                }
+            }
+            for i2 in 0..kk {
+                asub[i2 * kk + i2] += ridge;
+            }
+            bsub.clear();
+            bsub.resize(kk * mr, 0.0);
+            for (jj, &j) in readers.iter().enumerate() {
+                for (i2, &i) in keep.iter().enumerate() {
+                    let z = zidx[i + 1];
+                    bsub[jj * kk + i2] = if standardize {
+                        cross.c[j][z] / s[i]
+                    } else {
+                        cross.c[j][z]
+                    };
+                    // Warm prior: shrink toward coef_prior rather than toward
+                    // zero. It lives in original units, and on the
+                    // standardized scale a coefficient is beta * sd.
+                    if let Some(c0) = &self.cfg.coef_prior {
+                        bsub[jj * kk + i2] += if standardize {
+                            ridge * c0[j][z] * s[i]
+                        } else {
+                            ridge * c0[j][z]
+                        };
+                    }
+                }
+            }
+            // A live Gram's system is a ridge over its co-moments, whose
+            // rounding their rows bound, or a blocked Gram's merges' kept
+            // bound (`OverMoments`); a window's is not known to be, and goes
+            // the long way.
+            let over = if !over_moments {
+                None
+            } else if cov.block_rows() == 0 {
+                Some(OverMoments::live(ridge, cov.rows_learned()))
+            } else {
+                cov.merge_rounding().and_then(|e| {
+                    // `Ê` over the system's features: `Σ e_i`, or `Σ e_i /
+                    // c_ii` on the standardized scale, where `S =
+                    // diag(√c_ii)` (the condition module's docs, item 9).
+                    let mut e_hat = 0.0;
+                    for &i in keep.iter() {
+                        let z = zidx[i + 1];
+                        e_hat += if standardize {
+                            let v = var(i);
+                            if v.is_nan() || v <= 0.0 {
+                                return None;
+                            }
+                            e[z] / v
+                        } else {
+                            e[z]
+                        };
+                    }
+                    Some(OverMoments::merged(ridge, e_hat))
+                })
+            };
+            let (f, past) = Self::run_solve(failures, work, quads, asub, bsub, kk, mr, over, sol)?;
+            ill = past;
+            for jj in 0..mr {
+                for (i2, &i) in keep.iter().enumerate() {
+                    let v = sol[jj * kk + i2];
+                    out[jj * kc + i + 1] = if standardize { v / s[i] } else { v };
+                }
+            }
+            factor = Some(f);
+        }
+        // `m_j` is the Gram's mean, which under `own_rows` is over exactly the
+        // target's rows (and the cross-moments' own copy of it to the bit),
+        // and the target's own mean under `pairwise`, where the Gram is over
+        // every row (`crate::gaps::Cross`).
+        let pairwise = self.cfg.target_gaps == TargetGaps::Pairwise;
+        for (jj, &j) in readers.iter().enumerate() {
+            let mut b0 = cross.my[j];
+            for i in 0..kf {
+                let z = zidx[i + 1];
+                let m_j = if pairwise {
+                    cross.mj[j][z]
+                } else {
+                    cov.mean(z)
+                };
+                b0 -= m_j * out[jj * kc + i + 1];
+            }
+            out[jj * kc] = b0;
+        }
+        // The kept columns as positions in `zidx`, the centred system's
+        // scale and the mean it subtracted, for the row form.
+        let a = if kk > 0 {
+            std::mem::take(asub)
+        } else {
+            Vec::new()
+        };
+        mean.clear();
+        mean.extend(keep.iter().map(|&i| cov.mean(zidx[i + 1])));
+        kept_s.clear();
+        kept_s.extend(keep.iter().map(|&i| s[i]));
+        pos.clear();
+        pos.extend(keep.iter().map(|&i| i + 1));
+        Some(Solved {
+            sol: std::mem::take(out),
+            factor,
+            a,
+            keep: std::mem::take(pos),
+            s: std::mem::take(kept_s),
+            mean: std::mem::take(mean),
+            centred: true,
+            shift: ridge,
+            scale: 1.0,
+            ill,
+        })
+    }
+
+    /// Make the per-row leverage answerable: keep each solve's system and
+    /// factor (docs/WARMUP-AND-CONVERGENCE.md §2.1). Configuration that
+    /// travels with the state, set by the stream when `emit_error_inflation`
+    /// asks for the field; a model without it keeps nothing and answers
+    /// [`OnlineModel::row_error_inflation_into`] with infinity.
+    pub fn set_keep_factor(&mut self, on: bool) {
+        self.keep_factor = on;
+        if !on {
+            self.ready.systems.clear();
+            self.factors.kept.clear();
+        }
+    }
+
+    /// Whether the fit and what the last solve left for the readiness
+    /// statistics are this cfg's shape (`restore`'s check; review
+    /// 2026-10-05, CA1): a slot per target and combo, each `k_total` long,
+    /// and per slot an `edf`, a `support` of `k_total` and a `system_of`
+    /// naming a system or none -- all of it empty before the first solve,
+    /// and only then. A Gram split off since the last solve adds systems
+    /// that solve has not sized, so a system's index is held to the Grams
+    /// there are now. Each system kept for the per-row leverage maps a row
+    /// into its space by `z`, `s` and `mean`, so its columns are inside the
+    /// features, with a scale and a mean per column: a column past the
+    /// features read `x[6]`, a short scale or mean failed the factor's
+    /// length assertion (review 2026-10-06, CA4).
+    fn fit_has_shape(&self) -> bool {
+        let (k, nc) = (self.cfg.k_total(), self.cfg.n_combos());
+        let slots = self.cfg.n_targets * nc;
+        let n_systems = self.acc.grams.grams.len() * nc;
+        let r = &self.ready;
+        let systems = r.systems.iter().flatten().all(|s| {
+            s.z.iter().all(|&zi| zi < k) && s.s.len() == s.z.len() && s.mean.len() == s.z.len()
+        });
+        match &self.beta {
+            None => {
+                r.edf.is_empty()
+                    && r.support.is_empty()
+                    && r.system_of.is_empty()
+                    && r.systems.is_empty()
+            }
+            Some(_) if !systems => false,
+            Some(beta) => {
+                beta.len() == slots
+                    && beta.iter().all(|b| b.len() == k)
+                    && r.edf.len() == slots
+                    && r.support.len() == slots
+                    && r.support.iter().all(|s| s.len() == k)
+                    && r.system_of.len() == slots
+                    && r.system_of
+                        .iter()
+                        .all(|&at| at == usize::MAX || at < n_systems)
+                    && r.systems.len() <= n_systems
+            }
+        }
+    }
+
+    /// Rebuild the kept factors from the systems the state carries: the
+    /// factorization is deterministic, so a loaded model reads the same
+    /// leverage the saved one did.
+    fn refactor(&mut self) {
+        let Factors { kept, work } = &mut self.factors;
+        let work = work.get_or_insert_with(Box::default);
+        for old in std::mem::take(kept).into_iter().flatten() {
+            work.give(old);
+        }
+        *kept = self
+            .ready
+            .systems
+            .iter()
+            .map(|s| {
+                s.as_ref().and_then(|s| {
+                    let kk = s.z.len();
+                    (s.a.len() == kk * kk)
+                        .then(|| work.factor(&s.a.to_full(), kk))
+                        .flatten()
+                })
+            })
+            .collect();
+    }
+
+    /// Output slot `slot`'s kept system and, where it has a column, the
+    /// factor its fit came from; `None` where no system was kept, or one
+    /// with a column has no factor. A system with no column -- a centred
+    /// one whose every feature the standardiser dropped, or one through the
+    /// origin whose every feature is 0 -- is the intercept alone or the zero
+    /// fit: its form is empty, 0, and it needs no factor. A live solve
+    /// keeps none for it and a load factors its 0×0 matrix, so neither is
+    /// read, and a resumed stream reads what the uninterrupted one does
+    /// (docs/PLAN.md task 218).
+    fn kept_system(&self, slot: usize) -> Option<(&System, Option<&SpdFactor>)> {
+        let at = self.ready.system_of[slot];
+        let sys = self.ready.systems.get(at)?.as_ref()?;
+        if sys.z.is_empty() {
+            return Some((sys, None));
+        }
+        let factor = self.factors.kept.get(at)?.as_ref()?;
+        Some((sys, Some(factor)))
+    }
+
+    /// Kish's effective sample size behind each Gram, as it stands before
+    /// the row: the window's where there is one, the live accumulator's
+    /// otherwise. `None` for a Gram with no weight, or with no Kish sum.
+    /// The live accumulators are read where they stand, so a model with no
+    /// window makes no list for it: the bank's gate reads this on every row.
+    fn gram_kish(&self) -> GramKish<'_> {
+        let windowed = self.win.as_ref().and_then(|win| {
+            let (f, old) = win.snaps.cut(win.clock, self.cfg.decay, 0)?;
+            self.acc.window_kish(&old.acc, f)
+        });
+        match windowed {
+            Some(sizes) => GramKish::Window(sizes),
+            None => GramKish::Live(&self.acc.grams.grams),
+        }
+    }
+
+    /// `sqrt(1 + edf / n_kish)` per slot, as it stands before the row
+    /// ([`OnlineModel::error_inflation_into`]): exact wherever the ratio
+    /// could reach `limit`. Where a solve's shares have not been taken and
+    /// are sure to be numbers, the ratio of the `edf` bound stands in if it
+    /// is already below `limit`: the computed ratio is no larger, since
+    /// each step to it rounds monotonically, so a gate at `limit` decides
+    /// the same either way. `f64::NEG_INFINITY` asks for every value exact.
+    fn inflation_into(&self, out: &mut Vec<f64>, limit: f64) -> bool {
+        let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
+        out.clear();
+        out.resize(m * nc, f64::INFINITY);
+        // Below the model's own floor -- fewer effective observations than
+        // its first solve needs -- the estimation variance is unbounded, and
+        // the solves the schedule ran before it read degenerate Grams: the
+        // ratio is infinite there, as `predict` withholds there.
+        if self.beta.is_none()
+            || self.ready.edf.len() != m * nc
+            || self.n_eff() < self.cfg.min_weight
+        {
+            return true;
+        }
+        let kish = self.gram_kish();
+        for j in 0..m {
+            let Some(n) = kish.of(self.acc.grams.of[j]) else {
+                continue;
+            };
+            for c in 0..nc {
+                let slot = j * nc + c;
+                // A fit withheld as ill-conditioned has no estimation
+                // variance to read: not a number, which no gate withholds
+                // on, so the row's reason is the condition's.
+                if self.slot_ill(slot) {
+                    out[slot] = f64::NAN;
+                    continue;
+                }
+                if n > 0.0
+                    && let Some(bound) = self.ready.edf_bound_at(slot)
+                {
+                    let ratio = (1.0 + bound / n).sqrt();
+                    if ratio < limit {
+                        out[slot] = ratio;
+                        continue;
+                    }
+                }
+                let edf = self.ready.edf_at(slot);
+                if n > 0.0 && edf.is_finite() {
+                    out[slot] = (1.0 + edf / n).sqrt();
+                }
+            }
+        }
+        true
+    }
+
+    /// Take the shares of every solve nothing has read yet, and drop the
+    /// factors they were read from (docs/PLAN.md task 140): what the bank
+    /// calls once a stream's rows of a chunk are learned (task 265), so a
+    /// factor is held only while its stream runs. The values are the ones a
+    /// read would have given.
+    pub fn settle_readiness(&mut self) {
+        // With nothing pending no solve has run since the last settle, and
+        // a solve that leaves nothing pending keeps no spare (`solve`), so
+        // there is nothing to do and the model's cold fields stay cold: one
+        // read of them per group per chunk is what a chunk of one row a
+        // group, which solves nothing, would pay here.
+        if !self.ready.has_pending() {
+            return;
+        }
+        self.ready.settle();
+        // The solves' working space holds spare factors as large as the
+        // ones just dropped: a stream at rest keeps neither. Its scratch,
+        // small, and the box it is kept in stay: a group's stream settles
+        // at the end of each of its chunks, and with a row or two a group a
+        // chunk would make both again at nearly every solve.
+        if let Some(work) = self.factors.work.as_mut() {
+            work.drop_spares();
+        }
+    }
+
+    /// Slots whose readiness shares still hold the factor of the solve they
+    /// come from, read or not (docs/PLAN.md task 140): 0 once
+    /// [`Self::settle_readiness`] has run, as it does at the end of each
+    /// stream's chunk.
+    pub fn pending_readiness(&self) -> usize {
+        self.ready.pending.iter().flatten().count()
+    }
+
+    /// Whether slot `slot`'s fit is withheld because the system it was
+    /// solved from was past the condition at which a solve keeps a digit
+    /// (docs/PLAN.md task 278, D4): its coefficients are NaN while it names
+    /// the system it was solved from. Every other slot without a fit -- no
+    /// weight, no row, an empty window, a first solve that failed at every
+    /// jitter -- names none (`Readiness::clear`, or never named one), so the
+    /// two are told apart from what the state already holds.
+    fn slot_ill(&self, slot: usize) -> bool {
+        self.beta.as_ref().is_some_and(|b| {
+            self.ready
+                .system_of
+                .get(slot)
+                .is_some_and(|&at| at != usize::MAX)
+                && b.get(slot)
+                    .and_then(|c| c.first())
+                    .is_some_and(|v| v.is_nan())
+        })
+    }
+
+    /// Whether any slot's fit is withheld as too ill-conditioned to carry a
+    /// digit, as the state stands: what the stream reads before a row to
+    /// name its withheld predictions `ill_conditioned`. Never below
+    /// `min_weight`, where the model predicts from no fit, so none is
+    /// withheld for its condition -- and where the fit is the last one
+    /// solved, not the schedule's latest due one (`unread`'s module docs;
+    /// task 311): the row is `min_weight`'s.
+    pub fn ill_conditioned(&self) -> bool {
+        self.n_eff() >= self.cfg.min_weight
+            && (0..self.ready.system_of.len()).any(|slot| self.slot_ill(slot))
+    }
+
+    /// The `z` slot `zi` of a feature row, without the augmentation buffer:
+    /// the intercept's constant 1, else the feature.
+    #[inline]
+    fn z_at(&self, x: &[f64], zi: usize) -> f64 {
+        if self.cfg.fit_intercept {
+            if zi == 0 { 1.0 } else { x[zi - 1] }
+        } else {
+            x[zi]
+        }
+    }
+}
+
+/// One combo's solve, and what the readiness statistics read from it
+/// (docs/WARMUP-AND-CONVERGENCE.md §2.1, §2.2).
+struct Solved {
+    /// Reader-major coefficients, `kc` slots each, in original units.
+    sol: Vec<f64>,
+    /// The factor of `a`; `None` when nothing was factorized (every column
+    /// dropped).
+    factor: Option<SpdFactor>,
+    /// The ridged, normalised system as factorized, row-major over the kept
+    /// columns, the jitter excluded (the factor knows it). Its lower
+    /// triangle is the system; the upper is whatever the solve left there
+    /// (0 from the centred and standardized solves), which nothing reads:
+    /// the factorization reads the lower triangle, and [`System::a`], a
+    /// [`crate::LowerTriangle`], mirrors the lower over it when kept.
+    a: Vec<f64>,
+    /// Positions in the combo's `zidx` of the kept columns, in the system's
+    /// order.
+    keep: Vec<usize>,
+    /// The scale each kept column was divided by, and the mean subtracted
+    /// from it (1 and 0 where the system is raw).
+    s: Vec<f64>,
+    mean: Vec<f64>,
+    /// Centred, with the intercept eliminated.
+    centred: bool,
+    /// The penalty on the system's diagonal, before jitter.
+    shift: f64,
+    /// What a row form against `a` is scaled by to be in the mean-form
+    /// Gram's units: the Gram's weight under `ridge_scale`, else 1.
+    scale: f64,
+    /// The system was past the condition at which its solve keeps a digit
+    /// ([`SpdFactor::carries_no_digit`]): `sol` is NaN and the fit is
+    /// withheld (docs/PLAN.md task 278, D4).
+    ill: bool,
+}
+
+/// The most entries a list of a solve's is kept at between solves: past it
+/// (an order of [`crate::solve::KEPT_ORDER`] squared) the list is made at
+/// each solve, as it was before they were kept, since an allocation that
+/// size is nothing beside the solve's `O(k³)` and a model at rest should
+/// not hold a matrix's worth beside its Gram.
+const KEEP_ENTRIES: usize = crate::solve::KEPT_ORDER * crate::solve::KEPT_ORDER;
+
+/// The right-hand sides' matrices a solve works in, one for each shape
+/// `(order, columns)` it has solved ([`SpdFactor::solve_into`]).
+type Quads = Vec<(usize, usize, QuadWork)>;
+
+/// The working matrix kept for the shape `(k, m)`, made where there is none.
+fn quad_for(quads: &mut Quads, k: usize, m: usize) -> &mut QuadWork {
+    let at = match quads.iter().position(|(qk, qm, _)| (*qk, *qm) == (k, m)) {
+        Some(at) => at,
+        None => {
+            if quads.len() >= 16 {
+                quads.clear();
+            }
+            quads.push((k, m, QuadWork::default()));
+            quads.len() - 1
+        }
+    };
+    &mut quads[at].2
+}
+
+/// The lists a combo's solve forms, which its result moves through
+/// [`Solved`] and [`Parts::reclaim`] hands back.
+#[derive(Default)]
+struct Parts {
+    /// The standardiser's scale of each feature, and the features kept.
+    scale: Vec<f64>,
+    cols: Vec<usize>,
+    /// The raw system's gathered matrix and right-hand sides, and the
+    /// scaled one's right-hand sides.
+    a: Vec<f64>,
+    b: Vec<f64>,
+    bs: Vec<f64>,
+    /// The solution of the system as posed, before it is unscaled into
+    /// `out`.
+    sol: Vec<f64>,
+    /// [`Solved::sol`], and its kept columns, scales and means.
+    out: Vec<f64>,
+    pos: Vec<usize>,
+    kept_s: Vec<f64>,
+    mean: Vec<f64>,
+    quads: Quads,
+}
+
+impl Parts {
+    /// A raw, uncentred system over every column of the combo: the matrix
+    /// in `a`, the solution in `out`.
+    fn raw(&mut self, factor: SpdFactor, kc: usize, shift: f64, scale: f64, ill: bool) -> Solved {
+        self.pos.clear();
+        self.pos.extend(0..kc);
+        self.kept_s.clear();
+        self.kept_s.resize(kc, 1.0);
+        self.mean.clear();
+        self.mean.resize(kc, 0.0);
+        Solved {
+            sol: std::mem::take(&mut self.out),
+            factor: Some(factor),
+            a: std::mem::take(&mut self.a),
+            keep: std::mem::take(&mut self.pos),
+            s: std::mem::take(&mut self.kept_s),
+            mean: std::mem::take(&mut self.mean),
+            centred: false,
+            shift,
+            scale,
+            ill,
+        }
+    }
+
+    /// Take back the lists of a [`Solved`] its reader has done with.
+    fn reclaim(&mut self, solved: Solved) {
+        let Solved {
+            sol,
+            a,
+            keep,
+            s,
+            mean,
+            ..
+        } = solved;
+        // A list the reader took the storage of (a system kept for the
+        // leverage) comes back empty, and does not replace one held.
+        fn put<T>(held: &mut Vec<T>, back: Vec<T>) {
+            if back.capacity() >= held.capacity() {
+                *held = back;
+            }
+        }
+        put(&mut self.out, sol);
+        put(&mut self.a, a);
+        put(&mut self.pos, keep);
+        put(&mut self.kept_s, s);
+        put(&mut self.mean, mean);
+    }
+
+    /// Drop what is past [`KEEP_ENTRIES`].
+    fn release(&mut self) {
+        for v in [
+            &mut self.a,
+            &mut self.b,
+            &mut self.bs,
+            &mut self.sol,
+            &mut self.out,
+            &mut self.kept_s,
+            &mut self.mean,
+            &mut self.scale,
+        ] {
+            if v.capacity() > KEEP_ENTRIES {
+                *v = Vec::new();
+            }
+        }
+        for v in [&mut self.cols, &mut self.pos] {
+            if v.capacity() > KEEP_ENTRIES {
+                *v = Vec::new();
+            }
+        }
+    }
+}
+
+thread_local! {
+    /// The lists a solve on this thread works in ([`SolveBufs`]), lent to
+    /// each solve and left here for the next, whichever model runs it: a
+    /// thread runs one solve at a time, so a stream of a thousand groups
+    /// keeps one set, hot in cache, where a set a model was a few
+    /// kilobytes a group.
+    static SOLVE_BUFS: std::cell::Cell<Option<Box<SolveBufs>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// What a solve works in: the lists it formed and dropped each time, a
+/// dozen allocations a solve at five features. One set a thread
+/// ([`SOLVE_BUFS`]), written in full before each is read, so a solve gives
+/// the bits one that made them afresh gave.
+#[derive(Default)]
+struct SolveBufs {
+    combos: Vec<(usize, usize)>,
+    readers: Vec<usize>,
+    zidx: Vec<usize>,
+    /// The readiness shares' starting values, and the running sums of the
+    /// check that they are numbers.
+    sup0: Vec<f64>,
+    cert: Vec<f64>,
+    /// The targets' uncentred right-hand sides, where a solve reads them.
+    r: Vec<Vec<f64>>,
+    parts: Parts,
+}
+
+/// One solved system, kept so a row's leverage can be read against the
+/// factor its fit came from (docs/WARMUP-AND-CONVERGENCE.md §2.1): the
+/// ridged, normalised sub-block the solve factorized, and how a feature row
+/// is mapped into its space.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct System {
+    /// Row-major `kk × kk`, the jitter excluded; the factor is rebuilt from
+    /// it on load. Symmetric, and kept as its lower triangle, the one the
+    /// factorization reads, formed alone by the solve ([`Solved::a`]) and
+    /// mirrored here: a system a build before task 294 saved, its upper
+    /// triangle read from the co-moments' own, loads as its lower triangle
+    /// mirrored, as the co-moments do ([`crate::LowerTriangle`]).
+    a: crate::LowerTriangle,
+    /// The accumulator index (`z` slot) of each kept column.
+    z: Vec<usize>,
+    /// The scale each kept column is divided by, and the mean subtracted.
+    s: Vec<f64>,
+    mean: Vec<f64>,
+    /// Centred, the intercept eliminated: its share of the leverage is then
+    /// the 1 of the mean.
+    centred: bool,
+    /// See [`Solved::scale`]. The Gram the system was solved from was a
+    /// field here, written at every solve and read nowhere; it left the
+    /// state at schema 38 (review round 4, CA11).
+    scale: f64,
+}
+
+/// What the last solve left for the readiness statistics
+/// (docs/WARMUP-AND-CONVERGENCE.md §2): per output slot (target-major, then
+/// combo), the effective degrees of freedom the fit used and each
+/// coefficient's data share; and, under `keep_factor`, the systems the
+/// per-row leverage is read against.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct Readiness {
+    /// Per slot: an eliminated intercept counts 1, each kept slope its share.
+    #[serde(default, with = "crate::humanfloat::vec_f64_or_tag")]
+    edf: Vec<f64>,
+    /// Per slot, `k_total` long: NaN in the intercept slot and outside the
+    /// slot's feature set, 0 for a column the standardiser dropped. Tagged
+    /// in the human-readable export, since the intercept's NaN is the rule.
+    #[serde(default, with = "crate::humanfloat::vec_vec_f64_or_tag")]
+    support: Vec<Vec<f64>>,
+    /// Per `(gram, combo)`, `gram * n_combos + combo`; empty unless kept.
+    systems: Vec<Option<System>>,
+    /// Per slot, its index into `systems`.
+    system_of: Vec<usize>,
+    /// Per slot, the last solve, until something reads its shares or the
+    /// stream's chunk is done: while one is here, it is the slot's `edf`
+    /// and `support`, computed on the first read, and the two stored above
+    /// are an earlier solve's. Not state: a save writes the shares it would
+    /// give (`serialize_settled`), and once a stream's rows of a chunk are
+    /// learned the bank stores them and drops the factor
+    /// ([`Readiness::settle`], through [`EwRidge::settle_readiness`]), so
+    /// the memory lasts only while a stream's chunk runs (docs/PLAN.md
+    /// tasks 140 and 265).
+    #[serde(skip)]
+    pending: Vec<Option<Arc<Pending>>>,
+    /// Pending solves nothing holds any more, emptied of their factors and
+    /// kept to be written over by the next solve's ([`Spare`]). Not state.
+    #[serde(skip)]
+    spare: crate::window::Kept<Spare>,
+}
+
+/// The pending solves a model has done with, each an `Arc` nothing else
+/// holds, its factor moved to the working space and its lists empty but for
+/// their capacity: a solve made one afresh at every solve, an allocation
+/// for the `Arc` and one for each of its lists. Not state: kept in a
+/// [`crate::window::Kept`], so a copy holds none.
+#[derive(Default)]
+struct Spare(Vec<Arc<Pending>>);
+
+impl Spare {
+    /// The most a model keeps: a pending solve's lists are a column's long.
+    const KEPT: usize = 64;
+
+    /// `old`, a pending solve its slot is done with: its factor, where
+    /// nothing else holds it, and the `Arc` kept to be written over. A solve
+    /// another slot still holds is left to that slot.
+    fn take_factor(&mut self, mut old: Arc<Pending>) -> Option<SpdFactor> {
+        let p = Arc::get_mut(&mut old)?;
+        let factor = std::mem::replace(&mut p.factor, SpdFactor::hollow());
+        p.shares = OnceLock::new();
+        if self.0.len() < Self::KEPT {
+            self.0.push(old);
+        }
+        Some(factor)
+    }
+
+    /// A pending solve of these parts, written over a kept one where there
+    /// is one: [`Pending`] as the solve built it, to the bit.
+    fn pending(
+        &mut self,
+        factor: SpdFactor,
+        lam: f64,
+        to: impl Iterator<Item = Option<usize>>,
+        edf0: f64,
+        sup0: &[f64],
+        cert: &mut Vec<f64>,
+    ) -> Arc<Pending> {
+        let numbers = lam.is_finite() && factor.inverse_is_finite_in(cert);
+        let mut arc = self.0.pop().unwrap_or_else(|| Arc::new(Pending::hollow()));
+        match Arc::get_mut(&mut arc) {
+            Some(p) => {
+                p.factor = factor;
+                p.lam = lam;
+                p.to.clear();
+                p.to.extend(to);
+                p.edf0 = edf0;
+                p.sup0.clear();
+                p.sup0.extend_from_slice(sup0);
+                p.numbers = numbers;
+                p.shares = OnceLock::new();
+                arc
+            }
+            // Kept unique, so not reached: made afresh all the same.
+            None => Arc::new(Pending {
+                factor,
+                lam,
+                to: to.collect(),
+                edf0,
+                sup0: sup0.to_vec(),
+                numbers,
+                shares: OnceLock::new(),
+            }),
+        }
+    }
+}
+
+/// One solve's shares, taken when something reads them (docs/PLAN.md task
+/// 140). `A⁻¹`'s diagonal is `O(k³)` and a solve runs every few rows:
+/// taken at every solve, it cost `ewridge` up to 21% of its throughput at
+/// `k = 20` and 46% at `k = 50` (docs/records/PERFORMANCE-LOG.md §29). Something reads
+/// it far less often: a `coef` row, by default one per group per chunk,
+/// and the noise gate only while its bound cannot decide. The arithmetic is
+/// the solve's, in its order, so the shares are the same bits whenever they
+/// are taken.
+#[derive(Debug)]
+struct Pending {
+    factor: SpdFactor,
+    /// The penalty on the diagonal plus the jitter the factor needed.
+    lam: f64,
+    /// Per kept column, in the factor's order: the accumulator slot its
+    /// share goes to, or `None` for an intercept, which is not a share.
+    to: Vec<Option<usize>>,
+    /// The degrees of freedom before any share: 1 for an eliminated
+    /// intercept.
+    edf0: f64,
+    /// `support` before any share: NaN outside the combo and in the
+    /// intercept, 0 for a column the standardiser dropped.
+    sup0: Vec<f64>,
+    /// Every share is sure to be a number: `lam` is finite and so is `A⁻¹`'s
+    /// diagonal ([`SpdFactor::inverse_is_finite`]). A share can be NaN --
+    /// no ridge and an inverse that overflowed make `1 − 0·∞` -- and then
+    /// the exact ratio is infinite, which the bound would not say.
+    numbers: bool,
+    shares: OnceLock<(f64, Vec<f64>)>,
+}
+
+impl Pending {
+    /// A pending solve with no factor and no lists, for [`Spare`] to write
+    /// over.
+    fn hollow() -> Self {
+        Self {
+            factor: SpdFactor::hollow(),
+            lam: 0.0,
+            to: Vec::new(),
+            edf0: 0.0,
+            sup0: Vec::new(),
+            numbers: false,
+            shares: OnceLock::new(),
+        }
+    }
+
+    /// The effective degrees of freedom and every coefficient's data share,
+    /// computed on the first read.
+    fn shares(&self) -> &(f64, Vec<f64>) {
+        self.shares.get_or_init(|| {
+            let inv = self.factor.inverse_diagonal(self.to.len());
+            let mut edf = self.edf0;
+            let mut sup = self.sup0.clone();
+            for (i2, to) in self.to.iter().enumerate() {
+                let share = (1.0 - self.lam * inv[i2]).clamp(0.0, 1.0);
+                edf += share;
+                if let Some(zi) = *to {
+                    sup[zi] = share;
+                }
+            }
+            (edf, sup)
+        })
+    }
+
+    /// Above or at the `edf` the shares would give, without taking them,
+    /// where they are sure to be numbers: each is then in `[0, 1]`, and
+    /// adding numbers no larger rounds to nothing larger, so `edf0 + k`
+    /// bounds the computed sum too. `None` where a share might be NaN.
+    fn edf_bound(&self) -> Option<f64> {
+        self.numbers.then_some(self.edf0 + self.to.len() as f64)
+    }
+}
+
+impl Readiness {
+    /// Slot `s`'s effective degrees of freedom.
+    fn edf_at(&self, s: usize) -> f64 {
+        match self.pending.get(s) {
+            Some(Some(p)) => p.shares().0,
+            _ => self.edf[s],
+        }
+    }
+
+    /// Slot `s`'s data shares, `k_total` long.
+    fn support_at(&self, s: usize) -> &[f64] {
+        match self.pending.get(s) {
+            Some(Some(p)) => &p.shares().1,
+            _ => &self.support[s],
+        }
+    }
+
+    /// A bound on slot `s`'s `edf` when its shares have not been taken yet
+    /// and are sure to be numbers; `None` when the exact value costs
+    /// nothing more to read, or a bound could not stand in for it.
+    fn edf_bound_at(&self, s: usize) -> Option<f64> {
+        match self.pending.get(s) {
+            Some(Some(p)) if p.shares.get().is_none() => p.edf_bound(),
+            _ => None,
+        }
+    }
+
+    fn has_pending(&self) -> bool {
+        self.pending.iter().any(Option::is_some)
+    }
+
+    /// Slot `s` has no fit, so no shares and no system: what a combo
+    /// skipped for no weight (review 2026-10-05, CA6), an empty window
+    /// (review round 4, CA1) and a target with no row (CC1) leave.
+    fn clear(&mut self, s: usize, work: &mut FactorWork) {
+        self.edf[s] = f64::NAN;
+        self.support[s].fill(f64::NAN);
+        self.set_pending(s, None, work);
+        self.system_of[s] = usize::MAX;
+    }
+
+    /// Slot `s`'s pending solve becomes `p`. The factor the one it replaces
+    /// waited on, once no other slot holds it, is kept in `work` for a
+    /// later solve to write over.
+    fn set_pending(&mut self, s: usize, p: Option<Arc<Pending>>, work: &mut FactorWork) {
+        if let Some(old) = std::mem::replace(&mut self.pending[s], p)
+            && let Some(factor) = self.spare.get().take_factor(old)
+        {
+            work.give(factor);
+        }
+    }
+
+    /// Take every pending solve's shares into the stored ones and drop the
+    /// factors they were read from.
+    fn settle(&mut self) {
+        for (s, slot) in self.pending.iter_mut().enumerate() {
+            if let Some(p) = slot.take() {
+                let (edf, sup) = p.shares();
+                self.edf[s] = *edf;
+                self.support[s].clone_from(sup);
+                // The factor is dropped: a stream at rest holds none. The
+                // `Arc` and its lists are kept for the next solve's.
+                drop(self.spare.get().take_factor(p));
+            }
+        }
+    }
+
+    /// A copy with every pending solve's shares taken: what the state holds.
+    fn settled(&self) -> Self {
+        let mut r = self.clone();
+        r.settle();
+        r
+    }
+}
+
+/// `Readiness` as the state carries it: every pending solve's shares taken,
+/// so a save writes the values a read would give, whenever it comes.
+fn serialize_settled<S: serde::Serializer>(r: &Readiness, s: S) -> Result<S::Ok, S::Error> {
+    if r.has_pending() {
+        r.settled().serialize(s)
+    } else {
+        r.serialize(s)
+    }
+}
+
+/// Two floats are the same value when their bits are: the intercept's share
+/// is NaN by definition, and `NaN != NaN` would make a model unequal to its
+/// own clone.
+fn same_bits(a: &[f64], b: &[f64]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+}
+
+impl PartialEq for Readiness {
+    /// On the values a read gives: a pending solve's shares, not the stale
+    /// ones stored beneath them.
+    fn eq(&self, other: &Self) -> bool {
+        let (a, b) = (settled_view(self), settled_view(other));
+        same_bits(&a.edf, &b.edf)
+            && a.support.len() == b.support.len()
+            && a.support
+                .iter()
+                .zip(&b.support)
+                .all(|(x, y)| same_bits(x, y))
+            && a.systems == b.systems
+            && a.system_of == b.system_of
+    }
+}
+
+/// A `Readiness` as its values stand, borrowed where nothing is pending.
+fn settled_view(r: &Readiness) -> Cow<'_, Readiness> {
+    if r.has_pending() {
+        Cow::Owned(r.settled())
+    } else {
+        Cow::Borrowed(r)
+    }
+}
+
+/// The kept factors, one per entry of `Readiness::systems`. Not state: a
+/// deterministic function of the systems, rebuilt on load, and no part of
+/// what two models are compared on.
+///
+/// Beside them, the solves' working space ([`FactorWork`]): faer's scratch,
+/// and the factors the solves have done with -- a pending solve's that the
+/// next solve of its slots replaced, a kept one the next replaced -- each
+/// written over by a later factorization of its order. A solve made a
+/// factor's matrix and faer's scratch afresh and dropped them a solve
+/// later, at every solve (task 301). A factor is [`SpdFactor::of`]'s, to
+/// the bit. The working space is shown by no `Debug` (a state's digest
+/// reads the model's), a copy holds none, and
+/// [`EwRidge::settle_readiness`] drops its factors with the pending ones,
+/// keeping the scratch. Boxed,
+/// and made at the first solve: held inline it made every model the
+/// working space's size larger, solving or not.
+#[derive(Default)]
+struct Factors {
+    kept: Vec<Option<SpdFactor>>,
+    work: Option<Box<FactorWork>>,
+}
+
+/// The factors; the working space is not copied.
+impl Clone for Factors {
+    fn clone(&self) -> Self {
+        Self {
+            kept: self.kept.clone(),
+            work: None,
+        }
+    }
+}
+
+/// The factors, as `derive(Debug)` wrote them when they were held alone:
+/// the working space is not shown.
+impl std::fmt::Debug for Factors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Factors").field(&self.kept).finish()
+    }
+}
+
+impl PartialEq for Factors {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+/// Kish's size behind each Gram ([`EwRidge::gram_kish`]): the window's, a
+/// list the window's subtraction makes, or the live accumulators', read
+/// where they stand.
+enum GramKish<'a> {
+    Window(Vec<Option<f64>>),
+    Live(&'a [EwCov]),
+}
+
+impl GramKish<'_> {
+    /// Gram `g`'s size; `None` for a Gram with no weight, or no Kish sum.
+    #[inline]
+    fn of(&self, g: usize) -> Option<f64> {
+        match self {
+            Self::Window(sizes) => sizes.get(g).copied().flatten(),
+            Self::Live(grams) => grams.get(g).and_then(EwCov::n_kish),
+        }
+    }
+}
+
+impl EwRidge {
+    /// [`OnlineModel::predict`], into the caller's buffer: what `step`
+    /// reports, read before the row (task 270, M-4).
+    fn predict_into(&self, x: &[f64], d_clock: f64, out: &mut Step) {
+        debug_assert_eq!(x.len(), self.cfg.n_features);
+        if let Some(refused) = crate::model::refused_predict(self, x, d_clock) {
+            *out = refused;
+            return;
+        }
+        let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
+        // The gate and the per-target test read the window's weights, so a
+        // target with nothing in the window reports nothing (C2) -- the
+        // weights alone, not the O(k²) view, which is the solve's and was
+        // built here every row for these two numbers (review 2026-09-12, P1).
+        let weights = self.window_weights();
+        let (n_eff, wj) = match weights.as_ref() {
+            Some((w, wj)) => (*w, wj.as_slice()),
+            None => (self.acc.cross.w, self.acc.wj.as_slice()),
+        };
+        out.pred.clear();
+        out.pred.resize(m * nc, f64::NAN);
+        let pred = &mut out.pred;
+        if let (true, Some(beta)) = (n_eff >= self.cfg.min_weight, &self.beta) {
+            for j in 0..m {
+                if wj[j] > 0.0 {
+                    for c in 0..nc {
+                        pred[j * nc + c] = dot_aug(&beta[j * nc + c], x, self.cfg.fit_intercept);
+                    }
+                }
+            }
+        }
+        out.n_eff = n_eff;
+        out.extra = None;
+    }
+}
+
+impl OnlineModel for EwRidge {
+    fn set_solve_share(&mut self, share: Option<f64>) {
+        self.cfg.solve_share = share;
+    }
+
+    fn set_first_period_by_share(&mut self, on: bool) {
+        self.first_period_by_share =
+            on && crate::since::explicit_cadence(self.cfg.solve_share, self.cfg.solve_every);
+    }
+
+    fn solve_share(&self) -> Option<f64> {
+        self.cfg.solve_share
+    }
+
+    /// The window keys the row's snapshot by its stamp (task 175), and the
+    /// solve cadence measures its clock by it (task 180).
+    fn stamp_next(&mut self, stamp: crate::Stamp) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.stamp_next(stamp);
+        }
+        self.since_solve.stamp_next(stamp);
+    }
+
+    /// On the row clock the solve cadence counts from a row before the
+    /// first, as `max_rows_between_solves` does (task 278, D13).
+    fn stamp_next_on_rows(&mut self, stamp: crate::Stamp) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.stamp_next(stamp);
+        }
+        self.since_solve.stamp_next_on_rows(stamp);
+    }
+
+    fn set_window_budget(&mut self, budget: Option<crate::WindowBudget>) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.set_budget(budget);
+        }
+    }
+
+    /// Every Gram's, the slow twin's too: a block's merge under
+    /// `gram_block_rows`, the per-row update otherwise.
+    fn set_gram_threads(&mut self, threads: usize) {
+        self.acc.set_threads(threads);
+        if let Some(slow) = self.slow.as_mut() {
+            slow.set_threads(threads);
+        }
+    }
+
+    fn set_window_closed(&mut self, closed: crate::WindowClosed) {
+        if let Some(win) = self.win.as_mut() {
+            win.snaps.set_closed(closed);
+        }
+    }
+
+    fn window_over_budget(&self) -> Option<(usize, crate::Cadence)> {
+        self.win.as_ref().and_then(|win| win.snaps.over_budget())
+    }
+
+    /// The ring's shadow, its snapshots formed as the step forms them
+    /// (docs/PLAN.md task 115 (d)).
+    fn window_shadow(&self) -> Option<crate::WindowShadow> {
+        let win = self.win.as_ref()?;
+        Some(crate::WindowShadow::new(win.clock, &win.snaps, || {
+            self.next_snapshot()
+        }))
+    }
+
+    fn window_could_refuse(&self, rows: usize) -> bool {
+        self.win
+            .as_ref()
+            .is_some_and(|win| win.snaps.could_refuse(rows, || self.next_snapshot()))
+    }
+    fn target_n_eff_into(&self, out: &mut Vec<f64>) -> bool {
+        out.clear();
+        match self.window_weights() {
+            Some((_, wj)) => out.extend_from_slice(&wj),
+            None => out.extend_from_slice(&self.acc.wj),
+        }
+        true
+    }
+
+    /// `sqrt(1 + edf / n_kish)` per slot: the last solve's effective degrees
+    /// of freedom over Kish's sample size behind the Gram the target reads
+    /// now, as it stands before the row (docs/WARMUP-AND-CONVERGENCE.md
+    /// §2.1). Infinite before the first solve and where the Gram has no
+    /// weight; NaN where the fit is withheld as too ill-conditioned to carry
+    /// a digit ([`EwRidge::ill_conditioned`]), which has no estimation
+    /// variance to read.
+    fn error_inflation_into(&self, out: &mut Vec<f64>) -> bool {
+        self.inflation_into(out, f64::NEG_INFINITY)
+    }
+
+    /// The gate needs only which side of `limit` a slot is on, so where a
+    /// solve's shares have not been taken and the `edf` bound already puts
+    /// the ratio below it, the bound stands in and the `O(k³)` read waits
+    /// (docs/PLAN.md task 140).
+    fn error_inflation_gate_into(
+        &self,
+        _x: &[f64],
+        _d_clock: f64,
+        out: &mut Vec<f64>,
+        limit: f64,
+    ) -> bool {
+        self.inflation_into(out, limit)
+    }
+
+    /// `sqrt(1 + h(x))` per slot, `h(x)` the row's leverage against the
+    /// factor its fit came from over Kish's sample size: for a centred
+    /// system the mean's own `1` plus the centred, scaled row's quadratic
+    /// form; for a raw one the row's form alone, scaled back to the
+    /// mean-form Gram's units under `ridge_scale`. A system that kept no
+    /// column has an empty form: the intercept alone reads `sqrt(1 + 1 /
+    /// n_kish)`, the summary's value at `edf = 1`, and the zero fit through
+    /// the origin reads 1 (task 218). Infinite before the first solve, and
+    /// where no system was kept ([`EwRidge::set_keep_factor`]); NaN where a
+    /// feature the system kept is not a number, whose form is NaN, not the
+    /// 0 the form's clamp once made of it (task 181). Read for output only:
+    /// nothing here reaches the state.
+    fn row_error_inflation_into(&self, x: &[f64], _d_clock: f64, out: &mut Vec<f64>) -> bool {
+        let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
+        out.clear();
+        out.resize(m * nc, f64::INFINITY);
+        if self.beta.is_none()
+            || self.ready.system_of.len() != m * nc
+            || self.n_eff() < self.cfg.min_weight
+        {
+            return true;
+        }
+        let kish = self.gram_kish();
+        let mut v = Vec::new();
+        for j in 0..m {
+            let Some(n) = kish.of(self.acc.grams.of[j]) else {
+                continue;
+            };
+            if n <= 0.0 {
+                continue;
+            }
+            for c in 0..nc {
+                let slot = j * nc + c;
+                if self.slot_ill(slot) {
+                    out[slot] = f64::NAN;
+                    continue;
+                }
+                let Some((sys, factor)) = self.kept_system(slot) else {
+                    continue;
+                };
+                let q = factor.map_or(0.0, |factor| {
+                    v.clear();
+                    v.extend(
+                        sys.z
+                            .iter()
+                            .zip(&sys.s)
+                            .zip(&sys.mean)
+                            .map(|((&zi, &s), &mu)| (self.z_at(x, zi) - mu) / s),
+                    );
+                    factor.quad_forms(&v, sys.z.len(), 1)[0] * sys.scale
+                });
+                let h = (q + if sys.centred { 1.0 } else { 0.0 }) / n;
+                out[slot] = (1.0 + h).sqrt();
+            }
+        }
+        true
+    }
+
+    /// Per slot, each coefficient's variance over the noise in `coef`'s
+    /// units: `T M Tᵀ`'s diagonal with `M = scale · A⁻¹ / n_kish` in the
+    /// kept system's coordinates (docs/WARMUP-AND-CONVERGENCE.md §7.1;
+    /// docs/PLAN.md task 116, F), read against the factor the fit came from
+    /// and Kish's size as it stands. `M` is `h(x)`'s matrix, `h(x) = x' M x`:
+    /// a slope `zᵢ`'s is `M_ii / sᵢ²`; a centred system's intercept,
+    /// `β₀ = ȳ − Σ (mᵢ / sᵢ) solᵢ`, adds the mean's own `1 / n_kish` to the
+    /// slopes' share through `u = m / s`, `(1 + scale · u' A⁻¹ u) / n_kish`,
+    /// which is `h` at the features' origin: `1 / n_kish` where the system
+    /// kept no column, the intercept alone (task 218). It ignores the
+    /// ridge's sandwich, `A⁻¹ G A⁻¹ ≤ A⁻¹`, so it errs large under a ridge.
+    /// NaN outside the slot's feature set and for a column the standardiser
+    /// dropped, whose coefficient no data estimates. `None` unless the
+    /// systems are kept ([`EwRidge::set_keep_factor`]), and before the first
+    /// solve.
+    fn coef_variance(&self) -> Option<crate::CoefVariance> {
+        if !self.keep_factor {
+            return None;
+        }
+        self.beta.as_ref()?;
+        let (m, nc, k) = (self.cfg.n_targets, self.cfg.n_combos(), self.cfg.k_total());
+        if self.ready.system_of.len() != m * nc {
+            return None;
+        }
+        let kish = self.gram_kish();
+        let mut out = vec![vec![f64::NAN; k]; m * nc];
+        for j in 0..m {
+            let Some(n) = kish.of(self.acc.grams.of[j]) else {
+                continue;
+            };
+            if n.is_nan() || n <= 0.0 {
+                continue;
+            }
+            for c in 0..nc {
+                let slot = j * nc + c;
+                let Some((sys, factor)) = self.kept_system(slot) else {
+                    continue;
+                };
+                let kk = sys.z.len();
+                let v = &mut out[slot];
+                if let Some(factor) = factor {
+                    let inv = factor.inverse_diagonal(kk);
+                    for (i2, &zi) in sys.z.iter().enumerate() {
+                        v[zi] = sys.scale * inv[i2] / (n * sys.s[i2] * sys.s[i2]);
+                    }
+                }
+                if sys.centred {
+                    let u: Vec<f64> = sys.mean.iter().zip(&sys.s).map(|(mu, s)| mu / s).collect();
+                    let q =
+                        factor.map_or(0.0, |factor| factor.quad_forms(&u, kk, 1)[0] * sys.scale);
+                    v[0] = (1.0 + q) / n;
+                }
+            }
+        }
+        Some(crate::CoefVariance::PerNoise(out))
+    }
+
+    fn support_coef(&self) -> Option<Vec<Vec<f64>>> {
+        self.beta.as_ref()?;
+        let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
+        (self.ready.support.len() == m * nc).then(|| {
+            (0..m * nc)
+                .map(|s| self.ready.support_at(s).to_vec())
+                .collect()
+        })
+    }
+
+    fn support_coef_into(&self, out: &mut Vec<f64>) -> bool {
+        out.clear();
+        if self.beta.is_none() {
+            return false;
+        }
+        let (m, nc) = (self.cfg.n_targets, self.cfg.n_combos());
+        if self.ready.support.len() != m * nc {
+            return false;
+        }
+        out.reserve_exact((0..m * nc).map(|s| self.ready.support_at(s).len()).sum());
+        for s in 0..m * nc {
+            out.extend_from_slice(self.ready.support_at(s));
+        }
+        true
+    }
+
+    /// The step, into the caller's buffer (task 270, M-4).
+    fn step_into(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        weight: f64,
+        out: &mut Step,
+    ) {
+        debug_assert_eq!(x.len(), self.cfg.n_features);
+        debug_assert_eq!(y.len(), self.cfg.n_targets);
+        // A value that is not usable, by the rule every model keeps
+        // (`OnlineModel`): a feature that is not a number reached the Gram
+        // through the zero-weight update's `0 · d`, and an infinite target
+        // the cross-moment through its `0 · dy` (docs/PLAN.md task 183).
+        // Under a blocked Gram the refused row is held as a row of zeros at
+        // weight 0, where the row itself at weight 0 would be held as it is:
+        // the block closes on the same row, and merges to the same moments.
+        if let Some(refused) = crate::model::refused_step(self, x, y, d_clock, weight) {
+            *out = refused;
+            return;
+        }
+        let m = self.cfg.n_targets;
+        let nc = self.cfg.n_combos();
+        let lam = self.cfg.decay.factor(d_clock);
+        let gaps = self.cfg.target_gaps;
+        self.z(x);
+
+        // ---- predict (state before this row's update) ----
+        self.predict_into(x, d_clock, out);
+        // Where `min_weight` withholds the row's prediction and the model's
+        // own floor is lower ([`Self::set_min_weight_output_only`]), the
+        // variance folds the prediction at that floor: the one the model
+        // keeps with no `min_weight` above it makes, read from the same
+        // state (task 278). A second read only on those rows -- the
+        // warm-up, and the rows after a long gap.
+        // Read here, before the update: a window's snapshot ring moves to
+        // the row's clock below, and a read after it took the window's
+        // weight at the new clock, which the model at the floor never
+        // reads, so `sig2` parted from that model's under a window
+        // (task 281, the ewridge `step_into` survivors).
+        let floor = self.own_floor();
+        let below = if floor < self.cfg.min_weight && out.n_eff < self.cfg.min_weight {
+            let gate = std::mem::replace(&mut self.cfg.min_weight, floor);
+            let mut at = Step::default();
+            self.predict_into(x, d_clock, &mut at);
+            self.cfg.min_weight = gate;
+            Some(at.pred)
+        } else {
+            None
+        };
+
+        // ---- update ----
+        // The slow twin sees the same rows under its own, longer half-life.
+        if let (Some(slow), Some(h)) = (self.slow.as_mut(), self.cfg.long_half_life) {
+            let slow_lam = Decay::Halflife(h).factor(d_clock);
+            slow.learn(&self.zbuf, y, slow_lam, weight, gaps);
+        }
+        // The snapshot is every accumulator as it stands *before* this row,
+        // decayed to this row's clock, so subtracting it later retains this
+        // row and everything after. Keyed by the row's stamp (task 175)
+        // beside a clock the model accumulates itself, so the boundary cannot
+        // depend on the chunking.
+        if let Some(win) = self.win.as_mut() {
+            // Built inside the closure, so the O(k²) snapshot is only formed
+            // on the rows `offer` actually keeps -- the cadence's --
+            // rather than on every row and then dropped (review 2026-09-18,
+            // P1). The closure reads `acc`/`wsig`/`sig2`, disjoint fields from
+            // `win`, so the borrows do not collide.
+            win.snaps
+                .learn_decayed(&mut win.clock, d_clock, &[lam], || RidgeOf {
+                    acc: crate::gaps::AccSnapOf {
+                        acc: &self.acc,
+                        lam,
+                    },
+                    wsig: &self.wsig,
+                    sig2: &self.sig2,
+                });
+        }
+        let pred = below.as_deref().unwrap_or(&out.pred);
+        // EW residual variance from the primary (first-combo) pred. Its
+        // weight ages on every row, and a row with a target, a weight and a
+        // prediction adds its squared residual. A row with a target and no
+        // prediction -- `min_weight` unmet after a clock gap, say -- ages it
+        // as a null row does; it aged nothing, so `σ²` forgot less across
+        // such rows than the clock says (N6).
+        for j in 0..m {
+            let aged = lam * self.wsig[j];
+            match y[j] {
+                Some(yj) if weight > 0.0 && pred[j * nc].is_finite() => {
+                    let resid = yj - pred[j * nc];
+                    let ws_new = aged + weight;
+                    self.sig2[j] = (aged * self.sig2[j] + weight * resid * resid) / ws_new;
+                    self.wsig[j] = ws_new;
+                }
+                _ => self.wsig[j] = aged,
+            }
+        }
+        // Read before the row moves the target weights.
+        let own_first = self.own_first_solve(y, lam, weight);
+        self.acc.learn(&self.zbuf, y, lam, weight, gaps);
+
+        // ---- solve schedule ----
+        // The clock since the last solve, on the row's stamp (task 180).
+        self.since_solve.step(d_clock);
+        // A zero-weight row is clock alone (hard rule 9): it is no row of
+        // the row cap, and it never solves. A solve the clock or the weight's
+        // share brings due on it is due on the next row with weight too --
+        // the clock since the last solve only grows, and that row's weight
+        // and `n_eff` are the stream's without the zero-weight row -- so it
+        // waits for that row, and the solves fall on the rows they fall on
+        // without it. A clock-due solve fired on the zero-weight row, before
+        // the next row's data, where the stream without it solved after
+        // them, and the fit read until the next solve moved (docs/PLAN.md
+        // task 214).
+        if weight <= 0.0 {
+            return;
+        }
+        // A weight here is usable, finite and `>= 0` (`OnlineModel::step`;
+        // `refused_step` steps a row whose weight is not as a row of 0).
+        self.rows_since_solve += 1;
+        self.weight_since_solve += weight;
+        // The explicit cadence: the clock or the row cap since the last
+        // solve, or, in its first period, since the model's start. Not read
+        // under a weight share, whose rows it leaves as they were.
+        let explicit = self.cfg.solve_share.is_none()
+            && (crate::since::clock_due(&self.since_solve, self.cfg.solve_every)
+                || self.rows_since_solve >= self.cfg.max_rows_between_solves);
+        let first = self.in_first_period();
+        let by_share = |share: f64| self.weight_since_solve >= share * self.n_eff();
+        let by_cadence = match self.cfg.solve_share {
+            Some(share) => by_share(share),
+            // Until the explicit cadence's first period has passed, the
+            // default schedule's solves too (task 278, "Default cadence
+            // first"; `crate::since::FirstPeriod`).
+            None => explicit || (first && by_share(crate::DEFAULT_SOLVE_SHARE)),
+        };
+        // A fresh model's first solve fires on the row its weight reaches
+        // `min_weight`; so does a target's own, on the row its own weight
+        // first reaches its own, where no solve has fit it -- a target that
+        // joins after the first solve. It waited for the cadence's next
+        // solve, null until then: under `solve_every = 1000` all 56 of its
+        // rows of 80 (review round 4, CC1; docs/PLAN.md task 195, S9b).
+        let due = by_cadence
+            || self.rows_since_solve >= self.cfg.max_rows_between_solves
+            || (self.beta.is_none() && self.n_eff() >= self.own_floor())
+            || own_first;
+        if due {
+            let period = crate::since::FirstPeriod::keep(
+                first && !explicit,
+                &self.since_solve,
+                self.rows_since_solve,
+            );
+            // A solve no row can read before the next one comes due is not
+            // run, and the schedule moves on as after it (`unread`'s module
+            // docs; task 311): under a share, one the row cap brings due too
+            // (task 364). An explicit cadence's solves run.
+            if !explicit && self.solve_is_unread(first) {
+                self.pass_unread_solve();
+            } else {
+                self.solve();
+                self.first_period_by_share &= !(first && explicit);
+            }
+            period.put_back(&mut self.since_solve, &mut self.rows_since_solve);
+        }
+    }
+
+    /// The prediction at another `min_weight` floor, set for the read and
+    /// put back ([`OnlineModel::predict_with_floor`]).
+    fn predict_with_floor(
+        &mut self,
+        x: &[f64],
+        y: &[Option<f64>],
+        d_clock: f64,
+        floor: f64,
+    ) -> Step {
+        let floor = std::mem::replace(&mut self.cfg.min_weight, floor);
+        let own = std::mem::take(&mut self.target_min_weight);
+        let out = OnlineModel::predict_with(self, x, y, d_clock);
+        self.cfg.min_weight = floor;
+        self.target_min_weight = own;
+        out
+    }
+
+    fn predict(&self, x: &[f64], d_clock: f64) -> Step {
+        let mut out = Step::default();
+        self.predict_into(x, d_clock, &mut out);
+        out
+    }
+
+    fn predict_with_into(&self, x: &[f64], _y: &[Option<f64>], d_clock: f64, out: &mut Step) {
+        self.predict_into(x, d_clock, out);
+    }
+
+    fn state(&self) -> State {
+        State::new(ModelState::EwRidge(Box::new(self.clone())))
+    }
+
+    fn restore(s: &State) -> Result<Self, StateError> {
+        Self::restore_owned(s.clone())
+    }
+
+    /// [`Self::restore`] taking the state, so its model is moved, not cloned.
+    fn restore_owned(s: State) -> Result<Self, StateError> {
+        check_schema(&s)?;
+        match s.model {
+            ModelState::EwRidge(m) => {
+                let mut m = *m;
+                crate::model::check_cfg("ewridge", m.cfg.validate())?;
+                let (n, k) = (m.cfg.n_targets, m.cfg.k_total());
+                // The slow twin exactly when `session_shrink` asks for one:
+                // without it the blend was a silent no-op (review 2026-10-05,
+                // CA1).
+                let twin = m.slow.is_some() == m.cfg.session_shrink.is_some()
+                    && m.slow.as_ref().is_none_or(|s| s.has_shape(n, k));
+                // The fit and the readiness statistics at the cfg's shape, as
+                // `lasso` and `rls` check theirs: an empty `beta` loaded and
+                // `predict` panicked, a short slot predicted a constant, and
+                // an empty `edf` withheld every row (review 2026-10-05, CA1).
+                let fit = m.fit_has_shape();
+                // A ring exactly when the cfg has a window (review 2026-09-26,
+                // C5: `ew_cov`, `lasso` and `ew_class` checked this, this one
+                // did not, and ran unwindowed without a word).
+                if !m.acc.has_shape(n, k)
+                    || !twin
+                    || !fit
+                    || m.wsig.len() != n
+                    || m.sig2.len() != n
+                    || m.win.is_some() != m.cfg.window.is_some()
+                {
+                    return Err(crate::model::damaged(
+                        "ewridge",
+                        "its running sums have the wrong shape",
+                    ));
+                }
+                // Every snapshot of the window too: `view()` reads the
+                // boundary's per-target vectors and Grams (review
+                // 2026-10-06, CA2).
+                if let Some(win) = &m.win
+                    && !win.snaps.iter().all(|s| s.has_shape(n, k))
+                {
+                    return Err(crate::model::damaged(
+                        "ewridge",
+                        "the snapshots it keeps for its hard window have the wrong shape",
+                    ));
+                }
+                if crate::model::check_target_min_weight("ewridge", &m.target_min_weight, n)
+                    .is_err()
+                {
+                    return Err(crate::model::damaged(
+                        "ewridge",
+                        "its saved per-target min_weight values do not match its targets",
+                    ));
+                }
+                // The runs follow the window, not the file (review 2026-09-26,
+                // C4; `EwCovModel::restore` says why).
+                match m.cfg.window {
+                    None => {
+                        m.acc.set_runs_off();
+                        if let Some(slow) = m.slow.as_mut() {
+                            slow.set_runs_off();
+                        }
+                    }
+                    Some(_) if !m.acc.keeps_runs() => {
+                        return Err(crate::model::damaged(
+                            "ewridge",
+                            "it has a hard window, but it saved nothing its window reads",
+                        ));
+                    }
+                    Some(_) => {}
+                }
+                m.zbuf = vec![0.0; k];
+                m.refactor();
+                Ok(m)
+            }
+            other => Err(StateError::WrongModel {
+                expected: "ewridge",
+                found: other.kind(),
+            }),
+        }
+    }
+
+    fn n_targets(&self) -> usize {
+        self.cfg.n_targets
+    }
+
+    fn n_features(&self) -> usize {
+        self.cfg.n_features
+    }
+
+    fn n_outputs(&self) -> usize {
+        self.cfg.n_targets * self.cfg.n_combos()
+    }
+}
+
+mod unread;
+
+#[cfg(test)]
+mod tests;
+
+#[cfg(test)]
+mod condition_tests;
+
+#[cfg(test)]
+mod unread_tests;
+
+#[cfg(test)]
+mod output_only_tests;
+
+#[cfg(test)]
+mod factor_work_tests;
+
+#[cfg(test)]
+mod solve_scratch_tests;

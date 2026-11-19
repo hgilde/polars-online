@@ -16,7 +16,7 @@ import numpy as np  # noqa: E402
 import polars as pl  # noqa: E402
 from leafrefit import train_trees  # noqa: E402
 
-import polars_online as po  # noqa: E402
+import rheon as po  # noqa: E402
 
 print(C.load_line(), flush=True)
 df = C.load_flights()

@@ -1,0 +1,6554 @@
+//! The window core (docs/PLAN.md tasks 78, 143 and 144): exponentially
+//! weighted operators over a stream, looking back and ahead, one pass,
+//! O(window) memory, exact.
+//!
+//! Everything stateful is a *kernel*: a direction, a half-life, a window and
+//! a `closed` rule on the policy clock. Any number of *operators* share a
+//! kernel's queue -- a time-weighted mean, a decayed sum, a rate -- each
+//! reading one input of the row. The formula around the operators is
+//! Polars' (`formula.rs`), and an `increment` is the frame runner's; this
+//! core sees neither.
+//!
+//! **Definitions**, each held to a brute-force loop in the tests:
+//!
+//! - `ewm_mean` / `rewm_mean`: the time-weighted mean, Polars' `ewm_mean_by`.
+//!   Looking back, row `i`'s value is held over `(t_{i-1}, t_i]`, the first
+//!   value of a stretch from before it (`-inf`, as `ewm_mean_by`'s `a_1 = 1`;
+//!   from `t_1 - w` under a window of `w`); the mean over `(T - w, T]` weighs
+//!   each held value by `∫ λ^(T - s) ds` over its interval inside the
+//!   window. Looking ahead, value `j` is held over `[t_j, t_{j+1})`, until
+//!   the next row, and weighed by `∫ λ^(s - t) ds` inside `(t, t + w]`. A
+//!   row at a repeated stamp holds no interval, so it moves no mean -- as in
+//!   Polars.
+//! - `ewm_sum` / `rewm_sum`: `Σ λ^|t_j - t| x_j` over the rows of the window,
+//!   each counted once at its own time (`ewm_sum_by` on distinct stamps; at
+//!   a repeated stamp every row holds the stamp's whole window, so each
+//!   carries the stamp's total where `ewm_sum_by`'s is a running sum).
+//! - `ewm_rate` / `rewm_rate`: the sum over the decayed time the window
+//!   covers, `∫_0^T λ^s ds = h/ln2 · (1 - 2^(-T/h))`, `T` the window's span
+//!   inside the stretch.
+//! - `ewm_var` / `ewm_std` (task 212), looking back only: the variance about
+//!   `ewm_mean`, each value weighed by the mean's weight `m_i`, its held
+//!   interval's decayed mass inside the window: `Σ m_i (x_i - μ)² / V1`
+//!   with `μ = Σ m_i x_i / V1`, `V1 = Σ m_i`; unless `bias`, times
+//!   `V1² / (V1² - V2)`, `V2 = Σ m_i²`, the correction for unequal weights
+//!   Polars' `ewm_var` applies to its own, null where one row carries all
+//!   the weight (`V1² = V2`). `ewm_std`
+//!   is its root. On a clock that steps by 1 a row these are Polars'
+//!   `ewm_var` and `ewm_std` under `adjust = False`, the form `ewm_mean_by`
+//!   is: a stretch's first value is held from before it, so it weighs
+//!   `(1 - α)^(n-1)` as `adjust = False`'s first row does. A variance's
+//!   sums are merged about their means -- `(V1, μ, M2)` by Chan, Golub and
+//!   LeVeque's pairwise update, `M2 = M2_a + M2_b + δ² V1_a V1_b / V1` --
+//!   never as a mean square less a squared mean, so a window holding one
+//!   value is 0 exactly, and the mean is a compensated pair
+//!   (`rheon_core::comp`), so a variance at a level decays with its
+//!   history rather than settling on the square of a stalled mean's gap.
+//!
+//! **Which rows a window holds** follows Polars' `rolling_*_by`: a window is
+//! a set of timestamps. `closed = "right"`, the default, is `(T - w, T]`
+//! looking back and `(t, t + w]` looking ahead; `"left"`, `"both"` and
+//! `"none"` move the ends. Every row at one stamp gets the same backward
+//! window, later rows at that stamp included, so under `"right"` and
+//! `"both"` a backward output waits for the next distinct stamp; under
+//! `"left"` and `"none"` the stamp's own rows are outside, and the output
+//! is known as the stamp arrives. A forward window counts a row exactly `w`
+//! later under `"right"` and `"both"`.
+//!
+//! **Clock events** are task 78's: a gap past `gap_cap` or a session change
+//! ends every window open across it (partial, under each operator's
+//! `partial`); a reset discards them (null, never dropped); a group that
+//! falls silent is cut once the stream's clock is `gap_cap` past its last
+//! row. A forward `"right"` or `"both"` window whose far edge is the last
+//! row before such a cut or reset holds every timestamp it can, and is
+//! whole, as its backward mirror is (tasks 160 and 173). Only a clock column
+//! cuts a silent group, so the frame runner and the specs refuse a forward
+//! window under groups without one (`spec.rs`, `clock_cfg_of`; task 173):
+//! on a row-count clock a silent group's clock never moves, and its open
+//! windows would hold every later row. Rows leave in input order, each once
+//! every window over it has resolved.
+
+use std::cmp::Ordering;
+use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+
+use rheon_core::{ClockAdvance, ClockCfg, ClockState, ClockValue, Stamp, seconds_of_ns};
+use serde::{Deserialize, Serialize};
+
+use crate::stream::usable;
+use crate::window_quantile::QSide;
+
+/// Which way a window looks from its row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+    /// The rows at or before the row, less than `window_size` older.
+    Backward,
+    /// The rows after the row, at most `window_size` later.
+    Forward,
+}
+
+/// Which ends of a window are in it, as Polars' `closed` says it. The
+/// windowed models take it too, `Right` or `Both` (`crate::spec`,
+/// docs/PLAN.md task 196).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Closed {
+    /// `(T - w, T]` back, `(t, t + w]` ahead: Polars' default.
+    #[default]
+    Right,
+    /// `[T - w, T)` back, `[t, t + w)` ahead.
+    Left,
+    /// `[T - w, T]` back, `[t, t + w]` ahead.
+    Both,
+    /// `(T - w, T)` back, `(t, t + w)` ahead.
+    #[serde(rename = "none")]
+    Neither,
+}
+
+impl Closed {
+    pub fn name(self) -> &'static str {
+        match self {
+            Closed::Right => "right",
+            Closed::Left => "left",
+            Closed::Both => "both",
+            Closed::Neither => "none",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "right" => Some(Closed::Right),
+            "left" => Some(Closed::Left),
+            "both" => Some(Closed::Both),
+            "none" => Some(Closed::Neither),
+            _ => None,
+        }
+    }
+
+    /// Whether the end at the row's own stamp is in the window: `T` of a
+    /// backward window, `t` of a forward one.
+    fn near(self, direction: Direction) -> bool {
+        match direction {
+            Direction::Backward => matches!(self, Closed::Right | Closed::Both),
+            Direction::Forward => matches!(self, Closed::Left | Closed::Both),
+        }
+    }
+
+    /// Whether the end a window away is in it: `T - w` of a backward window,
+    /// `t + w` of a forward one.
+    fn far(self, direction: Direction) -> bool {
+        match direction {
+            Direction::Backward => matches!(self, Closed::Left | Closed::Both),
+            Direction::Forward => matches!(self, Closed::Right | Closed::Both),
+        }
+    }
+}
+
+/// What a window cut short before its span passed gives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Partial {
+    /// The value over what the window saw.
+    Keep,
+    /// Null.
+    Null,
+    /// The row leaves the output.
+    Drop,
+}
+
+impl Partial {
+    pub fn name(self) -> &'static str {
+        match self {
+            Partial::Keep => "keep",
+            Partial::Null => "null",
+            Partial::Drop => "drop",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "keep" => Some(Partial::Keep),
+            "null" => Some(Partial::Null),
+            "drop" => Some(Partial::Drop),
+            _ => None,
+        }
+    }
+}
+
+/// What an operator computes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Stat {
+    Mean,
+    Sum,
+    Rate,
+    /// The variance about the mean, under the mean's weights (task 212).
+    Var,
+    /// The variance's root.
+    Std,
+    /// The quantile at an operator's level of the values in the window, each
+    /// weighed as a sum weighs it (task 272 (d), `window_quantile.rs`).
+    Quantile,
+}
+
+impl Stat {
+    /// Whether a value weighs its held interval's mass, as a mean's does.
+    #[inline]
+    pub fn weighs_held(self) -> bool {
+        matches!(self, Stat::Mean | Stat::Var | Stat::Std)
+    }
+
+    /// Whether its sums are a variance's: merged about a compensated mean.
+    #[inline]
+    pub fn is_var(self) -> bool {
+        matches!(self, Stat::Var | Stat::Std)
+    }
+}
+
+/// An operator, as the formulas name it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpKind {
+    EwmMean,
+    RewmMean,
+    EwmSum,
+    RewmSum,
+    EwmRate,
+    RewmRate,
+    EwmVar,
+    EwmStd,
+    EwmQuantile,
+    RewmQuantile,
+    Increment,
+}
+
+impl OpKind {
+    pub fn name(self) -> &'static str {
+        match self {
+            OpKind::EwmMean => "ewm_mean",
+            OpKind::RewmMean => "rewm_mean",
+            OpKind::EwmSum => "ewm_sum",
+            OpKind::RewmSum => "rewm_sum",
+            OpKind::EwmRate => "ewm_rate",
+            OpKind::RewmRate => "rewm_rate",
+            OpKind::EwmVar => "ewm_var",
+            OpKind::EwmStd => "ewm_std",
+            OpKind::EwmQuantile => "ewm_quantile",
+            OpKind::RewmQuantile => "rewm_quantile",
+            OpKind::Increment => "increment",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "ewm_mean" => Some(OpKind::EwmMean),
+            "rewm_mean" => Some(OpKind::RewmMean),
+            "ewm_sum" => Some(OpKind::EwmSum),
+            "rewm_sum" => Some(OpKind::RewmSum),
+            "ewm_rate" => Some(OpKind::EwmRate),
+            "rewm_rate" => Some(OpKind::RewmRate),
+            "ewm_var" => Some(OpKind::EwmVar),
+            "ewm_std" => Some(OpKind::EwmStd),
+            "ewm_quantile" => Some(OpKind::EwmQuantile),
+            "rewm_quantile" => Some(OpKind::RewmQuantile),
+            "increment" => Some(OpKind::Increment),
+            _ => None,
+        }
+    }
+
+    pub fn direction(self) -> Direction {
+        match self {
+            OpKind::RewmMean | OpKind::RewmSum | OpKind::RewmRate | OpKind::RewmQuantile => {
+                Direction::Forward
+            }
+            _ => Direction::Backward,
+        }
+    }
+
+    /// The statistic of a window operator; `None` for `increment`.
+    pub fn stat(self) -> Option<Stat> {
+        match self {
+            OpKind::EwmMean | OpKind::RewmMean => Some(Stat::Mean),
+            OpKind::EwmSum | OpKind::RewmSum => Some(Stat::Sum),
+            OpKind::EwmRate | OpKind::RewmRate => Some(Stat::Rate),
+            OpKind::EwmVar => Some(Stat::Var),
+            OpKind::EwmStd => Some(Stat::Std),
+            OpKind::EwmQuantile | OpKind::RewmQuantile => Some(Stat::Quantile),
+            OpKind::Increment => None,
+        }
+    }
+}
+
+/// A kernel: the queue every operator with these settings shares.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KernelDef {
+    pub direction: Direction,
+    /// Policy-clock units, above 0; infinite weighs the window evenly.
+    pub half_life: f64,
+    /// Policy-clock units, finite and above 0; `None` is no cutoff, which
+    /// only a backward kernel may have.
+    pub window_size: Option<f64>,
+    /// The window in integer nanoseconds where it was given as a duration:
+    /// on a temporal clock an edge is then decided between integers
+    /// (review R2, W1), with no conversion to seconds on the way.
+    pub window_ns: Option<i64>,
+    pub closed: Closed,
+}
+
+impl KernelDef {
+    /// # Errors
+    ///
+    /// A half-life that is not above 0, a window that is not finite and
+    /// above 0 or that a forward kernel lacks.
+    pub fn check(&self) -> Result<(), String> {
+        if self.half_life.is_nan() || self.half_life <= 0.0 {
+            return Err(format!(
+                "half_life must be above 0, but it is {}. Set half_life to a positive number of \
+                 clock units or a duration, or to inf for no decay.",
+                self.half_life
+            ));
+        }
+        if self.half_life < f64::MIN_POSITIVE {
+            // A subnormal half-life: `mass·x` underflows to 0 and a rate
+            // divides by that mass, so the mean came out 0 and the rate
+            // infinite (task 159, W5).
+            return Err(format!(
+                "half_life must be at least {:.2e}, but it is {:.2e}. Set half_life to at least \
+                 {:.2e}.",
+                f64::MIN_POSITIVE,
+                self.half_life,
+                f64::MIN_POSITIVE
+            ));
+        }
+        match (self.direction, self.window_size) {
+            (Direction::Forward, None) => {
+                return Err(
+                    "window_size is not set, but an operator that reads the rows after \
+                            each row needs one, since those rows have no end without it. Set \
+                            window_size to a finite positive number of clock units or a \
+                            duration."
+                        .into(),
+                );
+            }
+            (_, Some(w)) if !w.is_finite() || w <= 0.0 => {
+                return Err(format!(
+                    "window_size must be finite and above 0, but it is {w}. Set window_size to a \
+                     finite positive number of clock units or a duration."
+                ));
+            }
+            _ => {}
+        }
+        // The two forms of one window agree (review R4, A4): membership is
+        // decided on the integer, the far edge and `complete` on the number.
+        if let (Some(w), Some(ns)) = (self.window_size, self.window_ns)
+            && seconds_of_ns(i128::from(ns)) != w
+        {
+            return Err(format!(
+                "window_ns {ns} is not window_size {w} in nanoseconds"
+            ));
+        }
+        Ok(())
+    }
+
+    /// `λ^d`, the discount across `d` units of policy time.
+    #[inline]
+    pub(crate) fn discount(&self, d: f64) -> f64 {
+        if self.half_life.is_infinite() || d == 0.0 {
+            // No distance discounts nothing: `exp2(-0)` is 1 exactly, for
+            // the half-life above 0 every kernel has (`check`), and every
+            // read of a backward window at its newest row is one.
+            1.0
+        } else {
+            // `exp2(-x)`, as `Decay::factor` spells it, for the same reason.
+            (-(d / self.half_life)).exp2()
+        }
+    }
+
+    /// [`Self::discount`] through `memo`, which keeps the last distance it
+    /// was asked for and its discount: a clock with a regular step asks the
+    /// same distance row after row, and the operators of a kernel ask the same
+    /// one on a row. The same function of the same bits, so the same bits.
+    #[inline]
+    pub(crate) fn discount_in(&self, d: f64, memo: &mut DecayMemo) -> f64 {
+        if self.half_life.is_infinite() || d == 0.0 {
+            return 1.0;
+        }
+        let (bits, v) = memo.discount;
+        if bits == d.to_bits() {
+            return v;
+        }
+        let v = (-(d / self.half_life)).exp2();
+        memo.discount = (d.to_bits(), v);
+        v
+    }
+
+    /// [`Self::mass`] through `memo`, as [`Self::discount_in`].
+    #[inline]
+    fn mass_in(&self, t: f64, memo: &mut DecayMemo) -> f64 {
+        if t <= 0.0 {
+            return 0.0;
+        }
+        if self.half_life.is_infinite() {
+            return t;
+        }
+        let (bits, v) = memo.mass;
+        if bits == t.to_bits() {
+            return v;
+        }
+        let v = self.mass_finite(t);
+        memo.mass = (t.to_bits(), v);
+        v
+    }
+
+    /// [`Self::mass`] of the distance from a row to the window's far edge,
+    /// through the four entries of `memo.cut`, each the last distance whose
+    /// low two bits it is of: the same function of the same bits, so the same
+    /// bits.
+    #[inline]
+    fn mass_cut_in(&self, t: f64, memo: &mut DecayMemo) -> f64 {
+        if t <= 0.0 {
+            return 0.0;
+        }
+        if self.half_life.is_infinite() {
+            return t;
+        }
+        let bits = t.to_bits();
+        let slot = &mut memo.cut.get_or_insert_with(Default::default)[(bits & 3) as usize];
+        if slot.0 == bits {
+            return slot.1;
+        }
+        let v = self.mass_finite(t);
+        *slot = (bits, v);
+        v
+    }
+
+    /// [`Self::mass_in`] on the memo's second slot, for a second distance
+    /// asked beside the first.
+    #[inline]
+    fn mass_far_in(&self, t: f64, memo: &mut DecayMemo) -> f64 {
+        if t <= 0.0 {
+            return 0.0;
+        }
+        if self.half_life.is_infinite() {
+            return t;
+        }
+        let (bits, v) = memo.mass_far;
+        if bits == t.to_bits() {
+            return v;
+        }
+        let v = self.mass_finite(t);
+        memo.mass_far = (t.to_bits(), v);
+        v
+    }
+
+    /// [`Self::discount`] through one slot of a [`DecayMemo`].
+    #[inline]
+    fn discount_slot(&self, d: f64, slot: &mut (u64, f64)) -> f64 {
+        if self.half_life.is_infinite() || d == 0.0 {
+            return 1.0;
+        }
+        if slot.0 == d.to_bits() {
+            return slot.1;
+        }
+        let v = (-(d / self.half_life)).exp2();
+        *slot = (d.to_bits(), v);
+        v
+    }
+
+    /// [`Self::mass`] through one slot of a [`DecayMemo`].
+    #[inline]
+    fn mass_slot(&self, t: f64, slot: &mut (u64, f64)) -> f64 {
+        if t <= 0.0 {
+            return 0.0;
+        }
+        if self.half_life.is_infinite() {
+            return t;
+        }
+        if slot.0 == t.to_bits() {
+            return slot.1;
+        }
+        let v = self.mass_finite(t);
+        *slot = (t.to_bits(), v);
+        v
+    }
+
+    /// `∫_0^T λ^s ds`: the decayed mass of `T` units of time.
+    #[inline]
+    fn mass(&self, t: f64) -> f64 {
+        if t <= 0.0 {
+            0.0
+        } else if self.half_life.is_infinite() {
+            t
+        } else {
+            self.mass_finite(t)
+        }
+    }
+
+    /// [`Self::mass`] of a distance above 0 under a finite half-life.
+    #[inline]
+    fn mass_finite(&self, t: f64) -> f64 {
+        // `1 − 2^(−t/h)` cancels where `t ≪ h`: 6e-5 of the mass at
+        // `h/t = 1e12`, all of it from 1e17, every mean null (task 159,
+        // W2). `exp_m1` keeps the small difference whole; `discount`
+        // itself has nothing to lose.
+        let h = self.half_life;
+        -(h / std::f64::consts::LN_2) * (-(t * std::f64::consts::LN_2 / h)).exp_m1()
+    }
+}
+
+/// A queue's last discount and last mass, each with the bits of the distance
+/// it is of. Never written to a state and never compared; a queue read back
+/// starts with none (0 bits is a distance no call reaches the memo with: a
+/// distance of 0 has its own answer first).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct DecayMemo {
+    discount: (u64, f64),
+    mass: (u64, f64),
+    /// The mass of the interval a row holds its value over, which takes the
+    /// discount's own `exp2` from `HELD_MASS_FROM` and so is not the cut's
+    /// mass of the same distance (`mass`).
+    held: (u64, f64),
+    /// The mass at the far end of an interval read in the window's cut.
+    mass_far: (u64, f64),
+    /// A forward kernel's close, which a backward kernel's queue never needs.
+    fwd: Option<Box<FwdMemo>>,
+    /// A windowed backward kernel's cut: the mass of the distance from a
+    /// row to the window's far edge, which is the window up to the rounding
+    /// of `tau - w` against `tau` (a few values, never the one before), made
+    /// where a queue first has it.
+    cut: Option<Box<[(u64, f64); 4]>>,
+}
+
+/// A forward kernel's close: the mass from the row to its open row, and the
+/// discounts of the window's sums and of its open row, each to the row the
+/// window is of, and a rate's mass of the window's span. A close asks each
+/// operator of a kernel for the same distances, and a regular clock asks them
+/// again at the next row.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FwdMemo {
+    mass_open: (u64, f64),
+    disc_seg: (u64, f64),
+    disc_open: (u64, f64),
+    mass_span: (u64, f64),
+}
+
+impl DecayMemo {
+    #[inline]
+    fn fwd(&mut self) -> &mut FwdMemo {
+        self.fwd.get_or_insert_with(Default::default)
+    }
+}
+
+impl PartialEq for DecayMemo {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+/// One window operator: its kernel, statistic and input.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OpDef {
+    /// Index into the kernels.
+    pub kernel: usize,
+    pub stat: Stat,
+    /// Index into a row's values.
+    pub input: usize,
+    /// Null with fewer rows carrying a value in the window.
+    pub min_samples: u32,
+    pub partial: Partial,
+    /// A variance's: the variance of the weights as they are, uncorrected
+    /// for their count (Polars' `bias`); read by no other statistic.
+    pub bias: bool,
+    /// A quantile's level, in (0, 1); `None` for every other statistic, and
+    /// then not written, so a state without a quantile keeps its bytes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quantile: Option<f64>,
+}
+
+/// One row as the core reads it: its group, clock and session, every
+/// operator input, and whether a `like=` spec would learn from it.
+#[derive(Debug)]
+pub struct RowIn<'a> {
+    /// From [`Windows::group`].
+    pub group: usize,
+    /// `None` on a row-count clock.
+    pub clock: Option<ClockValue>,
+    pub session: Option<u64>,
+    /// Per operator input; not [`usable`] is missing.
+    pub values: &'a [f64],
+    /// Whether the spec behind `like=` would learn from this row. Its
+    /// forward windows are null when it would not: a model never learns the
+    /// target of a row it skips (docs/PLAN.md task 104). The row still
+    /// steps the clocks and still counts in other rows' windows.
+    pub accept: bool,
+}
+
+/// What the clocks make of a row before it is taken ([`Windows::peek`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Peek {
+    /// A new start by the policy's word: a step back past
+    /// `restart_after_step_back`, or a new session, on the stream's clock
+    /// or the group's.
+    NewStart,
+    /// A step forward on the stream's clock, or its first row.
+    Forward,
+    /// The same stamp as the last row the stream read.
+    SameStamp,
+}
+
+/// Why a row was refused. The caller names the row in the input.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Refusal {
+    /// The clock stepped back `back` clock units, from `prev` to `now`,
+    /// where the policy refuses it: any step with no `restart_after_step_back`,
+    /// and one no larger than it (carried here) with one. The two values let
+    /// a caller state a temporal step exactly, in nanoseconds.
+    Backwards {
+        seq: u64,
+        back: f64,
+        prev: Option<ClockValue>,
+        now: Option<ClockValue>,
+        min_backwards_jump: Option<f64>,
+    },
+}
+
+/// Per operator, a segment's sums: the mass-weighted value, the mass and
+/// the rows with a value. For a sum or a rate `s` is the decayed sum and
+/// `w` unused. For a variance (task 212) `s` is the mean itself, `hi` of a
+/// compensated pair with `lo` (`rheon_core::comp`), `w` the mass `V1`,
+/// `q` the mass-weighted squared deviations from the mean `M2`, and `e`
+/// the masses' products in pairs, `Σ_{i<j} m_i m_j = (V1² − V2) / 2`, kept
+/// as a sum of its own so the count correction cancels nothing, and is 0,
+/// not a rounding of 0, while one row carries the window; the three are zero
+/// for every other statistic.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+struct Acc {
+    s: f64,
+    w: f64,
+    n: f64,
+    lo: f64,
+    q: f64,
+    e: f64,
+}
+
+impl Acc {
+    /// A held value `x` of mass `m`: its sums as one row.
+    #[inline]
+    fn held(x: f64, m: f64, var: bool) -> Acc {
+        if var {
+            Acc {
+                s: x,
+                w: m,
+                n: 1.0,
+                lo: 0.0,
+                q: 0.0,
+                e: 0.0,
+            }
+        } else {
+            Acc {
+                s: m * x,
+                w: m,
+                n: 1.0,
+                ..Acc::default()
+            }
+        }
+    }
+
+    /// The sums seen `f` of a discount later: a variance's mean stays where
+    /// it is, its masses scale, and their squares with `f²`.
+    #[inline]
+    fn scaled(self, f: f64, var: bool) -> Acc {
+        if var {
+            Acc {
+                s: self.s,
+                lo: self.lo,
+                w: f * self.w,
+                n: self.n,
+                q: f * self.q,
+                e: f * (f * self.e),
+            }
+        } else {
+            Acc {
+                s: f * self.s,
+                w: f * self.w,
+                n: self.n,
+                ..Acc::default()
+            }
+        }
+    }
+
+    /// Both segments' sums, seen from one time.
+    #[inline]
+    fn plus(self, o: Acc, var: bool) -> Acc {
+        if var {
+            return merge(self, o);
+        }
+        Acc {
+            s: self.s + o.s,
+            w: self.w + o.w,
+            n: self.n + o.n,
+            ..Acc::default()
+        }
+    }
+
+    /// Read from a stack's arena: three fields, or a variance-wide queue's
+    /// six.
+    #[inline]
+    fn read(v: &[f64], wide: bool) -> Acc {
+        if wide {
+            Acc {
+                s: v[0],
+                w: v[1],
+                n: v[2],
+                lo: v[3],
+                q: v[4],
+                e: v[5],
+            }
+        } else {
+            Acc {
+                s: v[0],
+                w: v[1],
+                n: v[2],
+                ..Acc::default()
+            }
+        }
+    }
+
+    /// Written to a stack's arena, as [`Acc::read`] reads it.
+    #[inline]
+    fn write(self, out: &mut [f64], wide: bool) {
+        out[0] = self.s;
+        out[1] = self.w;
+        out[2] = self.n;
+        if wide {
+            out[3] = self.lo;
+            out[4] = self.q;
+            out[5] = self.e;
+        }
+    }
+}
+
+/// Two variance segments' sums as one, about their pooled mean: Chan, Golub
+/// and LeVeque's pairwise update, `V1 = V1_a + V1_b`, `μ = μ_a + δ V1_b / V1`
+/// and `M2 = M2_a + M2_b + δ² V1_a V1_b / V1` with `δ = μ_b − μ_a`, and the
+/// pairs' products `e = e_a + e_b + V1_a V1_b`. No term
+/// is a difference of two large sums, so a window of one value has `M2 = 0`
+/// exactly at any level. The mean moves by its step as a compensated pair
+/// (`rheon_core::comp`): a plain one stops `1/(2 V1_b/V1)` rounding steps
+/// short of a value held row after row, and `M2` then settles on that gap's
+/// square instead of decaying with its history. A segment of no mass moves
+/// nothing but the row count, so it takes no step (`comp::add` says why);
+/// an empty one is `Acc::default()`.
+#[inline]
+fn merge(a: Acc, b: Acc) -> Acc {
+    let n = a.n + b.n;
+    let q = a.q + b.q;
+    let e = a.e + b.e;
+    if b.w <= 0.0 {
+        return Acc { n, q, e, ..a };
+    }
+    if a.w <= 0.0 {
+        return Acc { n, q, e, ..b };
+    }
+    let w = a.w + b.w;
+    let d = rheon_core::comp::dev(b.s, a.s, a.lo) + b.lo;
+    let (mut hi, mut lo) = (a.s, a.lo);
+    rheon_core::comp::add(&mut hi, &mut lo, d * (b.w / w));
+    Acc {
+        s: hi,
+        lo,
+        w,
+        n,
+        q: q + d * d * (a.w / w * b.w),
+        e: e + a.w * b.w,
+    }
+}
+
+/// `a` then `b`, `a` the earlier, each anchored at its own time: the sums
+/// over both, anchored at the newer looking back and at the older looking
+/// ahead, so a window's sums are always anchored at the row they are read
+/// from or discounted to it once.
+#[inline]
+fn then(
+    k: &KernelDef,
+    m: &mut DecayMemo,
+    a: Acc,
+    a_at: f64,
+    b: Acc,
+    b_at: f64,
+    var: bool,
+) -> (Acc, f64) {
+    then_by(k, k.discount_in(b_at - a_at, m), a, a_at, b, b_at, var)
+}
+
+/// [`then`] with the discount across the two anchors given: the operators
+/// of a queue are folded at the same two anchors on a row, so the caller
+/// takes it once.
+#[inline]
+fn then_by(k: &KernelDef, f: f64, a: Acc, a_at: f64, b: Acc, b_at: f64, var: bool) -> (Acc, f64) {
+    match k.direction {
+        Direction::Backward => (a.scaled(f, var).plus(b, var), b_at),
+        Direction::Forward => (a.plus(b.scaled(f, var), var), a_at),
+    }
+}
+
+/// Per row, per operator, in a stack's `vals`: where the held interval
+/// starts, the value held (NaN for none), and the row's own sums.
+const ROW: usize = 5;
+/// Per row, per operator, in a stack's `sums`: the partial sums.
+const SUM: usize = 3;
+/// [`ROW`] and [`SUM`] in a queue holding a variance: its sums are six wide
+/// ([`Acc`]), and every operator of the kernel takes the one width.
+const ROW_VAR: usize = 8;
+const SUM_VAR: usize = 6;
+
+/// A row's width per operator in a queue's `vals`: [`ROW_VAR`] in a queue
+/// holding a variance (`W`), else [`ROW`]. The queue code is compiled once
+/// for each width, so a queue without a variance runs the code it ran
+/// before there was one.
+#[inline(always)]
+const fn row_w<const W: bool>() -> usize {
+    if W { ROW_VAR } else { ROW }
+}
+
+/// [`row_w`] for the sums: [`SUM_VAR`] or [`SUM`].
+#[inline(always)]
+const fn sum_w<const W: bool>() -> usize {
+    if W { SUM_VAR } else { SUM }
+}
+
+/// Rows with their values and partial sums in flat arenas, so a row costs
+/// no allocation: one value and one accumulator per operator, side by side.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct Stack {
+    n: usize,
+    /// Whether the kernel holds a variance: its arenas' strides are
+    /// [`ROW_VAR`] and [`SUM_VAR`], not [`ROW`] and [`SUM`].
+    wide: bool,
+    seq: Vec<u64>,
+    tau: Vec<f64>,
+    /// The row's raw clock in integer nanoseconds, 0 without a temporal
+    /// clock: what a window's edge is decided from (review R2, W1).
+    off: Vec<i64>,
+    end: Vec<f64>,
+    /// Stride `row_w() * n`.
+    vals: Vec<f64>,
+    /// Stride `sum_w() * n`, anchored at `at`.
+    sums: Vec<f64>,
+    at: Vec<f64>,
+}
+
+/// `v.extend_from_slice(s)` with the lengths a row's values and sums have for
+/// one to four operators written out (`ROW`, `SUM` and their wide forms, times
+/// the operators): a copy of a length the compiler knows is a few moves in
+/// place, where the general copy is a call to `memmove`, and a row of a window
+/// core is two of them.
+#[inline(always)]
+fn append(v: &mut Vec<f64>, s: &[f64]) {
+    macro_rules! fixed {
+        ($($n:literal),*) => {
+            match s.len() {
+                $($n => v.extend_from_slice(&s[..$n]),)*
+                _ => v.extend_from_slice(s),
+            }
+        };
+    }
+    fixed!(3, 5, 6, 8, 9, 10, 12, 15, 16, 18, 20, 24, 32)
+}
+
+impl Stack {
+    fn new(n: usize, wide: bool) -> Self {
+        Stack {
+            n,
+            wide,
+            ..Default::default()
+        }
+    }
+
+    #[inline]
+    fn row_w(&self) -> usize {
+        if self.wide { ROW_VAR } else { ROW }
+    }
+
+    #[inline]
+    fn sum_w(&self) -> usize {
+        if self.wide { SUM_VAR } else { SUM }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.seq.len()
+    }
+
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.seq.is_empty()
+    }
+
+    fn clear(&mut self) {
+        self.seq.clear();
+        self.tau.clear();
+        self.off.clear();
+        self.end.clear();
+        self.vals.clear();
+        self.sums.clear();
+        self.at.clear();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn push(&mut self, seq: u64, tau: f64, off: i64, end: f64, row: &[f64], sums: &[f64], at: f64) {
+        self.seq.push(seq);
+        self.tau.push(tau);
+        self.off.push(off);
+        self.end.push(end);
+        append(&mut self.vals, row);
+        append(&mut self.sums, sums);
+        self.at.push(at);
+    }
+
+    /// Room for `more` rows, in every arena.
+    fn reserve(&mut self, more: usize) {
+        self.seq.reserve(more);
+        self.tau.reserve(more);
+        self.off.reserve(more);
+        self.end.reserve(more);
+        self.vals.reserve(more * self.row_w() * self.n);
+        self.sums.reserve(more * self.sum_w() * self.n);
+        self.at.reserve(more);
+    }
+
+    fn pop(&mut self) {
+        let i = self.len() - 1;
+        self.seq.truncate(i);
+        self.tau.truncate(i);
+        self.off.truncate(i);
+        self.end.truncate(i);
+        self.vals.truncate(i * self.row_w() * self.n);
+        self.sums.truncate(i * self.sum_w() * self.n);
+        self.at.truncate(i);
+    }
+
+    #[inline]
+    fn start<const W: bool>(&self, i: usize, j: usize) -> f64 {
+        self.vals[(i * self.n + j) * row_w::<W>()]
+    }
+
+    #[inline]
+    fn x<const W: bool>(&self, i: usize, j: usize) -> f64 {
+        self.vals[(i * self.n + j) * row_w::<W>() + 1]
+    }
+
+    #[inline]
+    fn own<const W: bool>(&self, i: usize, j: usize) -> Acc {
+        let b = (i * self.n + j) * row_w::<W>() + 2;
+        Acc::read(&self.vals[b..], W)
+    }
+
+    #[inline]
+    fn sum<const W: bool>(&self, i: usize, j: usize) -> Acc {
+        let b = (i * self.n + j) * sum_w::<W>();
+        Acc::read(&self.sums[b..], W)
+    }
+
+    /// Whether every arena is as long as the rows say, at `n` operators of
+    /// this width: what the accessors above index by ([`Windows::check`]).
+    fn has_width(&self, n: usize, wide: bool) -> bool {
+        let len = self.seq.len();
+        self.n == n
+            && self.wide == wide
+            && [
+                self.tau.len(),
+                self.off.len(),
+                self.end.len(),
+                self.at.len(),
+            ]
+            .iter()
+            .all(|&l| l == len)
+            && len.checked_mul(self.row_w() * n) == Some(self.vals.len())
+            && len.checked_mul(self.sum_w() * n) == Some(self.sums.len())
+    }
+}
+
+/// Write `a` into `out`'s slot for operator `j`, at a queue's width.
+#[inline]
+fn put<const W: bool>(out: &mut [f64], j: usize, a: Acc) {
+    a.write(&mut out[j * sum_w::<W>()..], W);
+}
+
+/// The fold of `back`'s rows `from..=upto`, oldest first, as a mean's cut
+/// sums them ([`Queue::sum_after_op`]), with the rows' `seq`s at both ends:
+/// `back` only grows between its turnovers, and a row's `seq` is never
+/// reused, so the two say the fold is still of the rows it was made from.
+#[derive(Debug, Clone, Copy)]
+struct Tail {
+    from: usize,
+    from_seq: u64,
+    upto: usize,
+    upto_seq: u64,
+    acc: Acc,
+    at: f64,
+}
+
+/// What a queue remembers between reads to keep a read O(1) amortized
+/// (docs/PLAN.md task 270, M-2): per operator, the fold of `back`'s rows
+/// past the operator's cut, extended by the rows pushed since rather than
+/// summed again, and a `seq` below which no row the queue holds carries the
+/// operator's value, so the search for its oldest valued row starts there.
+/// Neither changes a bit: the fold is the same `then`s in the same order,
+/// and the search finds the same row. Never written to a state and never
+/// compared: a queue read back from a file starts without one and rebuilds
+/// it on its first read, as a queue does on its first window.
+#[derive(Debug, Clone, Default)]
+struct Memo {
+    tails: Vec<Option<Tail>>,
+    /// Per operator: every row the queue holds with a lower `seq` carries
+    /// no value of it. Rows leave oldest first and join with higher `seq`s,
+    /// so it stays true until it is moved.
+    valued_from: Vec<u64>,
+}
+
+impl PartialEq for Memo {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+/// The two-stack queue. `front` holds the older rows, the oldest on top,
+/// each beside the sums from itself through the newest row in `front`;
+/// `back` holds the newer rows in order, each beside the sums from the
+/// oldest row in `back` through itself. The window's sums are `front`'s
+/// top then `back`'s last. Reaching the oldest row with `front` empty first
+/// turns `back` over into it, so each row is moved once: O(1) a row on
+/// average, and exact. The partial sums also give the window less its
+/// oldest rows without a subtraction, which is what lets a held value be
+/// cut at the window's edge without cancellation.
+///
+/// A backward kernel with no window evicts nothing, so it keeps only
+/// `total`, the running sums.
+///
+/// A quantile (task 272 (d)) keeps sketches beside the stacks, in `quant`:
+/// its rows' sums give only its count of values, for `min_samples`
+/// (`window_quantile.rs` has the rest).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct Queue {
+    n: usize,
+    /// Per operator: whether its sums are a variance's, merged rather than
+    /// added ([`merge`]). A queue holding one is wide.
+    var: Vec<bool>,
+    front: Stack,
+    back: Stack,
+    /// Stride `sum_w() * n`; empty until the first row.
+    total: Vec<f64>,
+    total_at: f64,
+    /// Per operator, a quantile's sketches, `None` for any other; empty for
+    /// a kernel with no quantile, and then not written, so its state keeps
+    /// the bytes it had before there was one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    quant: Vec<Option<QSide>>,
+    #[serde(skip)]
+    memo: Memo,
+    #[serde(skip)]
+    decay: DecayMemo,
+}
+
+impl Queue {
+    fn new(var: Vec<bool>, quant: &[bool]) -> Self {
+        let (n, wide) = (var.len(), var.contains(&true));
+        Queue {
+            n,
+            var,
+            front: Stack::new(n, wide),
+            back: Stack::new(n, wide),
+            total: Vec::new(),
+            total_at: 0.0,
+            quant: if quant.contains(&true) {
+                quant.iter().map(|&q| q.then(QSide::default)).collect()
+            } else {
+                Vec::new()
+            },
+            memo: Memo::default(),
+            decay: DecayMemo::default(),
+        }
+    }
+
+    /// The quantile at `p` of operator `j`'s window, with `open`, a forward
+    /// kernel's open row as its time and value, counted too; `None` with no
+    /// weight.
+    fn quantile(&self, k: &KernelDef, j: usize, p: f64, open: Option<(f64, f64)>) -> Option<f64> {
+        self.quant.get(j)?.as_ref()?.read(k, p, open)
+    }
+
+    /// The buckets every quantile's sketches hold.
+    fn quantile_buckets(&self) -> usize {
+        self.quant.iter().flatten().map(QSide::buckets).sum()
+    }
+
+    #[inline]
+    fn wide(&self) -> bool {
+        self.front.wide
+    }
+
+    /// A row's width per operator in this queue's arenas.
+    #[inline]
+    fn row_w(&self) -> usize {
+        self.front.row_w()
+    }
+
+    #[inline]
+    fn sum_w(&self) -> usize {
+        self.front.sum_w()
+    }
+
+    /// [`Queue::push`] compiled for this queue's width.
+    #[allow(clippy::too_many_arguments)]
+    fn push_row(
+        &mut self,
+        k: &KernelDef,
+        seq: u64,
+        tau: f64,
+        off: i64,
+        end: f64,
+        row: &[f64],
+        scratch: &mut [f64],
+    ) {
+        if self.wide() {
+            self.push::<true>(k, seq, tau, off, end, row, scratch);
+        } else {
+            self.push::<false>(k, seq, tau, off, end, row, scratch);
+        }
+    }
+
+    /// Push a row: `row` is its `row_w() * n` values, `scratch` a buffer of
+    /// `sum_w() * n` for the sums.
+    #[allow(clippy::too_many_arguments)]
+    fn push<const W: bool>(
+        &mut self,
+        k: &KernelDef,
+        seq: u64,
+        tau: f64,
+        off: i64,
+        end: f64,
+        row: &[f64],
+        scratch: &mut [f64],
+    ) {
+        let (n, rw) = (self.n, row_w::<W>());
+        // The buffers are sized for the widest kernel; this one's part.
+        let scratch = &mut scratch[..sum_w::<W>() * n];
+        let own = |j: usize| Acc::read(&row[j * rw + 2..], W);
+        if k.window_size.is_some() {
+            let mut at = tau;
+            match self.back.len().checked_sub(1) {
+                None => {
+                    for j in 0..n {
+                        put::<W>(scratch, j, own(j));
+                    }
+                }
+                Some(last) => {
+                    let last_at = self.back.at[last];
+                    let f = k.discount_in(tau - last_at, &mut self.decay);
+                    for j in 0..n {
+                        let (a, a_at) = then_by(
+                            k,
+                            f,
+                            self.back.sum::<W>(last, j),
+                            last_at,
+                            own(j),
+                            tau,
+                            W && self.var[j],
+                        );
+                        put::<W>(scratch, j, a);
+                        at = a_at;
+                    }
+                }
+            }
+            self.back.push(seq, tau, off, end, row, scratch, at);
+        } else if self.total.is_empty() {
+            self.total.resize(sum_w::<W>() * n, 0.0);
+            for j in 0..n {
+                put::<W>(&mut self.total, j, own(j));
+            }
+            self.total_at = tau;
+        } else {
+            let mut at = tau;
+            let sw = sum_w::<W>();
+            let f = k.discount_in(tau - self.total_at, &mut self.decay);
+            for j in 0..n {
+                let t = Acc::read(&self.total[j * sw..], W);
+                let (a, a_at) = then_by(k, f, t, self.total_at, own(j), tau, W && self.var[j]);
+                put::<W>(&mut self.total, j, a);
+                at = a_at;
+            }
+            self.total_at = at;
+        }
+        // A quantile's value joins its sketch: the row's `x`, its own value
+        // in either direction (`fill_forward`).
+        for (j, q) in self.quant.iter_mut().enumerate() {
+            if let Some(q) = q {
+                let x = row[j * rw + 1];
+                if !x.is_nan() {
+                    q.push(k, tau, x);
+                }
+            }
+        }
+    }
+
+    /// Turn `back` over into `front` when `front` is empty, so the oldest
+    /// row is `front`'s top.
+    fn settle<const W: bool>(&mut self, k: &KernelDef, scratch: &mut [f64]) {
+        if !self.front.is_empty() {
+            return;
+        }
+        if !self.back.is_empty() {
+            let back = &self.back;
+            for (j, q) in self.quant.iter_mut().enumerate() {
+                if let Some(q) = q {
+                    q.turn_over(k, &back.tau, |i| back.x::<W>(i, j));
+                }
+            }
+        }
+        let (n, rw) = (self.n, row_w::<W>());
+        let scratch = &mut scratch[..sum_w::<W>() * n];
+        // Every row of `back` moves, the newest first: `front` takes room for
+        // them at once and `back` is emptied once, after the last.
+        let moved = self.back.len();
+        self.front.reserve(moved);
+        for i in (0..moved).rev() {
+            let (seq, tau, off, end) = (
+                self.back.seq[i],
+                self.back.tau[i],
+                self.back.off[i],
+                self.back.end[i],
+            );
+            let row_base = i * rw * n;
+            let mut at = tau;
+            match self.front.len().checked_sub(1) {
+                None => {
+                    for j in 0..n {
+                        put::<W>(scratch, j, self.back.own::<W>(i, j));
+                    }
+                }
+                Some(newer) => {
+                    let newer_at = self.front.at[newer];
+                    let f = k.discount_in(newer_at - tau, &mut self.decay);
+                    for j in 0..n {
+                        let (a, a_at) = then_by(
+                            k,
+                            f,
+                            self.back.own::<W>(i, j),
+                            tau,
+                            self.front.sum::<W>(newer, j),
+                            newer_at,
+                            W && self.var[j],
+                        );
+                        put::<W>(scratch, j, a);
+                        at = a_at;
+                    }
+                }
+            }
+            let (front, back) = (&mut self.front, &self.back);
+            front.push(
+                seq,
+                tau,
+                off,
+                end,
+                &back.vals[row_base..row_base + rw * n],
+                scratch,
+                at,
+            );
+        }
+        self.back.clear();
+    }
+
+    /// Pop the rows `stale` says have left the window, oldest first.
+    fn evict<const W: bool>(
+        &mut self,
+        k: &KernelDef,
+        scratch: &mut [f64],
+        stale: impl Fn(u64, f64, i64) -> bool,
+    ) {
+        loop {
+            self.settle::<W>(k, scratch);
+            let Some(top) = self.front.len().checked_sub(1) else {
+                return;
+            };
+            if !stale(
+                self.front.seq[top],
+                self.front.tau[top],
+                self.front.off[top],
+            ) {
+                return;
+            }
+            for (j, q) in self.quant.iter_mut().enumerate() {
+                if let Some(q) = q {
+                    q.pop(top, self.front.x::<W>(top, j));
+                }
+            }
+            self.front.pop();
+        }
+    }
+
+    /// The window's sums for operator `j`, with their anchor.
+    fn sum_op<const W: bool>(&mut self, k: &KernelDef, j: usize) -> Option<(Acc, f64)> {
+        if k.window_size.is_none() {
+            if self.total.is_empty() {
+                return None;
+            }
+            return Some((Acc::read(&self.total[j * sum_w::<W>()..], W), self.total_at));
+        }
+        let f = self
+            .front
+            .len()
+            .checked_sub(1)
+            .map(|t| (self.front.sum::<W>(t, j), self.front.at[t]));
+        let b = self
+            .back
+            .len()
+            .checked_sub(1)
+            .map(|l| (self.back.sum::<W>(l, j), self.back.at[l]));
+        match (f, b) {
+            (Some((a, a_at)), Some((b, b_at))) => {
+                Some(then(k, &mut self.decay, a, a_at, b, b_at, W && self.var[j]))
+            }
+            (Some(x), None) | (None, Some(x)) => Some(x),
+            (None, None) => None,
+        }
+    }
+
+    /// The window's sums for operator `j` less its `p + 1` oldest rows.
+    /// Where those reach into `back`, whose sums are prefixes anchored at
+    /// its oldest row, the rest is `back`'s rows past them folded oldest
+    /// first. That is every row of a stream's first window, before anything
+    /// has left it and turned `back` over: a mean cuts its first row's held
+    /// interval at the window's edge on each of them. The fold is kept
+    /// between reads and extended by the rows pushed since ([`Memo`]), so a
+    /// read is O(1) amortized, not O(rows in `back`); its `then`s are the
+    /// ones summing the rows afresh takes, in the same order, so its bits
+    /// are too (docs/PLAN.md task 270, M-2).
+    fn sum_after_op<const W: bool>(
+        &mut self,
+        k: &KernelDef,
+        p: usize,
+        j: usize,
+    ) -> Option<(Acc, f64)> {
+        let var = W && self.var[j];
+        let n = self.front.len();
+        if p + 1 < n {
+            let i = n - 2 - p;
+            let a = (self.front.sum::<W>(i, j), self.front.at[i]);
+            return Some(match self.back.len().checked_sub(1) {
+                Some(l) => then(
+                    k,
+                    &mut self.decay,
+                    a.0,
+                    a.1,
+                    self.back.sum::<W>(l, j),
+                    self.back.at[l],
+                    var,
+                ),
+                None => a,
+            });
+        }
+        let from = p + 1 - n;
+        let len = self.back.len();
+        if from >= len {
+            return None;
+        }
+        let back = &self.back;
+        if self.memo.tails.len() != self.n {
+            self.memo.tails = vec![None; self.n];
+        }
+        let kept = self.memo.tails[j].filter(|t| {
+            t.from == from
+                && t.upto < len
+                && back.seq[from] == t.from_seq
+                && back.seq[t.upto] == t.upto_seq
+        });
+        let (mut acc, mut at, next) = match kept {
+            Some(t) => (t.acc, t.at, t.upto + 1),
+            None => (back.own::<W>(from, j), back.tau[from], from + 1),
+        };
+        for i in next..len {
+            (acc, at) = then(
+                k,
+                &mut self.decay,
+                acc,
+                at,
+                back.own::<W>(i, j),
+                back.tau[i],
+                var,
+            );
+        }
+        self.memo.tails[j] = Some(Tail {
+            from,
+            from_seq: back.seq[from],
+            upto: len - 1,
+            upto_seq: back.seq[len - 1],
+            acc,
+            at,
+        });
+        Some((acc, at))
+    }
+
+    /// The first row from the oldest that `pred` takes for operator `j`, as
+    /// its position from the oldest, whether it is in `front`, and its index
+    /// there. A queue is read by one predicate, its kernel's, so the search
+    /// starts from the oldest row it has not already passed over ([`Memo`]):
+    /// O(1) amortized where an operator's input is null for a long run,
+    /// which a search from the oldest row each read paid for with every row
+    /// of the run (docs/PLAN.md task 270, M-2).
+    fn find_oldest(
+        &mut self,
+        j: usize,
+        pred: impl Fn(&Stack, usize) -> bool,
+    ) -> Option<(usize, bool, usize)> {
+        if self.memo.valued_from.len() != self.n {
+            self.memo.valued_from = vec![0; self.n];
+        }
+        let from = self.memo.valued_from[j];
+        let n = self.front.len();
+        // Positions from the oldest: `front`'s top down, then `back` up, in
+        // ascending `seq`; the first at or past `from`.
+        let start = if n > 0 && self.front.seq[n - 1] >= from
+            || n == 0 && self.back.seq.first().is_some_and(|&s| s >= from)
+        {
+            0
+        } else {
+            let in_front = self.front.seq.partition_point(|&s| s >= from);
+            if in_front > 0 {
+                n - in_front
+            } else {
+                n + self.back.seq.partition_point(|&s| s < from)
+            }
+        };
+        let total = n + self.back.len();
+        for p in start..total {
+            let found = if p < n {
+                let i = n - 1 - p;
+                pred(&self.front, i).then_some((p, true, i))
+            } else {
+                pred(&self.back, p - n).then_some((p, false, p - n))
+            };
+            if let Some((_, in_front, i)) = found {
+                let st = if in_front { &self.front } else { &self.back };
+                self.memo.valued_from[j] = st.seq[i];
+                return found;
+            }
+        }
+        // Nothing valued: the next search starts past the newest row.
+        let newest = self
+            .back
+            .seq
+            .last()
+            .or_else(|| self.front.seq.first())
+            .copied();
+        if let Some(s) = newest {
+            self.memo.valued_from[j] = s + 1;
+        }
+        None
+    }
+
+    /// The stack [`Queue::find_oldest`]'s `in_front` names.
+    fn stack(&self, in_front: bool) -> &Stack {
+        if in_front { &self.front } else { &self.back }
+    }
+
+    fn clear(&mut self) {
+        self.front.clear();
+        self.back.clear();
+        self.total.clear();
+        self.quant.iter_mut().flatten().for_each(QSide::clear);
+    }
+
+    fn len(&self) -> usize {
+        self.front.len() + self.back.len()
+    }
+
+    /// Whether both stacks and the running sums are at these operators:
+    /// their count, which are variances, and the width that gives; and a
+    /// sketch for each quantile, none for any other, each at `front`'s rows.
+    fn has_width(&self, var: &[bool], quant: &[bool]) -> bool {
+        let (n, wide) = (var.len(), var.contains(&true));
+        let sketches = if quant.contains(&true) {
+            self.quant.len() == n
+                && self.quant.iter().zip(quant).all(|(s, &q)| match s {
+                    Some(s) => q && s.has_shape(self.front.len()),
+                    None => !q,
+                })
+        } else {
+            self.quant.is_empty()
+        };
+        self.n == n
+            && self.var == var
+            && self.front.has_width(n, wide)
+            && self.back.has_width(n, wide)
+            && (self.total.is_empty() || self.total.len() == self.sum_w() * n)
+            && sketches
+    }
+}
+
+/// A row waiting for its group's forward kernels to close.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+struct Wait {
+    seq: u64,
+    tau: f64,
+    /// The row's raw clock in integer nanoseconds on a temporal clock; the
+    /// bits of its value on a number clock, and of the policy time without
+    /// a clock column (task 159, W3).
+    off: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct Group {
+    clock: ClockState,
+    /// Policy time of the group's last row, from its last restart.
+    tau: f64,
+    /// The raw clock the policy time is measured from: the first row of
+    /// the stretch (review R1, C2).
+    origin: Option<ClockValue>,
+    /// The last row's raw clock in integer nanoseconds (a temporal clock),
+    /// as its integer (an integer clock, docs/PLAN.md task 200), else the
+    /// bits of the clock's value (of the policy time without a clock
+    /// column), `form` saying which: a window's edge between two rows is
+    /// decided from the difference of their raw clocks, never from two
+    /// rounded policy times (review R2, W1; task 159, W3).
+    off: i64,
+    form: OffForm,
+    /// The next row starts the windows over: the group has no row yet, or
+    /// an event since its last row ended them.
+    restart: bool,
+    /// Per kernel.
+    queues: Vec<Queue>,
+    /// Per forward kernel: the last row, whose interval ends at the next
+    /// row, as its place and time; its values are in `open_x` and the
+    /// values held over its interval in `open_held`, `n` each.
+    open: Vec<Option<(u64, f64, i64)>>,
+    open_x: Vec<Vec<f64>>,
+    open_held: Vec<Vec<f64>>,
+    /// Rows whose forward windows are not all closed, oldest first.
+    waiting: VecDeque<Wait>,
+    /// Per kernel: how many of `waiting`, from the front, it has closed.
+    /// Always 0 for a backward kernel.
+    closed: Vec<usize>,
+    /// Per operator of a backward kernel: the policy time of its last row
+    /// with a value, NaN for none since the restart. A value is held from
+    /// there, as `ewm_mean_by` skips a null.
+    last_valued: Vec<f64>,
+    /// Per operator of a forward kernel: the last value, NaN for none since
+    /// the restart, held until the next.
+    held: Vec<f64>,
+    /// Rows at the current stamp whose backward windows under `"right"` or
+    /// `"both"` wait for the next distinct stamp.
+    pending: Vec<u64>,
+    /// The raw clock of the group's last row and of `pending`.
+    stamp: Option<ClockValue>,
+    /// Per backward kernel under `"left"` or `"none"`, the values of the
+    /// current stamp's window, per operator of the kernel, read before the
+    /// stamp's rows joined.
+    stamp_values: Vec<Vec<f64>>,
+    /// Raw clock of the group's last row, while it is in the silent list.
+    last_raw: Option<ClockValue>,
+    /// Neighbours in the silent list, the oldest `last_raw` at the head.
+    prev_link: Option<usize>,
+    next_link: Option<usize>,
+    linked: bool,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// [`Windows::flush_group`]'s calls on this thread, and those of them
+    /// that found nothing pending: what a row's walk over the groups costs,
+    /// counted rather than timed (task 325).
+    static FLUSHES: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
+}
+
+/// How a window over a row ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum End {
+    /// Its span passed.
+    Complete,
+    /// A capped gap or a session change cut it short: partial.
+    Cut,
+    /// A reset discarded it: null, and never dropped.
+    Discard,
+}
+
+/// Per row not yet emitted.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+struct Meta {
+    /// Kernels not yet resolved over the row.
+    open: u32,
+    accept: bool,
+    drop: bool,
+}
+
+/// Rows out, in input order: `rows` rows from `first_seq` on.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Emitted {
+    pub first_seq: u64,
+    pub rows: usize,
+    /// Per operator, per row: the value, NaN where null.
+    pub values: Vec<Vec<f64>>,
+    /// Per row: whether a `"drop"` operator was partial on it.
+    pub drop: Vec<bool>,
+}
+
+/// The window core: every group's kernels over one stream, fed rows in
+/// input order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Windows {
+    /// The operators' definitions: the call's, and the same for every group
+    /// of a spec, so behind an `Arc` they are shared (see [`Windows::share_with`]).
+    kernels: Arc<Vec<KernelDef>>,
+    ops: Arc<Vec<OpDef>>,
+    #[serde(with = "clock_form")]
+    clock_cfg: ClockCfg,
+    /// Per kernel: its operators, in output order.
+    members: Arc<Vec<Vec<usize>>>,
+    n_outputs: usize,
+    n_forward: u32,
+    groups: Vec<Group>,
+    /// Group keys, as text, to their index in `groups`; the null key apart.
+    #[serde(with = "sorted_map")]
+    index: KeyMap,
+    null_group: Option<usize>,
+    /// Integer group keys to their groups, beside `index`: what a chunk of
+    /// integer keys is looked up in, never saved.
+    #[serde(skip)]
+    int_groups: IntGroups,
+    /// The stream's own clock, in input order across groups.
+    shared: ClockState,
+    /// Whether the rows carry a group column: then a session is each
+    /// group's and the stream's clock takes none (review R2, W3); without
+    /// one the stream is the one group, and its session is the stream's.
+    grouped: bool,
+    /// Groups with rows waiting, in the order of their last row: the oldest
+    /// at the head.
+    head: Option<usize>,
+    tail: Option<usize>,
+    /// The rows fed and not yet emitted, from `held_first` on: per row,
+    /// `n_outputs` values (NaN null) and one meta.
+    held_first: u64,
+    held_values: VecDeque<f64>,
+    held_meta: VecDeque<Meta>,
+    /// How many held rows, from the first, every kernel has resolved, and
+    /// how many of those no operator drops: what [`Windows::drain`] emits.
+    ready: usize,
+    ready_kept: usize,
+    /// The `seq` the next row fed takes.
+    next_seq: u64,
+    /// Buffers a row's work reuses, sized for the widest kernel.
+    #[serde(skip)]
+    scratch_row: Vec<f64>,
+    #[serde(skip)]
+    scratch_sum: Vec<f64>,
+    /// What the kernels and operators say once, for the plain loop and the
+    /// row's wait count; derived by [`Windows::scratch`], never saved.
+    #[serde(skip)]
+    derived: Derived,
+}
+
+/// A map as a sorted list, so the state's bytes do not depend on the
+/// hasher.
+mod sorted_map {
+    use std::collections::HashMap;
+    use std::hash::BuildHasher;
+
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer, H>(
+        m: &HashMap<String, usize, H>,
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        let mut v: Vec<(&String, &usize)> = m.iter().collect();
+        v.sort();
+        v.serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>, H: BuildHasher + Default>(
+        d: D,
+    ) -> Result<HashMap<String, usize, H>, D::Error> {
+        Ok(Vec::<(String, usize)>::deserialize(d)?
+            .into_iter()
+            .collect())
+    }
+}
+
+/// `ClockCfg` with its session gap tagged. The core type's own derive
+/// writes `Some(SessionGap::Reset)` as a bare unit, which msgpack reads back
+/// as `None`: a saved `session_gap = "reset"` would resume as no session
+/// gap at all. The bank never saves a `ClockCfg` -- it rebuilds one from
+/// its specs -- so this state is the first to need the form.
+mod clock_form {
+    use rheon_core::{ClockCfg, OnClockReset, SessionGap};
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    #[derive(Serialize, Deserialize)]
+    struct Form {
+        gap_cap: f64,
+        on_clock_reset: OnClockReset,
+        session_gap: GapForm,
+        min_backwards_jump: f64,
+    }
+
+    #[derive(Serialize, Deserialize)]
+    enum GapForm {
+        Off,
+        Gap(f64),
+        Reset,
+    }
+
+    pub fn serialize<S: Serializer>(c: &ClockCfg, s: S) -> Result<S::Ok, S::Error> {
+        Form {
+            gap_cap: c.gap_cap,
+            on_clock_reset: c.on_clock_reset,
+            session_gap: match c.session_gap {
+                None => GapForm::Off,
+                Some(SessionGap::Gap(g)) => GapForm::Gap(g),
+                Some(SessionGap::Reset) => GapForm::Reset,
+            },
+            min_backwards_jump: c.min_backwards_jump,
+        }
+        .serialize(s)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<ClockCfg, D::Error> {
+        let f = Form::deserialize(d)?;
+        Ok(ClockCfg {
+            gap_cap: f.gap_cap,
+            on_clock_reset: f.on_clock_reset,
+            session_gap: match f.session_gap {
+                GapForm::Off => None,
+                GapForm::Gap(g) => Some(SessionGap::Gap(g)),
+                GapForm::Reset => Some(SessionGap::Reset),
+            },
+            min_backwards_jump: f.min_backwards_jump,
+        })
+    }
+}
+
+/// `now` minus `last` in clock units: between two temporal values, taken in
+/// integer nanoseconds and rounded once, as the clock takes its steps.
+/// The clock between two rows of one stretch, for a window's edge: the
+/// exact difference of their raw clocks in integer nanoseconds on a
+/// temporal clock (`exact`), else of the clocks carried as bits in `off`
+/// (a number clock's own value; the policy time without a clock column),
+/// never of two origin-subtracted policy times (task 159, W3).
+/// Two rounded policy times differ by rounding, and a row exactly one
+/// window after another landed on either side of the edge (review R2, W1:
+/// 0.4 − 0.1 is not 0.3 in a double). Against a window given as a duration
+/// the comparison is between integers ([`KernelDef::window_ns`]); against
+/// one given as a number the gap is converted to seconds with the same two
+/// operations a duration's text is (`seconds_of_ns`), so a gap of exactly
+/// one window still compares equal to it.
+#[derive(Clone, Copy, Debug)]
+enum Gap {
+    Ns(i64),
+    Secs(f64),
+    /// An integer clock's gap in the column's own units, exact (task 200).
+    Int(i128),
+}
+
+/// What a row's `off` holds: a temporal clock's nanoseconds, an integer
+/// clock's value (docs/PLAN.md task 200), or the bits of a double -- a float
+/// clock's value, or the policy time without a clock column.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum OffForm {
+    Ns,
+    Int,
+    Bits,
+}
+
+#[inline]
+fn gap(form: OffForm, from_off: i64, to_off: i64) -> Gap {
+    match form {
+        OffForm::Ns => Gap::Ns(to_off.saturating_sub(from_off)),
+        OffForm::Int => Gap::Int(i128::from(to_off) - i128::from(from_off)),
+        OffForm::Bits => Gap::Secs(f64::from_bits(to_off as u64) - f64::from_bits(from_off as u64)),
+    }
+}
+
+impl Gap {
+    /// The gap against the kernel's window, by the comparison a model's
+    /// window decides its edge with ([`Stamp::cmp_span_ns`], task 175): in
+    /// integer nanoseconds against a window written as a duration, through
+    /// `seconds_of_ns` against one written as a number, and on a number
+    /// clock the one subtraction of the raw values. No answer (a NaN) is
+    /// `Equal`.
+    #[inline]
+    fn cmp_window(self, k: &KernelDef) -> Ordering {
+        let w = k.window_size.expect("a windowed kernel");
+        self.cmp_span(w, k.window_ns.map(i128::from))
+    }
+
+    /// The gap against zero, by the same comparison.
+    #[inline]
+    fn cmp_zero(self) -> Ordering {
+        self.cmp_span(0.0, Some(0))
+    }
+
+    /// The gap as the newer of two stamps, the older at zero.
+    #[inline]
+    fn cmp_span(self, span: f64, span_ns: Option<i128>) -> Ordering {
+        match self {
+            // `Stamp::cmp_span_ns`'s two arms for these pairs, written out
+            // where this is called a row at a time: integer nanoseconds
+            // against a span in nanoseconds, and a number clock's
+            // `(a - b) - (ra - rb)` of the pair `s, 0` with removed time 0.
+            Gap::Ns(n) => match span_ns {
+                Some(w) => i128::from(n).cmp(&w),
+                None => Stamp::Ns(i128::from(n)).cmp_span_ns(Stamp::Ns(0), span, None),
+            },
+            Gap::Secs(s) => ((s - 0.0) - 0.0)
+                .partial_cmp(&span)
+                .unwrap_or(Ordering::Equal),
+            // A gap below 2^53 is a double exactly, and compares with the
+            // span as the exact comparison does (a NaN span is `Equal`).
+            Gap::Int(n) if n.unsigned_abs() < 1 << 53 => {
+                (n as f64).partial_cmp(&span).unwrap_or(Ordering::Equal)
+            }
+            Gap::Int(n) => Stamp::Int(n, 0.0).cmp_span_ns(Stamp::Int(0, 0.0), span, None),
+        }
+    }
+}
+
+/// `now` minus `last` in clock units: between two temporal values, taken
+/// in integer nanoseconds and rounded once; between two integer ones, in
+/// integers and rounded once (task 200).
+fn elapsed(now: ClockValue, last: ClockValue) -> f64 {
+    match (now, last) {
+        (ClockValue::Ns(c), ClockValue::Ns(p)) => seconds_of_ns(i128::from(c) - i128::from(p)),
+        (ClockValue::I64(c), ClockValue::I64(p)) => int_step_f64(c, p),
+        (c, p) => match c.int_step(p) {
+            Some(step) => step as f64,
+            None => c.seconds() - p.seconds(),
+        },
+    }
+}
+
+/// An integer clock's step `c - p` as a double, rounded once: the 64-bit
+/// difference where it fits, which converts with one instruction, the 128-bit
+/// one where it does not, which is a library call. Both round the same
+/// integer to the nearest double, ties to even.
+#[inline(always)]
+fn int_step_f64(c: i64, p: i64) -> f64 {
+    match c.checked_sub(p) {
+        Some(d) => d as f64,
+        None => (i128::from(c) - i128::from(p)) as f64,
+    }
+}
+
+/// Whether `now` is after `last`: `elapsed(now, last) > 0.0`, the sign of the
+/// step, which between two temporal values, or two integer ones, is the
+/// integers' own.
+#[inline]
+fn is_after(now: ClockValue, last: ClockValue) -> bool {
+    match (now, last) {
+        (ClockValue::Ns(c), ClockValue::Ns(p)) | (ClockValue::I64(c), ClockValue::I64(p)) => c > p,
+        _ => elapsed(now, last) > 0.0,
+    }
+}
+
+/// Whether `now` is more than `cap` clock units after `last`: on an
+/// integer clock their difference in integers against the cap, exactly
+/// (task 200), and as [`elapsed`] gives it otherwise.
+#[inline]
+fn past_cap(now: ClockValue, last: ClockValue, cap: f64) -> bool {
+    match (now, last) {
+        // Between two temporal values, a step short of the cap's whole
+        // seconds is not past it, as the integers say, with no conversion to
+        // seconds: a step of fewer whole seconds than `floor(cap)` converts
+        // to at most `floor(cap)` (the conversion never rounds past the next
+        // whole second), which is not more than `cap`. Any other step is
+        // converted and compared, as `elapsed` gives it.
+        (ClockValue::Ns(c), ClockValue::Ns(p)) => {
+            let step = i128::from(c) - i128::from(p);
+            if (1.0..4.0e9).contains(&cap)
+                && step < i128::from(u32::try_from(cap as u64).unwrap_or(0)) * 1_000_000_000
+            {
+                return false;
+            }
+            seconds_of_ns(step) > cap
+        }
+        // Neither pair has an integer step: `elapsed` is the difference.
+        (ClockValue::F64(c), ClockValue::F64(p)) => c - p > cap,
+        // An integer clock's step below 2^53 is a double exactly, and a
+        // double compares with the cap as the exact comparison does
+        // (`cmp_int_f64`: a NaN cap is past by neither); a larger step takes
+        // the exact comparison, out of line.
+        (ClockValue::I64(c), ClockValue::I64(p)) => match c.checked_sub(p) {
+            Some(d) if d.unsigned_abs() < 1 << 53 => d as f64 > cap,
+            _ => past_cap_general(now, last, cap),
+        },
+        _ => past_cap_general(now, last, cap),
+    }
+}
+
+/// [`past_cap`] for any other pair, out of line: the exact comparison of an
+/// integer clock's step against the cap takes a conversion to 128 bits that
+/// the rows of a float or temporal clock, taking the arms above, would
+/// otherwise pay for on every row.
+#[inline(never)]
+fn past_cap_general(now: ClockValue, last: ClockValue, cap: f64) -> bool {
+    match now.int_step(last) {
+        Some(step) => rheon_core::cmp_int_f64(step, cap) == Some(Ordering::Greater),
+        None => elapsed(now, last) > cap,
+    }
+}
+
+fn refuse_backwards(
+    adv: &ClockAdvance,
+    seq: u64,
+    prev: Option<ClockValue>,
+    now: Option<ClockValue>,
+) -> Result<(), Refusal> {
+    match adv.backwards {
+        Some(raw) => Err(Refusal::Backwards {
+            seq,
+            back: -raw,
+            prev,
+            now,
+            min_backwards_jump: adv.disorder.map(|d| d.min_backwards_jump),
+        }),
+        None => Ok(()),
+    }
+}
+
+/// `∫_a^b λ^(T - s) ds` for a backward kernel, `∫_a^b λ^(s - T) ds` for a
+/// forward one: the decayed mass of `[a, b]` seen from `T`, `a <= b`.
+#[inline]
+fn mass_between(k: &KernelDef, t: f64, a: f64, b: f64) -> f64 {
+    if b <= a {
+        return 0.0;
+    }
+    match k.direction {
+        // ∫_a^b λ^(T - s) ds = M(T - a) - M(T - b)
+        Direction::Backward => k.mass(t - a) - k.mass(t - b),
+        // ∫_a^b λ^(s - T) ds = M(b - T) - M(a - T)
+        Direction::Forward => k.mass(b - t) - k.mass(a - t),
+    }
+}
+
+/// [`mass_between`] with both masses taken through `memo`: a window's cut
+/// reads the same two distances for each operator of a kernel.
+#[inline]
+fn mass_between_in(k: &KernelDef, memo: &mut DecayMemo, t: f64, a: f64, b: f64) -> f64 {
+    if b <= a {
+        return 0.0;
+    }
+    match k.direction {
+        Direction::Backward => k.mass_cut_in(t - a, memo) - k.mass_far_in(t - b, memo),
+        Direction::Forward => k.mass(b - t) - k.mass(a - t),
+    }
+}
+
+/// [`mass_between`] for a forward kernel's interval ending at the next row
+/// `b`, starting at its own row `a = t`: one mass, of the distance to the next
+/// row, through `memo`, which a regular clock asks again at the next row.
+#[inline]
+fn mass_between_fill(k: &KernelDef, memo: &mut DecayMemo, t: f64, a: f64, b: f64) -> f64 {
+    if b <= a {
+        return 0.0;
+    }
+    k.mass_in(b - t, memo) - k.mass(a - t)
+}
+
+/// [`mass_between`] for a forward kernel's close: the open row's interval
+/// `[a, b]` seen from the row `t` being closed, its two masses on slots of
+/// their own beside the one a row's interval to the next row takes
+/// ([`mass_between_in`]), so each repeats where the clock does.
+#[inline]
+fn mass_between_close(k: &KernelDef, memo: &mut DecayMemo, t: f64, a: f64, b: f64) -> f64 {
+    if b <= a {
+        return 0.0;
+    }
+    k.mass_slot(b - t, &mut memo.mass_far) - k.mass_slot(a - t, &mut memo.fwd().mass_open)
+}
+
+/// [`mass_between`] for a backward kernel's interval ending at `t` -- a
+/// value held from `a` to the row's own time -- with `memo` holding the mass
+/// of the distance back to `a` that the last ask was for: where operators of
+/// a kernel hold from the same time (they read one column, as a mean and a
+/// spread of it do), it is taken once, and where a clock steps by the same
+/// amount row after row, once for the stream. A forward kernel's is
+/// [`mass_between`]'s.
+#[inline]
+fn mass_held_to(k: &KernelDef, t: f64, a: f64, memo: &mut DecayMemo) -> f64 {
+    // The interval is `[a, b]` with `b` the row's own time `t`, as `mass_between`
+    // takes it, its far end's mass `M(t - b)` read where it is.
+    let b = t;
+    if b <= a {
+        return 0.0;
+    }
+    match k.direction {
+        Direction::Backward => k.mass_held_in(t - a, memo) - k.mass(t - b),
+        Direction::Forward => mass_between(k, t, a, b),
+    }
+}
+
+/// Whether operator `o` can run on its kernel: a mean or a variance with
+/// no decay needs a window, and a variance looks back only (task 212).
+fn check_op(o: usize, op: &OpDef, k: &KernelDef) -> Result<(), String> {
+    if op.stat.weighs_held() && k.half_life.is_infinite() && k.window_size.is_none() {
+        return Err(format!(
+            "operator {o}: a mean or a variance under half_life = inf needs a window_size, \
+             since a value held from before the first row would have no finite weight"
+        ));
+    }
+    if op.stat.is_var() && k.direction == Direction::Forward {
+        return Err(format!(
+            "operator {o}: a variance reads only the rows up to each row, but this one reads \
+             the rows after it"
+        ));
+    }
+    match (op.stat, op.quantile) {
+        (Stat::Quantile, Some(p)) if p > 0.0 && p < 1.0 => {}
+        (Stat::Quantile, p) => {
+            return Err(format!(
+                "operator {o}: quantile must be above 0 and below 1, but it is {}",
+                p.map_or_else(|| "not set".to_string(), |p| p.to_string())
+            ));
+        }
+        (_, Some(_)) => {
+            return Err(format!(
+                "operator {o}: quantile is given, but only a quantile operator takes it"
+            ));
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// `$f::<true>(..)` for a queue holding a variance, `$f::<false>(..)`
+/// for any other: the queue code compiled for its width ([`row_w`]).
+macro_rules! by_width {
+    ($wide:expr, $f:ident ( $($arg:expr),* $(,)? )) => {
+        if $wide { $f::<true>($($arg),*) } else { $f::<false>($($arg),*) }
+    };
+}
+
+// After `by_width!`, which it uses.
+#[cfg(test)]
+mod empty_sum_tests;
+mod held_mass;
+#[cfg(test)]
+mod int_clock_tests;
+mod keys;
+#[cfg(test)]
+mod memo_tests;
+mod plain;
+
+use keys::IntGroups;
+pub(crate) use keys::{ChunkKeys, session_hashes};
+pub(crate) use plain::PlainRows;
+use plain::{Derived, Parts};
+
+/// Group keys, as text, to their groups: hashed with a fixed, fast hasher,
+/// which the saved state never sees ([`sorted_map`]).
+type KeyMap = HashMap<String, usize, polars_utils::aliases::PlFixedStateQuality>;
+
+/// The rows not yet emitted, borrowed apart from the groups.
+struct Held<'a> {
+    first: u64,
+    n_outputs: usize,
+    values: &'a mut VecDeque<f64>,
+    meta: &'a mut VecDeque<Meta>,
+}
+
+/// A refusal no caller's input can reach, said as the defect it is: every
+/// caller checks the kernels and operators it hands [`Windows::new`] first
+/// (`formula.rs`, `windows_frame.rs`), so a refusal there is this library's.
+fn defect(what: &str) -> String {
+    format!(
+        "internal: {what}, which is a defect in polars-online. Open an issue at \
+         https://github.com/hgilde/polars-online/issues with this message."
+    )
+}
+
+impl Windows {
+    /// # Errors
+    ///
+    /// No operator, or a kernel this core cannot run: a defect of the
+    /// caller's, which checks both first ([`defect`]).
+    pub fn new(
+        kernels: Vec<KernelDef>,
+        ops: Vec<OpDef>,
+        clock_cfg: ClockCfg,
+    ) -> Result<Self, String> {
+        Self::build(kernels, ops, clock_cfg).map_err(|e| defect(&e))
+    }
+
+    fn build(
+        kernels: Vec<KernelDef>,
+        ops: Vec<OpDef>,
+        clock_cfg: ClockCfg,
+    ) -> Result<Self, String> {
+        if ops.is_empty() {
+            return Err("at least one operator is needed".into());
+        }
+        for k in &kernels {
+            k.check()?;
+        }
+        let mut members = vec![Vec::new(); kernels.len()];
+        for (o, op) in ops.iter().enumerate() {
+            if op.kernel >= kernels.len() {
+                return Err(format!(
+                    "operator {o} names kernel {}, which there is not",
+                    op.kernel
+                ));
+            }
+            if op.min_samples == 0 && op.stat != Stat::Sum {
+                return Err("min_samples must be at least 1 (only a sum may take 0)".into());
+            }
+            let k = &kernels[op.kernel];
+            check_op(o, op, k)?;
+            members[op.kernel].push(o);
+        }
+        if let Some(k) = members.iter().position(Vec::is_empty) {
+            return Err(format!("kernel {k} has no operator"));
+        }
+        let widest = members.iter().map(Vec::len).max().unwrap_or(0);
+        let n_forward = kernels
+            .iter()
+            .filter(|k| k.direction == Direction::Forward)
+            .count();
+        Ok(Self {
+            n_outputs: ops.len(),
+            n_forward: u32::try_from(n_forward).map_err(|_| "too many kernels")?,
+            kernels: Arc::new(kernels),
+            ops: Arc::new(ops),
+            clock_cfg,
+            members: Arc::new(members),
+            groups: Vec::new(),
+            index: KeyMap::default(),
+            null_group: None,
+            int_groups: IntGroups::default(),
+            shared: ClockState::new(),
+            grouped: false,
+            head: None,
+            tail: None,
+            held_first: 0,
+            held_values: VecDeque::new(),
+            held_meta: VecDeque::new(),
+            ready: 0,
+            ready_kept: 0,
+            next_seq: 0,
+            scratch_row: vec![0.0; ROW_VAR * widest],
+            scratch_sum: vec![0.0; SUM_VAR * widest],
+            derived: Derived::default(),
+        })
+    }
+
+    /// Per kernel, which of its operators are variances: what its queue is
+    /// built with, and checked against.
+    fn var_of(&self, ki: usize) -> Vec<bool> {
+        self.members[ki]
+            .iter()
+            .map(|&o| self.ops[o].stat.is_var())
+            .collect()
+    }
+
+    /// Per kernel, which of its operators are quantiles: which keep
+    /// sketches in its queue.
+    fn quant_of(&self, ki: usize) -> Vec<bool> {
+        self.members[ki]
+            .iter()
+            .map(|&o| self.ops[o].stat == Stat::Quantile)
+            .collect()
+    }
+
+    /// Say whether the rows carry a group column (review R2, W3): with
+    /// one, a session is each group's and the stream's clock takes none;
+    /// without, the stream is the one group, and its session change ends
+    /// the windows as the one group's clock sees it.
+    pub fn set_grouped(&mut self, grouped: bool) {
+        self.grouped = grouped;
+    }
+
+    /// Whether a core read back from a state file holds what every method
+    /// here indexes by (review 2026-10-06, PD1): the loader compared the
+    /// kernels, the operators and the clock with its own call's and the
+    /// held rows' count with the frame's, and took the rest on trust, so a
+    /// damaged file that still decoded panicked at the next call. The rest:
+    /// each kernel's operators and the output count are the operators',
+    /// the held values `n_outputs` a held row, the rows ready among those
+    /// held, each group at its kernels' widths with its waiting rows held
+    /// and still open by exactly the windows left to close over them, the
+    /// silent list a list of the groups, and the keys the groups one to
+    /// one. `Err` names the first that fails.
+    ///
+    /// # Errors
+    ///
+    /// A core that is none this module could have built and fed.
+    pub fn check(&self) -> Result<(), String> {
+        for k in self.kernels.iter() {
+            k.check()?;
+        }
+        let (nk, no) = (self.kernels.len(), self.ops.len());
+        let mut members = vec![Vec::new(); nk];
+        for (o, op) in self.ops.iter().enumerate() {
+            match members.get_mut(op.kernel) {
+                Some(m) => m.push(o),
+                None => return Err(format!("operator {o} names kernel {}", op.kernel)),
+            }
+            check_op(o, op, &self.kernels[op.kernel])?;
+        }
+        if no == 0 || members != *self.members || members.iter().any(Vec::is_empty) {
+            return Err("its kernels' operators are not its operators".into());
+        }
+        if self.n_outputs != no {
+            return Err(format!("{} outputs for {no} operators", self.n_outputs));
+        }
+        let is_forward = |k: &KernelDef| k.direction == Direction::Forward;
+        let forward = self.kernels.iter().filter(|k| is_forward(k)).count();
+        if self.n_forward as usize != forward {
+            return Err(format!("{} forward kernels of {forward}", self.n_forward));
+        }
+        let held = self.held_meta.len();
+        if held.checked_mul(no) != Some(self.held_values.len()) {
+            return Err(format!(
+                "{} values held for {held} rows of {no} outputs",
+                self.held_values.len()
+            ));
+        }
+        let kept = self.held_meta.iter().take(self.ready).filter(|m| !m.drop);
+        if self.ready > held || self.ready_kept != kept.count() {
+            return Err(format!("{} rows ready of {held} held", self.ready));
+        }
+        if self.held_first.checked_add(held as u64) != Some(self.next_seq) {
+            return Err(format!(
+                "{held} rows held from row {} before row {}",
+                self.held_first, self.next_seq
+            ));
+        }
+        // Each group at its kernels' widths, and the windows still open over
+        // each held row, which `close` and `flush_group` count down.
+        let n_wait = u32::from(
+            self.kernels
+                .iter()
+                .any(|k| k.direction == Direction::Backward && k.closed.near(Direction::Backward)),
+        );
+        let is_held = |seq: u64| seq >= self.held_first && seq < self.next_seq;
+        let widths = |v: &[Vec<f64>]| {
+            v.len() == nk
+                && v.iter()
+                    .zip(self.members.iter())
+                    .all(|(x, m)| x.len() == m.len())
+        };
+        let mut open = vec![0u32; held];
+        let var: Vec<Vec<bool>> = (0..nk).map(|ki| self.var_of(ki)).collect();
+        let quant: Vec<Vec<bool>> = (0..nk).map(|ki| self.quant_of(ki)).collect();
+        for (gi, g) in self.groups.iter().enumerate() {
+            let fits = g.queues.len() == nk
+                && g.queues
+                    .iter()
+                    .zip(var.iter().zip(&quant))
+                    .all(|(q, (v, qu))| q.has_width(v, qu))
+                && g.open.len() == nk
+                && widths(&g.open_x)
+                && widths(&g.open_held)
+                && widths(&g.stamp_values)
+                && g.closed.len() == nk
+                && g.closed.iter().all(|&c| c <= g.waiting.len())
+                && g.last_valued.len() == no
+                && g.held.len() == no
+                && (forward > 0 || g.waiting.is_empty())
+                && (n_wait > 0 || g.pending.is_empty())
+                && g.waiting.iter().all(|w| is_held(w.seq))
+                && g.pending.iter().all(|&s| is_held(s))
+                && (!g.linked || g.last_raw.is_some());
+            if !fits {
+                return Err(format!("group {gi} does not fit its kernels and held rows"));
+            }
+            for (i, w) in g.waiting.iter().enumerate() {
+                let r = (w.seq - self.held_first) as usize;
+                let still = self.kernels.iter().zip(&g.closed);
+                open[r] += still.filter(|&(k, &c)| is_forward(k) && i >= c).count() as u32;
+            }
+            for &s in &g.pending {
+                open[(s - self.held_first) as usize] += n_wait;
+            }
+        }
+        if self.held_meta.iter().zip(&open).any(|(m, &o)| m.open != o) {
+            return Err("a held row's open windows are not the ones still open over it".into());
+        }
+        self.check_links()?;
+        // The keys name the groups one to one: `group` makes each group
+        // under its key, and `push` reads a group by the index a key gives.
+        let mut named = vec![false; self.groups.len()];
+        for &gi in self.index.values().chain(&self.null_group) {
+            match named.get_mut(gi) {
+                Some(seen) if !*seen => *seen = true,
+                _ => return Err("its keys do not name its groups one to one".into()),
+            }
+        }
+        if named.contains(&false) {
+            return Err("its keys do not name its groups one to one".into());
+        }
+        Ok(())
+    }
+
+    /// The silent list: links inside the groups, from the head through each
+    /// linked group once, back links that agree, the tail last, and no
+    /// unlinked group holding a link ([`Self::check`]).
+    fn check_links(&self) -> Result<(), String> {
+        let n = self.groups.len();
+        let bad = || Err("its silent list is not a list of its groups".to_string());
+        let inside = |l: Option<usize>| l.is_none_or(|i| i < n);
+        let mut links = self.groups.iter().flat_map(|g| [g.prev_link, g.next_link]);
+        if !inside(self.head) || !inside(self.tail) || !links.all(inside) {
+            return bad();
+        }
+        let (mut at, mut prev, mut walked) = (self.head, None, 0);
+        while let Some(i) = at {
+            let g = &self.groups[i];
+            if walked == n || !g.linked || g.prev_link != prev {
+                return bad();
+            }
+            (prev, at, walked) = (Some(i), g.next_link, walked + 1);
+        }
+        let linked = self.groups.iter().filter(|g| g.linked).count();
+        let stray = self
+            .groups
+            .iter()
+            .any(|g| !g.linked && (g.prev_link.is_some() || g.next_link.is_some()));
+        if prev != self.tail || walked != linked || stray {
+            return bad();
+        }
+        Ok(())
+    }
+
+    /// One named damage, as a bit flip or a truncated array in a state file
+    /// would leave the core: for the loader's test in `windows_frame.rs`,
+    /// the fields being this module's.
+    #[cfg(test)]
+    pub(crate) fn damage(&mut self, what: &str) {
+        match what {
+            "held_values" => {
+                self.held_values.pop_back();
+            }
+            "n_outputs" => self.n_outputs = 0,
+            "queue" => self.groups[0].queues[0].n += 1,
+            "link" => self.head = Some(self.groups.len()),
+            "ready" => self.ready = self.held_meta.len() + 1,
+            "waiting" => {
+                let past = self.held_first + self.held_meta.len() as u64;
+                self.groups[0].waiting[0].seq = past;
+            }
+            other => unreachable!("no damage {other:?}"),
+        }
+    }
+
+    /// The scratch buffers, which a loaded state lacks.
+    #[inline]
+    fn scratch(&mut self) {
+        if !self.derived.ready {
+            self.derived = Derived::of(&self.kernels, self.derived.off);
+        }
+        if self.scratch_sum.is_empty() {
+            let widest = self.members.iter().map(Vec::len).max().unwrap_or(0);
+            self.scratch_row = vec![0.0; ROW_VAR * widest];
+            self.scratch_sum = vec![0.0; SUM_VAR * widest];
+        }
+    }
+
+    /// Whether this core and `other` hold one copy of the operator
+    /// definitions.
+    #[cfg(test)]
+    pub fn shares_definitions_with(&self, other: &Windows) -> bool {
+        Arc::ptr_eq(&self.kernels, &other.kernels)
+            && Arc::ptr_eq(&self.ops, &other.ops)
+            && Arc::ptr_eq(&self.members, &other.members)
+    }
+
+    /// Share `other`'s operator definitions where they are the same as this
+    /// core's, so that the cores of one spec's groups hold one copy of them.
+    pub fn share_with(&mut self, other: &Windows) {
+        if self.kernels != other.kernels {
+            return;
+        }
+        if self.ops == other.ops && self.members == other.members {
+            self.kernels = Arc::clone(&other.kernels);
+            self.ops = Arc::clone(&other.ops);
+            self.members = Arc::clone(&other.members);
+        }
+    }
+
+    pub fn kernels(&self) -> &[KernelDef] {
+        &self.kernels
+    }
+
+    pub fn ops(&self) -> &[OpDef] {
+        &self.ops
+    }
+
+    pub fn clock_cfg(&self) -> &ClockCfg {
+        &self.clock_cfg
+    }
+
+    pub fn n_outputs(&self) -> usize {
+        self.n_outputs
+    }
+
+    /// The stream's own clock: what the last row left it at.
+    pub fn shared_clock(&self) -> &ClockState {
+        &self.shared
+    }
+
+    /// Rows fed and not yet emitted.
+    pub fn held(&self) -> usize {
+        self.held_meta.len()
+    }
+
+    /// Contributing rows every queue holds, summed: what the windows cost.
+    pub fn queued(&self) -> usize {
+        self.groups
+            .iter()
+            .flat_map(|g| g.queues.iter())
+            .map(Queue::len)
+            .sum()
+    }
+
+    /// Buckets every quantile's sketches hold, summed: what the quantiles
+    /// cost beside the rows queued.
+    pub fn quantile_buckets(&self) -> usize {
+        self.groups
+            .iter()
+            .flat_map(|g| g.queues.iter())
+            .map(Queue::quantile_buckets)
+            .sum()
+    }
+
+    /// The `seq` the next row fed takes: the rows fed so far, across a save
+    /// and a load.
+    pub fn next_seq(&self) -> u64 {
+        self.next_seq
+    }
+
+    /// The index of the group with this key, as text; a new key makes a new
+    /// group. Only a group's first row allocates.
+    pub fn group(&mut self, key: Option<&str>) -> usize {
+        let found = match key {
+            Some(k) => self.index.get(k).copied(),
+            None => self.null_group,
+        };
+        if let Some(gi) = found {
+            return gi;
+        }
+        let gi = self.groups.len();
+        let queues = (0..self.kernels.len())
+            .map(|ki| Queue::new(self.var_of(ki), &self.quant_of(ki)))
+            .collect();
+        self.groups.push(Group {
+            clock: ClockState::new(),
+            tau: 0.0,
+            origin: None,
+            off: 0,
+            form: OffForm::Bits,
+            restart: true,
+            queues,
+            open: vec![None; self.kernels.len()],
+            open_x: self
+                .members
+                .iter()
+                .map(|m| vec![f64::NAN; m.len()])
+                .collect(),
+            open_held: self
+                .members
+                .iter()
+                .map(|m| vec![f64::NAN; m.len()])
+                .collect(),
+            waiting: VecDeque::new(),
+            closed: vec![0; self.kernels.len()],
+            last_valued: vec![f64::NAN; self.ops.len()],
+            held: vec![f64::NAN; self.ops.len()],
+            pending: Vec::new(),
+            stamp: None,
+            stamp_values: self
+                .members
+                .iter()
+                .map(|m| vec![f64::NAN; m.len()])
+                .collect(),
+            last_raw: None,
+            prev_link: None,
+            next_link: None,
+            linked: false,
+        });
+        match key {
+            Some(k) => {
+                self.index.insert(k.to_string(), gi);
+            }
+            None => self.null_group = Some(gi),
+        }
+        gi
+    }
+
+    /// Both clocks stepped on copies by a row's clock and session, for the
+    /// caller to keep once neither refuses it. With groups a session is
+    /// each group's: the stream's clock keeps the stream's order and its
+    /// gaps and takes no session (review R2, W3: groups with sessions of
+    /// their own restarted every group at every row); without, the stream
+    /// is the one group. `gi` is `None` for a group with no row yet.
+    #[inline(always)]
+    fn step_clocks(
+        &self,
+        gi: Option<usize>,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+    ) -> Result<(ClockState, ClockAdvance, ClockState, ClockAdvance), Refusal> {
+        let seq = self.next_seq;
+        let stream_session = if self.grouped { None } else { session };
+        let mut shared = self.shared.clone();
+        let adv = shared.advance(&self.clock_cfg, clock, stream_session, true);
+        refuse_backwards(&adv, seq, self.shared.last_clock(), clock)?;
+        // A restart on the stream's clock starts every group over, its clock
+        // included: this row is the first on a fresh clock of its group, not
+        // a step back on a stale one (task 159, W1: a group's next row within
+        // `restart_after_step_back` of its last was refused as a late row
+        // after the stream had restarted, where its windows had started over).
+        let mut own_clock = if adv.reset {
+            ClockState::new()
+        } else {
+            gi.map_or_else(ClockState::new, |g| self.groups[g].clock.clone())
+        };
+        let prev = own_clock.last_clock();
+        let own = own_clock.advance(&self.clock_cfg, clock, session, true);
+        refuse_backwards(&own, seq, prev, clock)?;
+        Ok((shared, adv, own_clock, own))
+    }
+
+    /// What the clocks would make of a row with this group key, clock and
+    /// session, without taking it: refused as a step back the policy
+    /// refuses, or taken as a new start, a step forward or the same stamp.
+    /// What a run resumed on an input that starts elsewhere asks of the
+    /// input's first row (review R6, D3 and D4): a new start or a step
+    /// forward is the next file.
+    pub fn peek(
+        &self,
+        key: Option<&str>,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+    ) -> Result<Peek, Refusal> {
+        let gi = match key {
+            Some(k) => self.index.get(k).copied(),
+            None => self.null_group,
+        };
+        let (_, adv, _, own) = self.step_clocks(gi, clock, session)?;
+        if adv.reset || adv.session_changed || own.reset || own.session_changed {
+            return Ok(Peek::NewStart);
+        }
+        match (clock, self.shared.last_clock()) {
+            (Some(now), Some(last)) if !now.is_before(last) && !last.is_before(now) => {
+                Ok(Peek::SameStamp)
+            }
+            _ => Ok(Peek::Forward),
+        }
+    }
+
+    /// Feed one row. Earlier rows may be resolved by it; take them with
+    /// [`Self::drain`].
+    ///
+    /// # Errors
+    ///
+    /// A step back the clock policy refuses, on the stream's clock or on
+    /// the group's. A refused row changes nothing.
+    pub fn push(&mut self, row: &RowIn<'_>) -> Result<(), Refusal> {
+        self.scratch();
+        let seq = self.next_seq;
+        let gi = row.group;
+        // A plain step forward on both clocks is never refused: each steps
+        // where it stands, with no copy of the state to keep or put back.
+        // Any other row steps both on copies, kept only once neither
+        // refuses it.
+        let stream_session = if self.grouped { None } else { row.session };
+        let plain = match self.shared.plain_forward(row.clock, stream_session, true) {
+            // The group's clock, at the stream's last clock value as it
+            // mostly is, takes the step the stream's did.
+            Some(a) => self.groups[gi]
+                .clock
+                .plain_forward_after(&self.shared, a, row.clock, row.session, true)
+                .map(|b| (a, b)),
+            None => None,
+        };
+        let (adv, clock, own) = if let Some((a, b)) = plain {
+            let adv = self
+                .shared
+                .take_plain_forward(&self.clock_cfg, row.clock, stream_session, a);
+            let own = self.groups[gi].clock.take_plain_forward(
+                &self.clock_cfg,
+                row.clock,
+                row.session,
+                b,
+            );
+            (adv, None, own)
+        } else {
+            let (shared, adv, clock, own) = self.step_clocks(Some(gi), row.clock, row.session)?;
+            self.shared = shared;
+            (adv, Some(clock), own)
+        };
+        self.next_seq += 1;
+        // An event on the stream's clock reaches every group now; each
+        // group's own clock would show it at that group's next row.
+        if adv.reset {
+            self.end_all(End::Discard);
+            // Every group's clock too (task 159, W1): the row's own group
+            // takes the fresh one stepped above.
+            for g in &mut self.groups {
+                g.clock = ClockState::new();
+            }
+        } else if adv.session_changed || adv.capped {
+            self.end_all(End::Cut);
+        }
+        if let Some(now) = row.clock {
+            self.end_silent(now);
+        }
+        if own.reset {
+            self.end_group(gi, End::Discard);
+        } else if own.session_changed || own.capped {
+            self.end_group(gi, End::Cut);
+        }
+
+        // A new stamp resolves the stamps before it, in every group: the
+        // stream is in clock order across groups.
+        if let Some(now) = row.clock {
+            self.flush_stamps_before(now);
+        }
+
+        // One push each: `extend(repeat_n(..))` was a call to a fill routine
+        // for the one or two values a row holds.
+        for _ in 0..self.n_outputs {
+            self.held_values.push_back(f64::NAN);
+        }
+        let has_clock = row.clock.is_some();
+        // Under "right" and "both" a backward window waits for the next
+        // distinct stamp; a row-count clock repeats no stamp, so the row's
+        // own windows are read at the end of this push (review R1, C1: they
+        // were never read without a clock, and every such output was null).
+        let n_wait = self.derived.n_wait;
+        self.held_meta.push_back(Meta {
+            open: self.n_forward + n_wait,
+            accept: row.accept,
+            drop: false,
+        });
+
+        let g = &mut self.groups[gi];
+        if let Some(clock) = clock {
+            g.clock = clock;
+        }
+        let restarted = own.reset || own.session_changed || own.capped || g.restart;
+        if restarted {
+            // Every window of the group was ended above or before: nothing
+            // refers to the old policy time, so it starts over at 0.
+            restart_in(g, row.clock);
+        } else if let (Some(now), Some(origin)) = (row.clock, g.origin) {
+            // From the stretch's origin in one subtraction (exact in
+            // integer nanoseconds), not a sum of rounded steps: summed, a
+            // row exactly one window later landed on either side of the
+            // edge by the sum's noise (review R1, C2).
+            g.tau = elapsed(now, origin);
+        } else {
+            g.tau += own.d_clock;
+            if g.origin.is_none() {
+                g.origin = row.clock;
+            }
+        }
+        // The raw clock a window's edge is decided from (review R2, W1): the
+        // nanoseconds of a temporal clock, exact; the bits of a number
+        // clock, so the edge is the difference of the two rows' clocks, as
+        // Polars takes it, not of two origin-subtracted policy times, which
+        // put a row exactly one window back outside the edge, `0.4 − 0.1`
+        // not being `0.3` (task 159, W3); the policy time's bits without a
+        // clock column, where the two are one.
+        (g.off, g.form) = match row.clock {
+            Some(ClockValue::Ns(c)) => (c, OffForm::Ns),
+            Some(ClockValue::I64(c)) => (c, OffForm::Int),
+            Some(ClockValue::F64(c)) => (c.to_bits() as i64, OffForm::Bits),
+            None => (g.tau.to_bits() as i64, OffForm::Bits),
+        };
+        let (tau, off, form) = (g.tau, g.off, g.form);
+        let new_stamp = g.stamp != row.clock || !has_clock;
+
+        // Forward kernels: the windows this row reaches past close first --
+        // it is not in them -- with the kernel's open row, the last one,
+        // counted up to here; then that row joins the queue, its interval
+        // ended by this one, and this row is the open one.
+        let mut held = Held {
+            first: self.held_first,
+            n_outputs: self.n_outputs,
+            values: &mut self.held_values,
+            meta: &mut self.held_meta,
+        };
+        for &ki in &self.derived.forward {
+            let ki = ki as usize;
+            let k = &self.kernels[ki];
+            forward_step(
+                k,
+                &self.ops,
+                &self.members[ki],
+                ki,
+                g,
+                &mut self.scratch_row,
+                &mut self.scratch_sum,
+                FwdRow {
+                    seq,
+                    tau,
+                    off,
+                    form,
+                },
+                |input| row.values[input],
+                &mut held,
+            );
+        }
+        if !self.derived.forward.is_empty() {
+            retire(&self.kernels, g);
+        }
+
+        // Backward kernels: under "left" and "none" the stamp's window is
+        // read before its rows join; then the row joins; under "right" and
+        // "both" the stamp's rows wait for the next stamp.
+        for &ki in &self.derived.backward {
+            let ki = ki as usize;
+            let k = &self.kernels[ki];
+            let m = &self.members[ki];
+            if !k.closed.near(Direction::Backward) && new_stamp {
+                by_width!(
+                    g.queues[ki].wide(),
+                    read_backward(
+                        k,
+                        &self.ops,
+                        m,
+                        &mut g.queues[ki],
+                        &mut self.scratch_sum,
+                        tau,
+                        off,
+                        form,
+                        &mut g.stamp_values[ki],
+                    )
+                );
+            }
+            // A value is held from the operator's last valued row; the first
+            // of a stretch from before it: from `-inf`, or from a window
+            // back where one bounds the mass.
+            let (rw, wide) = (g.queues[ki].row_w(), g.queues[ki].wide());
+            for (j, &o) in m.iter().enumerate() {
+                let v = row.values[self.ops[o].input];
+                let v = if usable(v) { v } else { f64::NAN };
+                let start = if g.last_valued[o].is_nan() {
+                    k.window_size.map_or(f64::NEG_INFINITY, |w| tau - w)
+                } else {
+                    g.last_valued[o]
+                };
+                let stat = self.ops[o].stat;
+                let acc = if v.is_nan() {
+                    Acc::default()
+                } else if stat.weighs_held() {
+                    Acc::held(
+                        v,
+                        mass_held_to(k, tau, start, &mut g.queues[ki].decay),
+                        stat.is_var(),
+                    )
+                } else {
+                    Acc {
+                        s: v,
+                        n: 1.0,
+                        ..Acc::default()
+                    }
+                };
+                let b = j * rw;
+                self.scratch_row[b] = start;
+                self.scratch_row[b + 1] = v;
+                acc.write(&mut self.scratch_row[b + 2..], wide);
+                if !v.is_nan() {
+                    g.last_valued[o] = tau;
+                }
+            }
+            g.queues[ki].push_row(
+                k,
+                seq,
+                tau,
+                off,
+                tau,
+                &self.scratch_row[..rw * m.len()],
+                &mut self.scratch_sum,
+            );
+            if !k.closed.near(Direction::Backward) {
+                let complete = k.window_size.is_none_or(|w| tau >= w);
+                let held = Held {
+                    first: self.held_first,
+                    n_outputs: self.n_outputs,
+                    values: &mut self.held_values,
+                    meta: &mut self.held_meta,
+                };
+                write_backward(&self.ops, m, seq, &g.stamp_values[ki], complete, held);
+            }
+        }
+        if n_wait > 0 {
+            g.pending.push(seq);
+        }
+        g.stamp = row.clock;
+
+        if self.n_forward > 0 {
+            g.waiting.push_back(Wait { seq, tau, off });
+        }
+        if let Some(now) = row.clock {
+            g.last_raw = Some(now);
+            self.link_back(gi);
+        }
+        if !has_clock {
+            // A row-count clock repeats no stamp: the row's own backward
+            // windows are known now.
+            self.flush_group(gi);
+        }
+        self.advance_ready();
+        Ok(())
+    }
+
+    /// Resolve the backward windows of every group's stamp before `now`.
+    ///
+    /// The silent list holds every group with a clock, in the order of its
+    /// last row, and the stream is in clock order across groups: a step
+    /// back on the stream's clock is refused or starts every group over,
+    /// and a session change on it ends every group's windows, either way
+    /// emptying the list. So the groups with rows pending are those whose
+    /// last row is at the stream's latest stamp -- every row of a group
+    /// joins its pending rows, and only a later stamp, which flushes them,
+    /// or the group's end, which unlinks it, empties them -- and they are
+    /// the list's tail. Walking from the head, as this did, stepped over
+    /// every group ever seen and already flushed, on every row (task 325:
+    /// 80 µs a row at 10,000 groups). From the tail it steps over only the
+    /// groups it flushes, plus one: nothing under `"left"` or `"none"`,
+    /// which pend no row, and nothing on a row at the same stamp. They are
+    /// flushed in the list's order, the head walk's.
+    fn flush_stamps_before(&mut self, now: ClockValue) {
+        let passed = |g: &Group| !g.pending.is_empty() && g.stamp.is_some_and(|s| is_after(now, s));
+        let mut first = None;
+        let mut at = self.tail;
+        while let Some(i) = at.filter(|&i| passed(&self.groups[i])) {
+            first = Some(i);
+            at = self.groups[i].prev_link;
+        }
+        let mut gi = first;
+        while let Some(i) = gi {
+            self.flush_group(i);
+            gi = self.groups[i].next_link;
+        }
+    }
+
+    /// The kernels, the held rows and the buffers a group's windows are read
+    /// and written with, borrowed apart from the groups.
+    #[inline(always)]
+    fn split(&mut self) -> (Parts<'_>, &mut Vec<Group>) {
+        let Windows {
+            kernels,
+            ops,
+            members,
+            groups,
+            held_values,
+            held_meta,
+            held_first,
+            n_outputs,
+            scratch_row,
+            scratch_sum,
+            n_forward,
+            derived,
+            ..
+        } = self;
+        (
+            Parts {
+                kernels: kernels.as_slice(),
+                ops: ops.as_slice(),
+                members: members.as_slice(),
+                held_values,
+                held_meta,
+                held_first: *held_first,
+                n_out: *n_outputs,
+                scratch_row,
+                scratch_sum,
+                n_wait: derived.n_wait,
+                n_forward: *n_forward,
+            },
+            groups,
+        )
+    }
+
+    /// Resolve the pending backward windows of group `gi` at its stamp.
+    fn flush_group(&mut self, gi: usize) {
+        #[cfg(test)]
+        FLUSHES.with(|c| {
+            let (calls, idle) = c.get();
+            let idle = idle + u64::from(self.groups[gi].pending.is_empty());
+            c.set((calls + 1, idle));
+        });
+        if self.groups[gi].pending.is_empty() {
+            return;
+        }
+        let (mut p, groups) = self.split();
+        flush_in(&mut p, &mut groups[gi]);
+    }
+
+    /// End every group's open windows `how`; every group starts its windows
+    /// over at its next row.
+    fn end_all(&mut self, how: End) {
+        for gi in 0..self.groups.len() {
+            self.end_group(gi, how);
+        }
+    }
+
+    /// Cut the open windows of every group whose last row is more than
+    /// `gap_cap` behind `now`: the stream's clock has shown that its next
+    /// row opens with a longer gap. Only a clock column has a cap; on a
+    /// row-count clock nothing cuts a silent group, which is why a forward
+    /// window under groups needs a clock column (task 173, PC1).
+    fn end_silent(&mut self, now: ClockValue) {
+        let cap = self.clock_cfg.gap_cap;
+        if !cap.is_finite() {
+            return;
+        }
+        while let Some(gi) = self.head {
+            let last = self.groups[gi]
+                .last_raw
+                .expect("a listed group has a clock");
+            if !past_cap(now, last, cap) {
+                break;
+            }
+            self.end_group(gi, End::Cut);
+        }
+    }
+
+    /// End a group's open windows `how`: its pending backward windows are
+    /// read as they stand, its forward windows closed at the last row the
+    /// group saw -- "the value over what it saw", with nothing held past
+    /// that row (review R1, C4: held `gap_cap` past it, a kept rate's span
+    /// grew with the cap) -- and its queues emptied; its next row starts
+    /// every window over.
+    fn end_group(&mut self, gi: usize, how: End) {
+        self.flush_group(gi);
+        let (mut p, groups) = self.split();
+        end_in(&mut p, &mut groups[gi], how);
+        self.unlink(gi);
+    }
+
+    fn unlink(&mut self, gi: usize) {
+        let g = &mut self.groups[gi];
+        if !g.linked {
+            return;
+        }
+        let (prev, next) = (g.prev_link.take(), g.next_link.take());
+        g.linked = false;
+        match prev {
+            Some(p) => self.groups[p].next_link = next,
+            None => self.head = next,
+        }
+        match next {
+            Some(n) => self.groups[n].prev_link = prev,
+            None => self.tail = prev,
+        }
+    }
+
+    /// Move a group to the tail of the silent list: its last row is the
+    /// stream's latest.
+    fn link_back(&mut self, gi: usize) {
+        // Already the tail: unlinking it and linking it back would leave
+        // every link as it is.
+        if self.tail == Some(gi) && self.groups[gi].linked {
+            return;
+        }
+        self.unlink(gi);
+        let tail = self.tail;
+        let g = &mut self.groups[gi];
+        g.prev_link = tail;
+        g.linked = true;
+        match tail {
+            Some(t) => self.groups[t].next_link = Some(gi),
+            None => self.head = Some(gi),
+        }
+        self.tail = Some(gi);
+    }
+
+    fn advance_ready(&mut self) {
+        while let Some(m) = self.held_meta.get(self.ready).filter(|m| m.open == 0) {
+            self.ready_kept += usize::from(!m.drop);
+            self.ready += 1;
+        }
+    }
+
+    /// Resolved rows no operator drops, ready to go out: how far a
+    /// [`Self::drain_kept`] could go now.
+    pub fn ready_kept(&self) -> usize {
+        self.ready_kept
+    }
+
+    /// The held rows every kernel has resolved, dropped ones included: what
+    /// [`Self::drain`] emits.
+    pub fn ready(&self) -> usize {
+        self.ready
+    }
+
+    /// The rows every kernel has resolved, in input order.
+    pub fn drain(&mut self) -> Emitted {
+        self.emit(self.ready)
+    }
+
+    /// [`Self::drain`], stopping at the `limit`-th row no operator drops:
+    /// the resolved rows after it stay held, for a later drain or a saved
+    /// state.
+    pub fn drain_kept(&mut self, limit: usize) -> Emitted {
+        let mut kept = 0;
+        let mut rows = 0;
+        while rows < self.ready && kept < limit {
+            kept += usize::from(!self.held_meta[rows].drop);
+            rows += 1;
+        }
+        self.emit(rows)
+    }
+
+    /// The end of the input: every backward window still waiting is read
+    /// as it stands, every forward window still open is unresolved -- null
+    /// whatever `partial` says, never dropped -- and every row goes out.
+    /// The core takes no more rows after this.
+    pub fn finish(&mut self) -> Emitted {
+        self.scratch();
+        for gi in 0..self.groups.len() {
+            self.flush_group(gi);
+            let g = &mut self.groups[gi];
+            g.waiting.clear();
+            g.closed.iter_mut().for_each(|c| *c = 0);
+            for (k, q) in self.kernels.iter().zip(g.queues.iter_mut()) {
+                if k.direction == Direction::Forward {
+                    q.clear();
+                }
+            }
+            g.open.iter_mut().for_each(|o| *o = None);
+            self.unlink(gi);
+        }
+        self.ready = self.held_meta.len();
+        self.ready_kept = self.held_meta.iter().filter(|m| !m.drop).count();
+        self.emit(self.ready)
+    }
+
+    fn emit(&mut self, rows: usize) -> Emitted {
+        let n_out = self.n_outputs;
+        let mut out = Emitted {
+            first_seq: self.held_first,
+            rows,
+            values: vec![Vec::with_capacity(rows); n_out],
+            drop: Vec::with_capacity(rows),
+        };
+        // The rows' values are one run of `n_out` a row; each operator's are
+        // every `n_out`-th of it.
+        if n_out > 0 {
+            let flat = &self.held_values.make_contiguous()[..rows * n_out];
+            for (o, col) in out.values.iter_mut().enumerate() {
+                col.extend(flat.chunks_exact(n_out).map(|row| row[o]));
+            }
+        }
+        for meta in self.held_meta.drain(..rows) {
+            out.drop.push(meta.drop);
+            self.ready_kept -= usize::from(!meta.drop);
+        }
+        self.ready -= rows;
+        self.held_values.drain(..rows * n_out);
+        self.held_first += rows as u64;
+        out
+    }
+}
+
+/// A forward kernel's open row, once the next row at `end` has ended its
+/// interval, written as a queue row into `row`: a mean weighs the held
+/// value over `[tau, end)`, a sum counts the row's own value, and only a
+/// row with its own value counts toward `min_samples`.
+#[allow(clippy::too_many_arguments)]
+fn fill_forward<const W: bool>(
+    k: &KernelDef,
+    ops: &[OpDef],
+    members: &[usize],
+    tau: f64,
+    end: f64,
+    x: &[f64],
+    held: &[f64],
+    row: &mut [f64],
+    memo: &mut DecayMemo,
+) {
+    for (j, &o) in members.iter().enumerate() {
+        let (v, h) = (x[j], held[j]);
+        let n = f64::from(u8::from(!v.is_nan()));
+        let acc = match ops[o].stat {
+            Stat::Mean if !h.is_nan() => {
+                let mass = mass_between_fill(k, memo, tau, tau, end);
+                Acc {
+                    s: mass * h,
+                    w: mass,
+                    n,
+                    ..Acc::default()
+                }
+            }
+            // A variance has no forward kernel (`check_op`).
+            Stat::Mean | Stat::Var | Stat::Std => Acc::default(),
+            Stat::Sum | Stat::Rate | Stat::Quantile => Acc {
+                s: if v.is_nan() { 0.0 } else { v },
+                w: 0.0,
+                n,
+                ..Acc::default()
+            },
+        };
+        let b = j * row_w::<W>();
+        row[b] = tau;
+        // A quantile counts the row's own value, as a sum does, and its
+        // sketch reads it here (`Queue::push`).
+        row[b + 1] = if ops[o].stat == Stat::Quantile { v } else { h };
+        acc.write(&mut row[b + 2..], W);
+    }
+}
+
+/// Each operator's value of a backward window at stamp time `tau`, the
+/// queue evicted to the window first, into `out`; NaN where null.
+#[allow(clippy::too_many_arguments)]
+fn read_backward<const W: bool>(
+    k: &KernelDef,
+    ops: &[OpDef],
+    members: &[usize],
+    q: &mut Queue,
+    scratch: &mut [f64],
+    tau: f64,
+    off: i64,
+    form: OffForm,
+    out: &mut [f64],
+) {
+    if k.window_size.is_some() {
+        // The row at the far edge is in under "left" and "both". Ages are
+        // the exact gap from the row to this one (`gap`), one form
+        // everywhere, so a row exactly a window old lands on the same side
+        // every time.
+        let far = k.closed.far(Direction::Backward);
+        q.evict::<W>(k, scratch, |_, _, t_off| {
+            let age = gap(form, t_off, off).cmp_window(k);
+            if far {
+                age == Ordering::Greater
+            } else {
+                age != Ordering::Less
+            }
+        });
+    }
+    let span = k.window_size.map_or(tau, |w| w.min(tau));
+    let edge = k.window_size.map_or(f64::NEG_INFINITY, |w| tau - w);
+    for (j, &o) in members.iter().enumerate() {
+        let op = &ops[o];
+        let var = op.stat.is_var();
+        let Some((sum, at)) = q.sum_op::<W>(k, j) else {
+            out[j] = empty_value(op);
+            continue;
+        };
+        if op.stat == Stat::Quantile {
+            // The sums count the values; the sketches hold them.
+            out[j] = if sum.n < f64::from(op.min_samples) {
+                f64::NAN
+            } else {
+                let p = op.quantile.expect("a quantile has a level (`check_op`)");
+                q.quantile(k, j, p, None).unwrap_or(f64::NAN)
+            };
+            continue;
+        }
+        // The oldest held value's interval may start before the window:
+        // only the part inside counts, so a mean (and a variance) takes the
+        // window less the rows up to that one, then the row's mass inside,
+        // with no subtraction to cancel. Each operator's oldest valued row
+        // is its own.
+        let cut = match (k.window_size, op.stat.weighs_held()) {
+            (Some(_), true) => q
+                .find_oldest(j, |st, i| !st.x::<W>(i, j).is_nan())
+                .map(|(p, in_front, i)| {
+                    let st = q.stack(in_front);
+                    // A row exactly a window old (exact, from the raw
+                    // clocks, as its membership was decided) holds its
+                    // value up to the window's edge and no further: no mass
+                    // inside it, however `tau - w` rounds against its `tau`.
+                    let on_edge = gap(form, st.off[i], off).cmp_window(k) == Ordering::Equal;
+                    (p, st.start::<W>(i, j), st.end[i], st.x::<W>(i, j), on_edge)
+                })
+                .filter(|&(_, start, _, _, on_edge)| on_edge || start < edge),
+            _ => None,
+        };
+        let a = match cut {
+            Some((p, start, end, x, on_edge)) => {
+                let mut a = q
+                    .sum_after_op::<W>(k, p, j)
+                    .map_or(Acc::default(), |(r, r_at)| {
+                        r.scaled(k.discount_in(tau - r_at, &mut q.decay), var)
+                    });
+                let m = if on_edge {
+                    0.0
+                } else {
+                    mass_between_in(k, &mut q.decay, tau, start.max(edge), end)
+                };
+                a = a.plus(Acc::held(x, m, var), var);
+                a
+            }
+            // The sums are anchored at the newest row; seen from `tau`.
+            None => sum.scaled(k.discount_in(tau - at, &mut q.decay), var),
+        };
+        out[j] = value_of(k, op, a, span);
+    }
+}
+
+/// A window with no row: 0.0 for a sum with `min_samples` 0 (Polars'
+/// default), null (NaN) for the rest.
+fn empty_value(op: &OpDef) -> f64 {
+    if op.stat == Stat::Sum && op.min_samples == 0 {
+        0.0
+    } else {
+        f64::NAN
+    }
+}
+
+/// An operator's value from its accumulator and the window's span `t`.
+fn value_of(k: &KernelDef, op: &OpDef, a: Acc, t: f64) -> f64 {
+    if a.n < f64::from(op.min_samples) {
+        return f64::NAN;
+    }
+    match op.stat {
+        Stat::Mean => {
+            if a.w > 0.0 {
+                a.s / a.w
+            } else {
+                f64::NAN
+            }
+        }
+        // `min_samples` 0 only: no value sums to 0.0, whatever the dust.
+        Stat::Sum if a.n == 0.0 => 0.0,
+        Stat::Sum => a.s,
+        // Read from the queue's sketches (`read_backward`, `close`).
+        Stat::Quantile => f64::NAN,
+        Stat::Rate => rate_of(a, k.mass(t)),
+        Stat::Var | Stat::Std => {
+            if a.w <= 0.0 {
+                return f64::NAN;
+            }
+            let biased = a.q / a.w;
+            // Polars' correction for unequal weights, `V1² / (V1² − V2)`
+            // times the biased variance, its denominator as `2 e`; none where
+            // one row carries the window's weight (`e = 0`).
+            let var = if op.bias {
+                biased
+            } else if a.e > 0.0 {
+                a.w * a.w / (2.0 * a.e) * biased
+            } else {
+                f64::NAN
+            };
+            if op.stat == Stat::Std {
+                var.sqrt()
+            } else {
+                var
+            }
+        }
+    }
+}
+
+/// A rate: the decayed sum over the mass `m` of the window's span, null
+/// where there is none.
+#[inline]
+fn rate_of(a: Acc, m: f64) -> f64 {
+    if m > 0.0 { a.s / m } else { f64::NAN }
+}
+
+/// Write a backward kernel's values for row `seq`, under each operator's
+/// `partial` where the window reached before the stretch.
+fn write_backward(
+    ops: &[OpDef],
+    members: &[usize],
+    seq: u64,
+    vals: &[f64],
+    complete: bool,
+    held: Held<'_>,
+) {
+    let r = usize::try_from(seq - held.first).expect("a row is held");
+    for (j, &o) in members.iter().enumerate() {
+        let op = &ops[o];
+        if !complete && op.partial == Partial::Drop {
+            held.meta[r].drop = true;
+        }
+        if complete || op.partial == Partial::Keep {
+            held.values[r * held.n_outputs + o] = vals[j];
+        }
+    }
+}
+
+/// Close forward kernel `k` over waiting row `t`: the rows its queue holds
+/// after `t` are its window, every one of them held until a row inside it,
+/// plus the kernel's open row, held from its time until `open_end` and
+/// counted up to the window's far edge.
+#[allow(clippy::too_many_arguments)]
+fn close<const W: bool>(
+    k: &KernelDef,
+    ops: &[OpDef],
+    members: &[usize],
+    q: &mut Queue,
+    scratch: &mut [f64],
+    open: Option<(u64, f64, i64)>,
+    open_x: &[f64],
+    open_held: &[f64],
+    open_end: f64,
+    t: Wait,
+    how: End,
+    end_tau: f64,
+    form: OffForm,
+    held: Held<'_>,
+) {
+    let w = k.window_size.expect("a forward kernel has a window");
+    // A window is a set of timestamps: under "left" and "both" every row
+    // at the row's own stamp is in it, the row itself included, as every
+    // row at a stamp is in a backward "right" window (review R1, C3);
+    // under "right" and "none" none at the stamp is. Each edge is the exact
+    // span from the row (review R2, W1).
+    let near_in = k.closed.near(Direction::Forward);
+    q.evict::<W>(k, scratch, |_, _, j_off| {
+        let ahead = gap(form, t.off, j_off).cmp_zero();
+        if near_in {
+            ahead == Ordering::Less
+        } else {
+            ahead != Ordering::Greater
+        }
+    });
+    let r = usize::try_from(t.seq - held.first).expect("a waiting row is held");
+    let meta = &mut held.meta[r];
+    meta.open -= 1;
+    let far = (t.tau + w).min(end_tau);
+    let len = far - t.tau;
+    // The open row is in the window when it is past the row (or at its
+    // stamp, under "left" and "both") and not past the far edge.
+    // The open row may be the row itself, when the next row closed the
+    // window before the row joined the queue: in under "left" and "both".
+    // An open row exactly a window ahead is in a "right" or "both" window and
+    // is held from the far edge on: no mass inside the window, however
+    // `t.tau + w` rounds against its `tau`.
+    let mut open_on_edge = false;
+    let open = open.filter(|&(_, _, o_off)| {
+        let ahead = gap(form, t.off, o_off);
+        let (near, far) = (ahead.cmp_zero(), ahead.cmp_window(k));
+        open_on_edge = far == Ordering::Equal;
+        (if near_in {
+            near != Ordering::Less
+        } else {
+            near == Ordering::Greater
+        }) && (if k.closed.far(Direction::Forward) {
+            far != Ordering::Greater
+        } else {
+            far == Ordering::Less
+        })
+    });
+    for (j, &o) in members.iter().enumerate() {
+        let op = &ops[o];
+        if how == End::Cut && op.partial == Partial::Drop {
+            meta.drop = true;
+        }
+        let keep = match how {
+            End::Complete => true,
+            End::Cut => op.partial == Partial::Keep,
+            End::Discard => false,
+        };
+        // A variance has no forward kernel (`check_op`).
+        if !(keep && meta.accept) || op.stat.is_var() {
+            continue;
+        }
+        // The sums are anchored at the oldest row in the window; seen from
+        // the row. A held value counts only where the row holding it is in
+        // the window: a mean starts at the first row in the window with a
+        // value of its own, since the rows before it hold a value from the
+        // row itself or from one its stamp excludes.
+        let seg = q.sum_op::<W>(k, j);
+        let scaled = |memo: &mut DecayMemo, (a, at): (Acc, f64)| {
+            a.scaled(k.discount_slot(at - t.tau, &mut memo.fwd().disc_seg), false)
+        };
+        let mut a = Acc::default();
+        let mut any = seg.is_some();
+        let mut first_own: Option<usize> = None;
+        match op.stat {
+            Stat::Mean => {
+                first_own = q
+                    .find_oldest(j, |st, i| st.own::<W>(i, j).n > 0.0)
+                    .map(|(p, _, _)| p);
+                let base = match first_own {
+                    None => None,
+                    Some(0) => seg,
+                    Some(p) => q.sum_after_op::<W>(k, p - 1, j),
+                };
+                if let Some(b) = base {
+                    a = scaled(&mut q.decay, b);
+                }
+            }
+            Stat::Sum | Stat::Rate | Stat::Quantile => {
+                if let Some(s) = seg {
+                    a = scaled(&mut q.decay, s);
+                }
+            }
+            Stat::Var | Stat::Std => {}
+        }
+        let mut open_value = None;
+        if let Some((_, otau, _)) = open {
+            let (x, h) = (open_x[j], open_held[j]);
+            let own = !x.is_nan();
+            let n = f64::from(u8::from(own));
+            match op.stat {
+                Stat::Mean if !h.is_nan() && (own || first_own.is_some()) => {
+                    let m = if open_on_edge {
+                        0.0
+                    } else {
+                        mass_between_close(k, &mut q.decay, t.tau, otau, open_end.min(far))
+                    };
+                    a = a.plus(
+                        Acc {
+                            s: m * h,
+                            w: m,
+                            n,
+                            ..Acc::default()
+                        },
+                        false,
+                    );
+                    any = true;
+                }
+                Stat::Sum | Stat::Rate | Stat::Quantile if own => {
+                    a = a.plus(
+                        Acc {
+                            s: k.discount_slot(otau - t.tau, &mut q.decay.fwd().disc_open) * x,
+                            w: 0.0,
+                            n,
+                            ..Acc::default()
+                        },
+                        false,
+                    );
+                    open_value = Some((otau, x));
+                    any = true;
+                }
+                _ => {}
+            }
+        }
+        if !any {
+            // A closed window with no row in it.
+            held.values[r * held.n_outputs + o] = empty_value(op);
+            continue;
+        }
+        held.values[r * held.n_outputs + o] = if op.stat == Stat::Quantile {
+            if a.n < f64::from(op.min_samples) {
+                f64::NAN
+            } else {
+                let p = op.quantile.expect("a quantile has a level (`check_op`)");
+                q.quantile(k, j, p, open_value).unwrap_or(f64::NAN)
+            }
+        } else if op.stat == Stat::Rate {
+            // `value_of`'s rate, its span's mass on a slot: every window of
+            // a kernel but a cut one has the span of the window.
+            if a.n < f64::from(op.min_samples) {
+                f64::NAN
+            } else {
+                rate_of(a, k.mass_slot(len, &mut q.decay.fwd().mass_span))
+            }
+        } else {
+            value_of(k, op, a, len)
+        };
+    }
+}
+
+/// A row as a forward kernel meets it: its place, its policy time and its raw
+/// clock.
+#[derive(Clone, Copy)]
+struct FwdRow {
+    seq: u64,
+    tau: f64,
+    off: i64,
+    form: OffForm,
+}
+
+/// One forward kernel at one row of its group (the forward arm of
+/// [`Windows::push`], and of the plain loop, which takes a kernel over the
+/// rows of a block): the windows the row reaches past close, with the kernel's
+/// open row counted up to here; then the open row joins the queue, its
+/// interval ended by this row, and this row is the open one. `value` is the
+/// row's value of an operator input.
+#[allow(clippy::too_many_arguments)]
+#[inline]
+fn forward_step(
+    k: &KernelDef,
+    ops: &[OpDef],
+    members: &[usize],
+    ki: usize,
+    g: &mut Group,
+    scratch_row: &mut [f64],
+    scratch_sum: &mut [f64],
+    row: FwdRow,
+    value: impl Fn(usize) -> f64,
+    held: &mut Held<'_>,
+) {
+    let FwdRow {
+        seq,
+        tau,
+        off,
+        form,
+    } = row;
+    let w = k.window_size.expect("a forward kernel has a window");
+    // A row exactly a window later is in it under "right" and
+    // "both", so the window closes only past it.
+    while g.closed[ki] < g.waiting.len() && {
+        let t = g.waiting[g.closed[ki]];
+        let d = gap(form, t.off, off).cmp_window(k);
+        if k.closed.far(Direction::Forward) {
+            d == Ordering::Greater
+        } else {
+            d != Ordering::Less
+        }
+    } {
+        let t = g.waiting[g.closed[ki]];
+        g.closed[ki] += 1;
+        let h = Held {
+            first: held.first,
+            n_outputs: held.n_outputs,
+            values: &mut *held.values,
+            meta: &mut *held.meta,
+        };
+        by_width!(
+            g.queues[ki].wide(),
+            close(
+                k,
+                ops,
+                members,
+                &mut g.queues[ki],
+                scratch_sum,
+                g.open[ki],
+                &g.open_x[ki],
+                &g.open_held[ki],
+                tau,
+                t,
+                End::Complete,
+                t.tau + w,
+                form,
+                h,
+            )
+        );
+    }
+    if let Some((oseq, otau, ooff)) = g.open[ki].take() {
+        let (rw, wide) = (g.queues[ki].row_w(), g.queues[ki].wide());
+        by_width!(
+            wide,
+            fill_forward(
+                k,
+                ops,
+                members,
+                otau,
+                tau,
+                &g.open_x[ki],
+                &g.open_held[ki],
+                scratch_row,
+                &mut g.queues[ki].decay,
+            )
+        );
+        g.queues[ki].push_row(
+            k,
+            oseq,
+            otau,
+            ooff,
+            tau,
+            &scratch_row[..rw * members.len()],
+            scratch_sum,
+        );
+    }
+    // A value is held until the next: a row with none holds the last.
+    for (j, &o) in members.iter().enumerate() {
+        let v = value(ops[o].input);
+        let v = if usable(v) { v } else { f64::NAN };
+        g.open_x[ki][j] = v;
+        if !v.is_nan() {
+            g.held[o] = v;
+        }
+        g.open_held[ki][j] = g.held[o];
+    }
+    g.open[ki] = Some((seq, tau, off));
+}
+
+/// Resolve the pending backward windows of group `g` at its stamp: every
+/// kernel that waits for the next stamp is read as the group stands, and the
+/// pending rows are written.
+#[inline(always)]
+fn flush_in(p: &mut Parts<'_>, g: &mut Group) {
+    if g.pending.is_empty() {
+        return;
+    }
+    let (tau, off, form) = (g.tau, g.off, g.form);
+    for (ki, k) in p.kernels.iter().enumerate() {
+        if k.direction != Direction::Backward || !k.closed.near(Direction::Backward) {
+            continue;
+        }
+        let m = &p.members[ki];
+        by_width!(
+            g.queues[ki].wide(),
+            read_backward(
+                k,
+                p.ops,
+                m,
+                &mut g.queues[ki],
+                p.scratch_sum,
+                tau,
+                off,
+                form,
+                &mut g.stamp_values[ki],
+            )
+        );
+        let complete = k.window_size.is_none_or(|w| tau >= w);
+        for &seq in &g.pending {
+            let held = Held {
+                first: p.held_first,
+                n_outputs: p.n_out,
+                values: &mut *p.held_values,
+                meta: &mut *p.held_meta,
+            };
+            write_backward(p.ops, m, seq, &g.stamp_values[ki], complete, held);
+        }
+    }
+    for &seq in &g.pending {
+        let r = usize::try_from(seq - p.held_first).expect("a pending row is held");
+        p.held_meta[r].open -= 1;
+    }
+    // Emptied, not taken: a stamp's rows wait here on every row of a clock,
+    // and the next row's push would make the list again.
+    g.pending.clear();
+}
+
+/// End group `g`'s open windows `how` (the silent list is the caller's): its
+/// pending backward windows are read as they stand, its forward windows
+/// closed at the last row the group saw, and its queues emptied; its next row
+/// starts every window over.
+#[inline(always)]
+fn end_in(p: &mut Parts<'_>, g: &mut Group, how: End) {
+    flush_in(p, g);
+    g.restart = true;
+    let end_tau = g.tau;
+    for (ki, k) in p.kernels.iter().enumerate() {
+        if k.direction != Direction::Forward {
+            continue;
+        }
+        let w = k.window_size.expect("a forward kernel has a window");
+        while g.closed[ki] < g.waiting.len() {
+            let t = g.waiting[g.closed[ki]];
+            g.closed[ki] += 1;
+            // Under "right" and "both" a window whose far edge is the
+            // stretch's last row holds every timestamp it can, and a cut
+            // or a reset leaves none of them to come: it is whole, as its
+            // backward mirror is, where a cut cut it short -- null, or
+            // dropped (task 160, PC2) -- and a reset discarded it (task
+            // 173, PC2). Under "left" and "none" a row on the edge closed
+            // it already. A reset discards every other window.
+            let whole = matches!(how, End::Cut | End::Discard)
+                && k.closed.far(Direction::Forward)
+                && gap(g.form, t.off, g.off).cmp_window(k) == Ordering::Equal;
+            let (how, far) = if whole {
+                (End::Complete, t.tau + w)
+            } else {
+                (how, end_tau)
+            };
+            let held = Held {
+                first: p.held_first,
+                n_outputs: p.n_out,
+                values: &mut *p.held_values,
+                meta: &mut *p.held_meta,
+            };
+            by_width!(
+                g.queues[ki].wide(),
+                close(
+                    k,
+                    p.ops,
+                    &p.members[ki],
+                    &mut g.queues[ki],
+                    p.scratch_sum,
+                    g.open[ki],
+                    &g.open_x[ki],
+                    &g.open_held[ki],
+                    end_tau,
+                    t,
+                    how,
+                    far,
+                    g.form,
+                    held,
+                )
+            );
+        }
+        g.open[ki] = None;
+        g.queues[ki].clear();
+    }
+    retire(p.kernels, g);
+}
+
+/// A group's row that starts its windows over -- the first after a cut or a
+/// reset -- finds nothing of the old stretch: every window ended already or
+/// before, so the policy time starts again at 0 from this row's clock.
+#[inline(always)]
+fn restart_in(g: &mut Group, origin: Option<ClockValue>) {
+    for q in &mut g.queues {
+        q.clear();
+    }
+    g.open.iter_mut().for_each(|o| *o = None);
+    g.last_valued.iter_mut().for_each(|v| *v = f64::NAN);
+    g.held.iter_mut().for_each(|v| *v = f64::NAN);
+    g.tau = 0.0;
+    g.origin = origin;
+    g.restart = false;
+    g.stamp = None;
+    g.pending.clear();
+}
+
+/// Drop the waiting rows every forward kernel has closed.
+fn retire(kernels: &[KernelDef], g: &mut Group) {
+    let done = kernels
+        .iter()
+        .zip(&g.closed)
+        .filter(|(k, _)| k.direction == Direction::Forward)
+        .map(|(_, &c)| c)
+        .min()
+        .unwrap_or(0);
+    if done == 0 {
+        return;
+    }
+    g.waiting.drain(..done);
+    for (k, c) in kernels.iter().zip(g.closed.iter_mut()) {
+        if k.direction == Direction::Forward {
+            *c -= done;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The core against a brute-force loop that knows the whole stream: it
+    //! steps the same `ClockState`s (the definition of the policy clock),
+    //! cuts the stream into each group's stretches between events, and
+    //! computes every operator from its definition, with no queue, no
+    //! monoid and no closing order.
+    use rheon_core::{OnClockReset, SessionGap};
+
+    use super::*;
+
+    /// The integer short cuts in `past_cap` and `is_after` say what the
+    /// conversion to seconds says, for every step around the cap's whole
+    /// seconds and its edges, at caps from a second to the largest the short
+    /// cut takes, and past them.
+    #[test]
+    fn the_temporal_short_cuts_in_past_cap_and_is_after_are_the_conversions() {
+        let base = -4_000_000_000_000_000_000i64;
+        let caps = [
+            0.0,
+            0.5,
+            1.0,
+            1.5,
+            59.999_999_999,
+            60.0,
+            300.0,
+            300.000_000_001,
+            86_400.0,
+            1e7,
+            8.9e9,
+            9.0e9,
+            1e12,
+            f64::MAX,
+        ];
+        for cap in caps {
+            let edge = (cap.min(9.2e9) * 1e9) as i64;
+            for wiggle in (-3i64..=3).chain([-1_000_000_000, 1_000_000_000, -1, 1_000, -1_000]) {
+                for step in [edge.saturating_add(wiggle), wiggle, wiggle.abs(), 0, 1] {
+                    let (now, last) = (
+                        ClockValue::Ns(base.saturating_add(step)),
+                        ClockValue::Ns(base),
+                    );
+                    let want = elapsed(now, last) > cap;
+                    assert_eq!(past_cap(now, last, cap), want, "{cap} {step}");
+                    let (back, fwd) = (
+                        ClockValue::Ns(base),
+                        ClockValue::Ns(base.saturating_add(step)),
+                    );
+                    let want = elapsed(back, fwd) > cap;
+                    assert_eq!(past_cap(back, fwd, cap), want, "{cap} -{step}");
+                    assert_eq!(is_after(now, last), elapsed(now, last) > 0.0, "{step}");
+                    assert_eq!(is_after(back, fwd), elapsed(back, fwd) > 0.0, "-{step}");
+                }
+            }
+        }
+        // The other forms: a number clock's difference, an integer clock's
+        // step against the cap exactly, and a mixed pair as the numbers.
+        let numbers = [
+            0.0,
+            -0.0,
+            1.5,
+            299.5,
+            300.0,
+            1e300,
+            -1e300,
+            f64::INFINITY,
+            f64::NAN,
+        ];
+        for cap in [0.0, 1.0, 300.0, 1e300] {
+            for a in numbers {
+                for b in numbers {
+                    let (now, last) = (ClockValue::F64(a), ClockValue::F64(b));
+                    assert_eq!(past_cap(now, last, cap), elapsed(now, last) > cap);
+                    assert_eq!(is_after(now, last), elapsed(now, last) > 0.0);
+                }
+            }
+            for (a, b) in [
+                (0i64, 0i64),
+                (301, 0),
+                (300, 0),
+                (i64::MAX, i64::MIN),
+                (-5, 5),
+            ] {
+                let (now, last) = (ClockValue::I64(a), ClockValue::I64(b));
+                let step = i128::from(a) - i128::from(b);
+                let want = rheon_core::cmp_int_f64(step, cap) == Some(Ordering::Greater);
+                assert_eq!(past_cap(now, last, cap), want, "{a} {b} {cap}");
+            }
+            let (now, last) = (ClockValue::F64(400.0), ClockValue::I64(0));
+            assert_eq!(past_cap(now, last, cap), elapsed(now, last) > cap);
+        }
+    }
+
+    /// [`long_windows_keep_their_bits`]'s digest, computed on the code
+    /// before task 270 (M-2).
+    const LONG_WINDOWS_DIGEST: u64 = 0x8b76_0af8_32d7_e069;
+
+    #[derive(Debug, Clone)]
+    struct Row {
+        group: Option<String>,
+        clock: Option<ClockValue>,
+        session: Option<u64>,
+        values: Vec<f64>,
+        accept: bool,
+    }
+
+    /// Every output of every row, in input order.
+    #[derive(Debug, Clone, Default, PartialEq)]
+    struct Table {
+        values: Vec<Vec<f64>>,
+        drop: Vec<bool>,
+    }
+
+    impl Table {
+        fn append(&mut self, e: Emitted, next: &mut u64) {
+            assert_eq!(e.first_seq, *next, "rows leave in order, each once");
+            *next += e.rows as u64;
+            if self.values.is_empty() {
+                self.values = vec![Vec::new(); e.values.len()];
+            }
+            for (a, b) in self.values.iter_mut().zip(e.values) {
+                a.extend(b);
+            }
+            self.drop.extend(e.drop);
+        }
+
+        /// Bit for bit, NaN equal to NaN.
+        fn same_bits(&self, other: &Table) -> bool {
+            self.drop == other.drop
+                && self.values.len() == other.values.len()
+                && self.values.iter().zip(&other.values).all(|(a, b)| {
+                    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
+                })
+        }
+
+        fn close_to(&self, other: &Table, tol: f64) -> Result<(), (usize, usize, String)> {
+            if self.drop != other.drop {
+                let i = self
+                    .drop
+                    .iter()
+                    .zip(&other.drop)
+                    .position(|(a, b)| a != b)
+                    .unwrap_or(0);
+                return Err((usize::MAX, i, "drop flags differ".into()));
+            }
+            for (o, (a, b)) in self.values.iter().zip(&other.values).enumerate() {
+                if a.len() != b.len() {
+                    return Err((
+                        o,
+                        0,
+                        format!("output {o}: {} rows against {}", a.len(), b.len()),
+                    ));
+                }
+                for (i, (x, y)) in a.iter().zip(b).enumerate() {
+                    if x.is_nan() != y.is_nan()
+                        || !x.is_nan() && (x - y).abs() > tol * (1.0 + x.abs().max(y.abs()))
+                    {
+                        return Err((o, i, format!("output {o} row {i}: {x} against {y}")));
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+
+    fn push(core: &mut Windows, r: &Row) -> Result<(), Refusal> {
+        let group = core.group(r.group.as_deref());
+        core.push(&RowIn {
+            group,
+            clock: r.clock,
+            session: r.session,
+            values: &r.values,
+            accept: r.accept,
+        })
+    }
+
+    /// The core, draining every `every` rows.
+    fn run(
+        kernels: &[KernelDef],
+        ops: &[OpDef],
+        cfg: ClockCfg,
+        rows: &[Row],
+        every: usize,
+    ) -> Result<Table, Refusal> {
+        let mut core = Windows::new(kernels.to_vec(), ops.to_vec(), cfg).unwrap();
+        core.set_grouped(rows.iter().any(|r| r.group.is_some()));
+        let (mut t, mut next) = (Table::default(), 0);
+        for (i, r) in rows.iter().enumerate() {
+            push(&mut core, r)?;
+            if (i + 1) % every == 0 {
+                t.append(core.drain(), &mut next);
+            }
+            // Every state a stream passes through holds what a loader
+            // checks (review 2026-10-06, PD1): `check` refuses no core this
+            // module made, across every stream the brute force runs.
+            core.check()
+                .unwrap_or_else(|e| panic!("after row {i}: {e}"));
+            pending_are_the_tail(&core).unwrap_or_else(|e| panic!("after row {i}: {e}"));
+        }
+        t.append(core.finish(), &mut next);
+        core.check().unwrap_or_else(|e| panic!("finished: {e}"));
+        assert_eq!(next, rows.len() as u64);
+        Ok(t)
+    }
+
+    /// What [`Windows::flush_stamps_before`] walks from the tail on (task
+    /// 325): the groups with rows pending are the silent list's tail, each
+    /// at the stream's latest stamp, and no group off the list has any.
+    /// Held after every row of every stream [`run`] feeds -- gaps, cuts,
+    /// sessions, step backs and resets among them -- so a stream that broke
+    /// it, where a walk from the tail would leave a group's rows pending
+    /// that the head walk resolved, fails here by name.
+    fn pending_are_the_tail(core: &Windows) -> Result<(), String> {
+        let latest = core.shared.last_clock();
+        let (mut at, mut tail) = (core.head, false);
+        while let Some(i) = at {
+            let g = &core.groups[i];
+            let pends = !g.pending.is_empty();
+            if tail && !pends {
+                return Err(format!("group {i} pends nothing after a group that pends"));
+            }
+            let current = matches!((g.stamp, latest), (Some(s), Some(l)) if elapsed(l, s) == 0.0);
+            if pends && !current {
+                return Err(format!("group {i} pends rows at an earlier stamp"));
+            }
+            tail |= pends;
+            at = g.next_link;
+        }
+        if let Some(i) = core
+            .groups
+            .iter()
+            .position(|g| !g.linked && !g.pending.is_empty())
+        {
+            return Err(format!("group {i} pends rows off the silent list"));
+        }
+        Ok(())
+    }
+
+    /// Each invariant [`Windows::check`] holds a loaded core to, broken
+    /// alone on a core fed a stream with groups, sessions, gaps and every
+    /// kernel -- so with rows held, waiting on forward windows and on the
+    /// next stamp, and groups in the silent list -- is refused by name
+    /// (review 2026-10-06, PD1).
+    #[test]
+    fn each_part_of_a_cores_invariants_is_checked_alone() {
+        let (kernels, ops) = all_kernels();
+        let rows = stream(9, 120, 3, true, true);
+        let clock = cfg(8.0, Some(SessionGap::Gap(2.0)), None);
+        let mut core = Windows::new(kernels, ops, clock).unwrap();
+        core.set_grouped(true);
+        for r in &rows[..77] {
+            push(&mut core, r).unwrap();
+        }
+        core.drain_kept(3);
+        core.check().unwrap();
+        let is_fwd = |k: &KernelDef| k.direction == Direction::Forward;
+        let fwd = core.kernels.iter().position(is_fwd).unwrap();
+        let held_in = |f: fn(&Group) -> bool| core.groups.iter().position(f);
+        let waiting = held_in(|g| !g.waiting.is_empty()).expect("a waiting row");
+        let pending = held_in(|g| !g.pending.is_empty()).expect("a pending row");
+        let (head, tail) = (core.head.expect("a silent list"), core.tail.unwrap());
+        assert_ne!(head, tail, "two groups listed");
+        let fit = "does not fit";
+        type Damage<'a> = (&'a str, &'a dyn Fn(&mut Windows));
+        let damage: [Damage; 23] = [
+            ("names kernel", &|c| {
+                Arc::make_mut(&mut c.ops)[0].kernel = 99
+            }),
+            ("operators are not", &|c| {
+                Arc::make_mut(&mut c.members).swap(0, 1)
+            }),
+            ("outputs for", &|c| c.n_outputs += 1),
+            ("forward kernels of", &|c| c.n_forward += 1),
+            ("values held for", &|c| {
+                c.held_values.pop_back();
+            }),
+            ("rows ready of", &|c| c.ready = c.held_meta.len() + 1),
+            ("rows ready of", &|c| c.ready_kept += 1),
+            ("before row", &|c| c.held_first += 1),
+            (fit, &|c| c.groups[0].queues[0].n += 1),
+            (fit, &|c| c.groups[0].queues[fwd].back.tau.push(0.0)),
+            (fit, &|c| {
+                c.groups[0].open_x[0].pop();
+            }),
+            (fit, &|c| {
+                c.groups[waiting].closed[fwd] = c.groups[waiting].waiting.len() + 1;
+            }),
+            (fit, &|c| {
+                c.groups[0].last_valued.pop();
+            }),
+            (fit, &|c| c.groups[waiting].waiting[0].seq = c.next_seq),
+            (fit, &|c| {
+                c.groups[pending].pending[0] = c.held_first.wrapping_sub(1);
+            }),
+            (fit, &|c| c.groups[head].last_raw = None),
+            ("open windows", &|c| c.held_meta[c.ready].open += 1),
+            ("silent list", &|c| c.head = Some(c.groups.len())),
+            ("silent list", &|c| c.groups[tail].next_link = Some(head)),
+            // A list that walks whole but ends short of its tail (task 252).
+            ("silent list", &|c| c.tail = c.head),
+            ("one to one", &|c| {
+                c.index.insert("stray".into(), 0);
+            }),
+            ("one to one", &|c| c.null_group = Some(c.groups.len())),
+            // A group no key names (task 252): each key is distinct, but one
+            // group is left without one.
+            ("one to one", &|c| c.index.retain(|_, gi| *gi != 0)),
+        ];
+        for (says, f) in damage {
+            let mut broken = core.clone();
+            f(&mut broken);
+            let err = broken
+                .check()
+                .err()
+                .unwrap_or_else(|| panic!("{says}: passed"));
+            assert!(err.contains(says), "{says}: {err}");
+        }
+    }
+
+    /// `mass` at a half-life far past the window is the even kernel's, to
+    /// the series' next term: `1 − 2^(−t/h)` lost 6e-5 of it at `h/t = 1e12`
+    /// and all of it from 1e17, every mean null (task 159, W2). Where the
+    /// series is nowhere near, the closed form itself.
+    #[test]
+    fn mass_at_a_long_half_life_is_the_even_kernels() {
+        let kernel = |h: f64| KernelDef {
+            direction: Direction::Backward,
+            half_life: h,
+            window_size: Some(5.0),
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let ln2 = std::f64::consts::LN_2;
+        for h in [1e9, 1e12, 1e17, 1e300] {
+            let got = kernel(h).mass(5.0);
+            let want = 5.0 - 12.5 * ln2 / h;
+            assert!(
+                (got - want).abs() <= 1e-12 * 5.0,
+                "h = {h}: {got} vs {want}"
+            );
+        }
+        let got = kernel(2.0).mass(3.0);
+        let want = 2.0 / ln2 * (1.0 - 0.5f64.powf(1.5));
+        // `(2.2 k + 4.4)·2⁻⁵²` for a libm `k` ulps off (docs/PLAN.md task
+        // 273): `mass` is `−(h/ln 2)·exp_m1(−t ln 2/h)`, `exp_m1`'s `k` ulps
+        // of 0.65 amplified 2.9 times (1.4 k), its argument's two
+        // roundings (1.1), `h/ln 2`'s (0.9) and the product's (0.5); the
+        // closed form's `powf` adds `k` ulps of 0.35, amplified alike (0.7
+        // k), and its own three roundings (1.9). Held at `10·2⁻⁵²`, a libm
+        // up to 2.5 ulps off: measured 1 with Apple's, and 5 with Apple's
+        // moved by up to 2 ulps, where `1e-15` (4.5), the bound before,
+        // failed.
+        assert!(
+            (got - want).abs() <= 10.0 * f64::EPSILON,
+            "{got} vs {want}: {:e} of 2^-52",
+            (got - want).abs() / f64::EPSILON
+        );
+    }
+
+    /// A subnormal half-life passed `check`: `mass·x` underflowed to 0 and
+    /// a rate divided by that mass, so the mean came out 0 and the rate
+    /// infinite (task 159, W5).
+    #[test]
+    fn a_subnormal_half_life_is_refused() {
+        for h in [5e-324, 1e-310] {
+            let k = KernelDef {
+                direction: Direction::Backward,
+                half_life: h,
+                window_size: Some(2.0),
+                window_ns: None,
+                closed: Closed::Right,
+            };
+            let err = k.check().expect_err("refused");
+            assert!(err.contains("half_life must be at least"), "{err}");
+        }
+    }
+
+    /// `∫_a^b λ^(T - s) ds` / `∫_a^b λ^(s - T) ds`, written from the
+    /// definition with the discount as a closed form.
+    fn mass_bf(k: &KernelDef, t: f64, a: f64, b: f64) -> f64 {
+        if b <= a {
+            return 0.0;
+        }
+        let m = |d: f64| {
+            if d <= 0.0 {
+                0.0
+            } else if k.half_life.is_infinite() {
+                d
+            } else {
+                // The closed form by `exp_m1`, as `mass` takes it (task 159, W2).
+                -(k.half_life / std::f64::consts::LN_2)
+                    * (-(d * std::f64::consts::LN_2 / k.half_life)).exp_m1()
+            }
+        };
+        match k.direction {
+            Direction::Backward => m(t - a) - m(t - b),
+            Direction::Forward => m(b - t) - m(a - t),
+        }
+    }
+
+    fn elapsed_bf(now: ClockValue, last: ClockValue) -> f64 {
+        match (now, last) {
+            (ClockValue::Ns(c), ClockValue::Ns(p)) => seconds_of_ns(i128::from(c) - i128::from(p)),
+            (ClockValue::F64(c), ClockValue::F64(p)) => c - p,
+            (ClockValue::I64(c), ClockValue::I64(p)) => (i128::from(c) - i128::from(p)) as f64,
+            _ => unreachable!("a test stream keeps one kind of clock"),
+        }
+    }
+
+    /// A stretch: rows of one group between clock events, with their
+    /// policy times from 0, and how it ended.
+    struct Stretch {
+        rows: Vec<usize>,
+        tau: Vec<f64>,
+        /// How it ended, and the policy time of the end, if it ended.
+        end: Option<(End, f64)>,
+    }
+
+    /// The clock from stretch row `from` to stretch row `to`, as the core
+    /// decides an edge: the raw clocks' exact difference on a temporal
+    /// clock, the raw clocks' on a number clock (task 159, W3), else the
+    /// policy times' (review R2, W1).
+    fn gap_bf(rows: &[Row], s: &Stretch, from: usize, to: usize) -> Gap {
+        match (rows[s.rows[from]].clock, rows[s.rows[to]].clock) {
+            (Some(ClockValue::Ns(x)), Some(ClockValue::Ns(y))) => Gap::Ns(y - x),
+            (Some(ClockValue::F64(x)), Some(ClockValue::F64(y))) => Gap::Secs(y - x),
+            (Some(ClockValue::I64(x)), Some(ClockValue::I64(y))) => {
+                Gap::Int(i128::from(y) - i128::from(x))
+            }
+            _ => Gap::Secs(s.tau[to] - s.tau[from]),
+        }
+    }
+
+    fn brute(
+        kernels: &[KernelDef],
+        ops: &[OpDef],
+        cfg: ClockCfg,
+        rows: &[Row],
+    ) -> Result<Table, Refusal> {
+        struct G {
+            clock: ClockState,
+            tau: f64,
+            origin: Option<ClockValue>,
+            stretch: usize,
+            restart: bool,
+            last_raw: Option<ClockValue>,
+        }
+        // With groups a session is each group's (review R2, W3).
+        let grouped = rows.iter().any(|r| r.group.is_some());
+        let mut shared = ClockState::new();
+        let mut groups: HashMap<Option<String>, G, rheon_core::FixedState> = HashMap::default();
+        let mut stretches: Vec<Stretch> = Vec::new();
+        let mut live: Vec<bool> = Vec::new();
+        let (mut stretch_of, mut tau_of) = (Vec::new(), Vec::new());
+        for (i, r) in rows.iter().enumerate() {
+            let seq = i as u64;
+            let mut sc = shared.clone();
+            let adv = sc.advance(&cfg, r.clock, if grouped { None } else { r.session }, true);
+            refuse_backwards(&adv, seq, shared.last_clock(), r.clock)?;
+            // A stream restart starts every group's clock over (task 159, W1).
+            let mut gc = if adv.reset {
+                ClockState::new()
+            } else {
+                groups
+                    .get(&r.group)
+                    .map_or_else(ClockState::new, |g| g.clock.clone())
+            };
+            let prev = gc.last_clock();
+            let own = gc.advance(&cfg, r.clock, r.session, true);
+            refuse_backwards(&own, seq, prev, r.clock)?;
+            shared = sc;
+            let end = |g: &mut G, how: End, stretches: &mut Vec<Stretch>, live: &mut Vec<bool>| {
+                if live[g.stretch] {
+                    live[g.stretch] = false;
+                    // A cut stretch ends at the last row it saw (R1, C4).
+                    stretches[g.stretch].end = Some((how, g.tau));
+                }
+                g.restart = true;
+            };
+            if adv.reset || adv.session_changed || adv.capped {
+                let how = if adv.reset { End::Discard } else { End::Cut };
+                for g in groups.values_mut() {
+                    end(g, how, &mut stretches, &mut live);
+                    if adv.reset {
+                        g.clock = ClockState::new();
+                    }
+                }
+            }
+            if let (Some(now), true) = (r.clock, cfg.gap_cap.is_finite()) {
+                for g in groups.values_mut() {
+                    if let Some(last) = g.last_raw
+                        && elapsed_bf(now, last) > cfg.gap_cap
+                    {
+                        end(g, End::Cut, &mut stretches, &mut live);
+                    }
+                }
+            }
+            let g = groups.entry(r.group.clone()).or_insert_with(|| G {
+                clock: ClockState::new(),
+                tau: 0.0,
+                origin: None,
+                stretch: usize::MAX,
+                restart: true,
+                last_raw: None,
+            });
+            if own.reset {
+                end(g, End::Discard, &mut stretches, &mut live);
+            } else if own.session_changed || own.capped {
+                end(g, End::Cut, &mut stretches, &mut live);
+            }
+            g.clock = gc;
+            if g.restart {
+                g.tau = 0.0;
+                g.origin = r.clock;
+                g.restart = false;
+                g.stretch = stretches.len();
+                stretches.push(Stretch {
+                    rows: Vec::new(),
+                    tau: Vec::new(),
+                    end: None,
+                });
+                live.push(true);
+            } else if let (Some(now), Some(origin)) = (r.clock, g.origin) {
+                g.tau = elapsed(now, origin);
+            } else {
+                g.tau += own.d_clock;
+                if g.origin.is_none() {
+                    g.origin = r.clock;
+                }
+            }
+            stretches[g.stretch].rows.push(i);
+            stretches[g.stretch].tau.push(g.tau);
+            stretch_of.push(g.stretch);
+            tau_of.push(g.tau);
+            g.last_raw = r.clock;
+        }
+        let n_out = ops.len();
+        let mut t = Table {
+            values: vec![vec![f64::NAN; rows.len()]; n_out],
+            drop: vec![false; rows.len()],
+        };
+        let value = |r: usize, input: usize| {
+            let v = rows[r].values[input];
+            if usable(v) { v } else { f64::NAN }
+        };
+        for s in &stretches {
+            let n = s.rows.len();
+            for (o, op) in ops.iter().enumerate() {
+                let k = &kernels[op.kernel];
+                for a in 0..n {
+                    let (r, ta) = (s.rows[a], s.tau[a]);
+                    let stamp = rows[r].clock;
+                    let (members, complete, span): (Vec<usize>, bool, f64) = match k.direction {
+                        Direction::Backward => {
+                            let w = k.window_size;
+                            // Rows at the stamp, per `closed`; the lower
+                            // edge per `closed`.
+                            let members: Vec<usize> = (0..n)
+                                .filter(|&b| {
+                                    let at_stamp =
+                                        rows[s.rows[b]].clock == stamp && stamp.is_some();
+                                    let before = b < a && !at_stamp
+                                        || (at_stamp && b != a && stamp.is_some())
+                                        || (b == a);
+                                    let near_ok = if k.closed.near(Direction::Backward) {
+                                        (b <= a) || at_stamp
+                                    } else {
+                                        b < a && !at_stamp
+                                    };
+                                    let far_ok = match w {
+                                        None => true,
+                                        Some(_) => {
+                                            let age = gap_bf(rows, s, b, a).cmp_window(k);
+                                            if k.closed.far(Direction::Backward) {
+                                                age != Ordering::Greater
+                                            } else {
+                                                age == Ordering::Less
+                                            }
+                                        }
+                                    };
+                                    let _ = before;
+                                    near_ok && far_ok
+                                })
+                                .collect();
+                            (
+                                members,
+                                w.is_none_or(|w| ta >= w),
+                                w.map_or(ta, |w| w.min(ta)),
+                            )
+                        }
+                        Direction::Forward => {
+                            let w = k.window_size.unwrap();
+                            // A set of timestamps: under "left" and "both"
+                            // every row at the row's stamp, itself included
+                            // (R1, C3); under "right" and "none" none at it.
+                            let later: Vec<usize> = (0..n)
+                                .filter(|&b| {
+                                    let d = gap_bf(rows, s, a, b);
+                                    let (near, far) = (d.cmp_zero(), d.cmp_window(k));
+                                    let near_ok = if k.closed.near(Direction::Forward) {
+                                        near != Ordering::Less
+                                    } else {
+                                        near == Ordering::Greater
+                                    };
+                                    let far_ok = if k.closed.far(Direction::Forward) {
+                                        far != Ordering::Greater
+                                    } else {
+                                        far == Ordering::Less
+                                    };
+                                    near_ok && far_ok
+                                })
+                                .collect();
+                            // Whole once every timestamp of the stretch the
+                            // window can hold is in, read from the stretch
+                            // itself rather than from a closing rule (task
+                            // 160, PC5). A stretch a break or a reset ended
+                            // has every row it will have: the window is
+                            // whole when the stretch reaches its far edge, so
+                            // that its span lies inside the stretch (task
+                            // 173, PC2, for a reset), and otherwise cut short
+                            // by a break, or discarded by a reset. A stretch
+                            // still open at the end of the input has shown
+                            // its window whole only by a row stamped past
+                            // every timestamp the window holds: past the far
+                            // edge where the window holds it ("right",
+                            // "both"), at it or past where it does not; a
+                            // window it has not shown whole is unresolved,
+                            // and null.
+                            let reaches_edge =
+                                gap_bf(rows, s, a, n - 1).cmp_window(k) != Ordering::Less;
+                            let shown_whole = (a + 1..n).any(|b| {
+                                let d = gap_bf(rows, s, a, b).cmp_window(k);
+                                if k.closed.far(Direction::Forward) {
+                                    d == Ordering::Greater
+                                } else {
+                                    d != Ordering::Less
+                                }
+                            });
+                            match s.end {
+                                Some((End::Cut | End::Discard, _)) if reaches_edge => {
+                                    (later, true, w)
+                                }
+                                Some((End::Cut, end_tau)) => {
+                                    if op.partial == Partial::Drop {
+                                        t.drop[r] = true;
+                                    }
+                                    if op.partial != Partial::Keep || !rows[r].accept {
+                                        continue;
+                                    }
+                                    (later, false, (ta + w).min(end_tau) - ta)
+                                }
+                                _ if shown_whole => (later, true, w),
+                                _ => continue,
+                            }
+                        }
+                    };
+                    if k.direction == Direction::Backward {
+                        if !complete && op.partial == Partial::Drop {
+                            t.drop[r] = true;
+                        }
+                        if !complete && op.partial != Partial::Keep {
+                            continue;
+                        }
+                    } else if !rows[r].accept {
+                        continue;
+                    }
+                    // The value, from the definition.
+                    let (mut sum, mut mass, mut count) = (0.0, 0.0, 0.0);
+                    let mut held: Vec<(f64, f64)> = Vec::new();
+                    let mut weighed: Vec<(f64, f64)> = Vec::new();
+                    for &b in &members {
+                        let x = value(s.rows[b], op.input);
+                        if x.is_nan() {
+                            continue;
+                        }
+                        count += 1.0;
+                        let tb = s.tau[b];
+                        match op.stat {
+                            Stat::Mean | Stat::Var | Stat::Std => {
+                                let (lo, hi) = match k.direction {
+                                    Direction::Backward => {
+                                        // Held from the operator's last valued row.
+                                        let prev = (0..b)
+                                            .rev()
+                                            .find(|&c| !value(s.rows[c], op.input).is_nan());
+                                        let start = match prev {
+                                            Some(c) => s.tau[c],
+                                            None => k
+                                                .window_size
+                                                .map_or(f64::NEG_INFINITY, |w| s.tau[0] - w),
+                                        };
+                                        let edge =
+                                            k.window_size.map_or(f64::NEG_INFINITY, |w| ta - w);
+                                        // A row exactly a window old holds its
+                                        // value up to the edge and no further,
+                                        // decided from the raw clocks as its
+                                        // membership is (task 430).
+                                        let on_edge = k.window_size.is_some()
+                                            && gap_bf(rows, s, b, a).cmp_window(k)
+                                                == Ordering::Equal;
+                                        if on_edge {
+                                            (tb, tb)
+                                        } else {
+                                            (start.max(edge), tb)
+                                        }
+                                    }
+                                    Direction::Forward => {
+                                        // Held until the operator's next valued row.
+                                        let next = (b + 1..n)
+                                            .find(|&c| !value(s.rows[c], op.input).is_nan());
+                                        let end = match next {
+                                            Some(c) => s.tau[c],
+                                            None => s.end.map_or(f64::INFINITY, |(_, e)| e),
+                                        };
+                                        let far = ta + k.window_size.unwrap();
+                                        // As backward: a row exactly a window
+                                        // ahead holds nothing inside it.
+                                        if gap_bf(rows, s, a, b).cmp_window(k) == Ordering::Equal {
+                                            (tb, tb)
+                                        } else {
+                                            (
+                                                tb,
+                                                end.min(far)
+                                                    .min(s.end.map_or(f64::INFINITY, |(_, e)| e)),
+                                            )
+                                        }
+                                    }
+                                };
+                                let m = mass_bf(k, ta, lo, hi);
+                                sum += m * x;
+                                mass += m;
+                                held.push((m, x));
+                            }
+                            Stat::Sum | Stat::Rate | Stat::Quantile => {
+                                let d = (tb - ta).abs();
+                                let f = if k.half_life.is_infinite() {
+                                    1.0
+                                } else {
+                                    (-(d / k.half_life)).exp2()
+                                };
+                                sum += f * x;
+                                weighed.push((x, f));
+                            }
+                        }
+                    }
+                    if count < f64::from(op.min_samples) {
+                        continue;
+                    }
+                    t.values[o][r] = match op.stat {
+                        Stat::Mean => {
+                            if mass > 0.0 {
+                                sum / mass
+                            } else {
+                                f64::NAN
+                            }
+                        }
+                        Stat::Sum => sum,
+                        Stat::Var | Stat::Std => var_bf(&held, op.bias, op.stat == Stat::Std),
+                        Stat::Quantile => quantile_bf(&weighed, op.quantile.unwrap()),
+                        Stat::Rate => {
+                            let m = mass_bf(k, 0.0, 0.0, span).abs();
+                            let m = if k.direction == Direction::Backward {
+                                mass_bf(k, span, 0.0, span)
+                            } else {
+                                m
+                            };
+                            if m > 0.0 { sum / m } else { f64::NAN }
+                        }
+                    };
+                }
+            }
+        }
+        let _ = (&stretch_of, &tau_of);
+        Ok(t)
+    }
+
+    /// The quantile at `p` of `(value, weight)` pairs as the sketch defines
+    /// it: each value in its bucket (`window_quantile::Key`), the buckets in
+    /// value order, and the representative of the first at which the weight
+    /// reaches `p` of the total. NaN with no weight.
+    fn quantile_bf(weighed: &[(f64, f64)], p: f64) -> f64 {
+        use crate::window_quantile::Key;
+        let rank = |k: Key| match k {
+            Key::Neg(b) => (0, -i64::from(b)),
+            Key::Zero => (1, 0),
+            Key::Pos(b) => (2, i64::from(b)),
+        };
+        let mut keyed: Vec<(Key, f64)> = weighed.iter().map(|&(x, w)| (Key::of(x), w)).collect();
+        keyed.sort_by_key(|&(k, _)| rank(k));
+        let total: f64 = keyed.iter().map(|&(_, w)| w).sum();
+        if total.is_nan() || total <= 0.0 {
+            return f64::NAN;
+        }
+        let mut buckets: Vec<(Key, f64)> = Vec::new();
+        for (k, w) in keyed {
+            match buckets.last_mut() {
+                Some((last, sum)) if *last == k => *sum += w,
+                _ => buckets.push((k, w)),
+            }
+        }
+        let mut cum = 0.0;
+        for &(k, w) in &buckets {
+            cum += w;
+            if w > 0.0 && cum >= p * total {
+                return k.value();
+            }
+        }
+        buckets.last().map_or(f64::NAN, |&(k, _)| k.value())
+    }
+
+    /// The variance of `held`'s `(weight, value)` pairs from the definition,
+    /// in two passes: the weighted mean, then the weighted mean square
+    /// deviation from it; unless `bias`, times `V1² / (V1² − V2)` (null
+    /// where one weight is all of it); its root for a standard deviation.
+    fn var_bf(held: &[(f64, f64)], bias: bool, std: bool) -> f64 {
+        let v1: f64 = held.iter().map(|&(m, _)| m).sum();
+        if v1 <= 0.0 {
+            return f64::NAN;
+        }
+        let mu = held.iter().map(|&(m, x)| m * x).sum::<f64>() / v1;
+        let mut var = held
+            .iter()
+            .map(|&(m, x)| m * (x - mu) * (x - mu))
+            .sum::<f64>()
+            / v1;
+        if !bias {
+            // `V1² − V2 = 2 Σ_{i<j} m_i m_j`, summed as the products of each
+            // weight with the ones before it: every term at or above 0.
+            let (mut before, mut pairs) = (0.0, 0.0);
+            for &(m, _) in held {
+                pairs += m * before;
+                before += m;
+            }
+            if pairs <= 0.0 {
+                return f64::NAN;
+            }
+            var *= v1 * v1 / (2.0 * pairs);
+        }
+        if std { var.sqrt() } else { var }
+    }
+
+    /// A test window's nanoseconds, as the frame reads them off a duration.
+    fn ns_of(w: f64) -> i64 {
+        (w * 1e9).round() as i64
+    }
+
+    fn cfg(cap: f64, session_gap: Option<SessionGap>, restart: Option<f64>) -> ClockCfg {
+        ClockCfg {
+            gap_cap: cap,
+            on_clock_reset: if restart.is_some() {
+                OnClockReset::ResetState
+            } else {
+                OnClockReset::Error
+            },
+            session_gap,
+            min_backwards_jump: restart.unwrap_or(0.0),
+        }
+    }
+
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> f64 {
+            self.0 = self
+                .0
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((self.0 >> 11) as f64) / ((1u64 << 53) as f64)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            (self.next() * n as f64) as usize
+        }
+    }
+
+    /// A stream with gaps, repeated stamps, session changes, missing
+    /// values and several groups.
+    fn stream(seed: u64, n: usize, groups: usize, temporal: bool, sessions: bool) -> Vec<Row> {
+        let mut rng = Lcg(seed);
+        let mut t = 0.0f64;
+        let mut rows = Vec::with_capacity(n);
+        let mut session = 0u64;
+        for i in 0..n {
+            let step = match rng.below(10) {
+                0 => 0.0,
+                1 | 2 => 0.5,
+                3..=7 => 1.0 + rng.next(),
+                8 => 4.0,
+                _ => 12.0,
+            };
+            t += step;
+            if sessions && i > 0 && rng.below(40) == 0 {
+                session += 1;
+            }
+            let g = rng.below(groups);
+            let value = |rng: &mut Lcg| {
+                if rng.below(6) == 0 {
+                    f64::NAN
+                } else {
+                    rng.next() * 10.0 - 3.0
+                }
+            };
+            let v0 = value(&mut rng);
+            let v1 = value(&mut rng);
+            rows.push(Row {
+                group: if groups > 1 {
+                    Some(format!("g{g}"))
+                } else {
+                    None
+                },
+                clock: Some(if temporal {
+                    ClockValue::Ns((t * 1e9).round() as i64)
+                } else {
+                    ClockValue::F64(t)
+                }),
+                session: sessions.then_some(session),
+                values: vec![v0, v1],
+                accept: rng.below(8) != 0,
+            });
+        }
+        rows
+    }
+
+    /// [`stream`] on a half-unit grid: every step a multiple of 0.5, so a
+    /// row lands exactly a window after another, and exactly on a window's
+    /// far edge as the last row before a break, often (task 160, PC2;
+    /// `stream`'s random steps land there only where its exact ones happen
+    /// to add up). `repeats` lets a step of 0 repeat a stamp.
+    fn grid_stream(seed: u64, n: usize, groups: usize, sessions: bool, repeats: bool) -> Vec<Row> {
+        let mut rows = stream(seed, n, groups, false, sessions);
+        let mut rng = Lcg(seed.wrapping_mul(31).wrapping_add(7));
+        let mut t = 0.0f64;
+        for r in &mut rows {
+            t += match rng.below(9) {
+                0 if repeats => 0.0,
+                0 | 1 => 0.5,
+                2 | 3 => 1.0,
+                4 => 1.5,
+                5 | 6 => 2.0,
+                7 => 3.0,
+                _ => 12.0,
+            };
+            r.clock = Some(ClockValue::F64(t));
+        }
+        rows
+    }
+
+    fn all_kernels() -> (Vec<KernelDef>, Vec<OpDef>) {
+        let mut kernels = Vec::new();
+        let mut ops = Vec::new();
+        for (direction, half_life, window, closed) in [
+            (Direction::Backward, 3.0, None, Closed::Right),
+            (Direction::Backward, 3.0, Some(5.0), Closed::Right),
+            (Direction::Backward, 2.0, Some(4.0), Closed::Left),
+            (Direction::Backward, f64::INFINITY, Some(6.0), Closed::Both),
+            (Direction::Backward, 5.0, Some(7.0), Closed::Neither),
+            (Direction::Forward, 3.0, Some(5.0), Closed::Right),
+            (Direction::Forward, 2.0, Some(4.0), Closed::Left),
+            (Direction::Forward, f64::INFINITY, Some(6.0), Closed::Both),
+            (Direction::Forward, 5.0, Some(3.0), Closed::Neither),
+        ] {
+            let ki = kernels.len();
+            kernels.push(KernelDef {
+                direction,
+                half_life,
+                window_size: window,
+                window_ns: window.map(ns_of),
+                closed,
+            });
+            for (stat, partial, min) in [
+                (Stat::Mean, Partial::Keep, 1),
+                (Stat::Sum, Partial::Null, 2),
+                (Stat::Rate, Partial::Keep, 1),
+                (Stat::Mean, Partial::Drop, 1),
+            ] {
+                // A drop operator on every kernel would drop most rows.
+                if partial == Partial::Drop && ki != 5 {
+                    continue;
+                }
+                ops.push(OpDef {
+                    kernel: ki,
+                    stat,
+                    input: ops.len() % 2,
+                    min_samples: min,
+                    partial,
+                    bias: false,
+                    quantile: None,
+                });
+            }
+            // A quantile on every kernel, low and high, so its walk runs up
+            // from the smallest value and down from the largest (task 272
+            // (d)); `min_samples` of 2 looking back, where a window of 3 ahead
+            // holds two rows on no row of one integer stream.
+            let min = if direction == Direction::Backward {
+                2
+            } else {
+                1
+            };
+            for (partial, min, level) in [(Partial::Keep, 1, 0.3), (Partial::Null, min, 0.85)] {
+                ops.push(OpDef {
+                    kernel: ki,
+                    stat: Stat::Quantile,
+                    input: ops.len() % 2,
+                    min_samples: min,
+                    partial,
+                    bias: false,
+                    quantile: Some(level),
+                });
+            }
+            // A variance and a standard deviation on every backward kernel,
+            // corrected and not (task 212).
+            if direction == Direction::Backward {
+                for (stat, partial, min, bias) in [
+                    (Stat::Var, Partial::Keep, 1, false),
+                    (Stat::Std, Partial::Null, 2, true),
+                ] {
+                    ops.push(OpDef {
+                        kernel: ki,
+                        stat,
+                        input: ops.len() % 2,
+                        min_samples: min,
+                        partial,
+                        bias,
+                        quantile: None,
+                    });
+                }
+            }
+        }
+        (kernels, ops)
+    }
+
+    /// Every operator on every kernel against the definition, on streams
+    /// with gaps, repeated stamps, sessions, missing values and groups.
+    #[test]
+    fn every_operator_matches_its_definition() {
+        let (kernels, ops) = all_kernels();
+        // The last four on the half-unit grid, where windows end exactly on
+        // the last row before a break (task 160, PC2).
+        for (seed, groups, temporal, sessions, grid) in [
+            (1, 1, false, false, false),
+            (2, 1, true, false, false),
+            (3, 3, false, true, false),
+            (4, 2, true, true, false),
+            (5, 4, true, false, false),
+            (6, 1, false, false, true),
+            (7, 1, false, true, true),
+            (8, 3, false, true, true),
+            (9, 2, false, false, true),
+        ] {
+            let rows = if grid {
+                grid_stream(seed, 400, groups, sessions, true)
+            } else {
+                stream(seed, 400, groups, temporal, sessions)
+            };
+            let c = cfg(8.0, sessions.then_some(SessionGap::Gap(2.0)), None);
+            assert_matches_brute(&kernels, &ops, c, &rows, seed);
+        }
+    }
+
+    /// Task 200: on an integer clock of epoch nanoseconds near 1.79e18,
+    /// where a double resolves 256, the core decides every edge, gap and
+    /// silence from the integers: it matches the brute force, whose edges
+    /// are the integers' differences, and gives what the same stream
+    /// shifted to 0 gives as a float clock, every value of which a double
+    /// holds -- to the bit. The streams are the half-unit grid doubled, so
+    /// rows land exactly a window apart and exactly at the cap, often.
+    #[test]
+    fn an_integer_clock_decides_its_edges_in_integers() {
+        const T0: i64 = 1_790_000_000_000_000_000;
+        let (kernels, ops) = all_kernels();
+        for (seed, groups, sessions) in [(21u64, 1usize, false), (22, 3, true), (23, 2, false)] {
+            let grid = grid_stream(seed, 400, groups, sessions, true);
+            let at = |r: &Row| match r.clock {
+                Some(ClockValue::F64(t)) => (2.0 * t) as i64,
+                _ => unreachable!("the grid is a float clock"),
+            };
+            let int: Vec<Row> = grid
+                .iter()
+                .map(|r| Row {
+                    clock: Some(ClockValue::I64(T0 + at(r))),
+                    ..r.clone()
+                })
+                .collect();
+            let shifted: Vec<Row> = grid
+                .iter()
+                .map(|r| Row {
+                    clock: Some(ClockValue::F64(at(r) as f64)),
+                    ..r.clone()
+                })
+                .collect();
+            let c = cfg(8.0, sessions.then_some(SessionGap::Gap(2.0)), None);
+            assert_matches_brute(&kernels, &ops, c, &int, seed);
+            let (a, b) = (
+                run(&kernels, &ops, c, &int, 1).unwrap(),
+                run(&kernels, &ops, c, &shifted, 1).unwrap(),
+            );
+            if let Err((_, _, e)) = a.close_to(&b, 0.0) {
+                panic!("seed {seed}: {e}");
+            }
+        }
+    }
+
+    /// The core against the brute force on `rows`, to 1e-9, the rows around
+    /// the first difference printed.
+    fn assert_matches_brute(
+        kernels: &[KernelDef],
+        ops: &[OpDef],
+        c: ClockCfg,
+        rows: &[Row],
+        seed: u64,
+    ) {
+        let want = brute(kernels, ops, c, rows).unwrap();
+        let got = run(kernels, ops, c, rows, 1).unwrap();
+        // A match where a variance is never valued holds nothing of it (a
+        // sparse forward sum is valued on no row of one integer stream).
+        // Nor where a quantile is never valued (task 272 (d)).
+        for (o, col) in want.values.iter().enumerate() {
+            let valued = col.iter().filter(|v| !v.is_nan()).count();
+            assert!(
+                valued > 0 || !(ops[o].stat.is_var() || ops[o].stat == Stat::Quantile),
+                "seed {seed}: output {o} valued on {valued} rows"
+            );
+        }
+        if let Err((o, i, e)) = got.close_to(&want, 1e-9) {
+            for (r, row) in rows
+                .iter()
+                .enumerate()
+                .take(i + 5)
+                .skip(i.saturating_sub(10))
+            {
+                let (g, w) = if o < got.values.len() {
+                    (got.values[o][r], want.values[o][r])
+                } else {
+                    (f64::NAN, f64::NAN)
+                };
+                eprintln!(
+                    "row {r}: clock {:?} x {:?} accept {} got {g} want {w}",
+                    row.clock, row.values, row.accept
+                );
+            }
+            panic!("seed {seed}: {e}");
+        }
+    }
+
+    /// Every operator on every kernel against the definition across resets
+    /// (task 173, PC2): the half-unit grid's breaks made steps back past
+    /// `restart_after_step_back` or new sessions under `session_gap =
+    /// "reset"`, alone and with groups, so windows end exactly on the last
+    /// row before a reset. Whole there, as before a cut; the rest of the
+    /// windows a reset meets discarded, null under every `partial` and
+    /// never dropped.
+    #[test]
+    fn every_operator_matches_its_definition_across_resets() {
+        let (kernels, ops) = all_kernels();
+        for (seed, groups) in [(21, 1), (22, 3), (23, 1), (24, 2)] {
+            let (rows, c) = if seed < 23 {
+                (
+                    step_back_stream(seed, 400, groups, true),
+                    cfg(8.0, None, Some(0.0)),
+                )
+            } else {
+                (
+                    session_reset_stream(seed, 400, groups, true),
+                    cfg(8.0, Some(SessionGap::Reset), None),
+                )
+            };
+            assert_matches_brute(&kernels, &ops, c, &rows, seed);
+        }
+    }
+
+    /// Feeding a stream in chunks of any size gives the same bits.
+    /// Review R1, C7: the core refused this only through the formula layer;
+    /// a direct caller got a NaN mean.
+    #[test]
+    fn a_mean_with_no_decay_needs_a_window() {
+        let err = Windows::new(
+            vec![KernelDef {
+                direction: Direction::Backward,
+                half_life: f64::INFINITY,
+                window_size: None,
+                window_ns: None,
+                closed: Closed::Right,
+            }],
+            vec![OpDef {
+                kernel: 0,
+                stat: Stat::Mean,
+                input: 0,
+                min_samples: 1,
+                partial: Partial::Keep,
+                bias: false,
+                quantile: None,
+            }],
+            ClockCfg::default(),
+        )
+        .expect_err("refused");
+        assert!(err.contains("needs a window_size"), "{err}");
+    }
+
+    #[test]
+    fn chunking_changes_no_bit() {
+        let (kernels, ops) = all_kernels();
+        let rows = stream(7, 500, 3, true, true);
+        let c = cfg(8.0, Some(SessionGap::Gap(2.0)), None);
+        let one = run(&kernels, &ops, c, &rows, usize::MAX).unwrap();
+        for every in [1, 2, 3, 7, 50, 499] {
+            let t = run(&kernels, &ops, c, &rows, every).unwrap();
+            assert!(t.same_bits(&one), "every {every}");
+        }
+    }
+
+    /// A test row's number clock.
+    fn clock_of(r: &Row) -> f64 {
+        match r.clock {
+            Some(ClockValue::F64(x)) => x,
+            _ => unreachable!("a number clock"),
+        }
+    }
+
+    /// [`grid_stream`]'s clock with each of its steps past the cap turned
+    /// into a step back of the same size, which `restart_after_step_back`
+    /// restarts on: the same stretches, each ended by a reset rather than a
+    /// cut (task 173, PC2).
+    fn step_back_stream(seed: u64, n: usize, groups: usize, repeats: bool) -> Vec<Row> {
+        let mut rows = grid_stream(seed, n, groups, false, repeats);
+        let (mut prev, mut t) = (0.0, 0.0);
+        for r in &mut rows {
+            let step = clock_of(r) - prev;
+            prev = clock_of(r);
+            t += if step == 12.0 { -12.0 } else { step };
+            r.clock = Some(ClockValue::F64(t));
+        }
+        rows
+    }
+
+    /// [`grid_stream`]'s clock with each of its steps past the cap turned
+    /// into a step of 1 and a new session, which `session_gap = "reset"`
+    /// restarts on: the same stretches again, each ended by the other kind
+    /// of reset (task 173, PC2).
+    fn session_reset_stream(seed: u64, n: usize, groups: usize, repeats: bool) -> Vec<Row> {
+        let mut rows = grid_stream(seed, n, groups, false, repeats);
+        let (mut prev, mut t, mut session) = (0.0, 0.0, 0u64);
+        for r in &mut rows {
+            let step = clock_of(r) - prev;
+            prev = clock_of(r);
+            if step == 12.0 {
+                session += 1;
+                t += 1.0;
+            } else {
+                t += step;
+            }
+            r.clock = Some(ClockValue::F64(t));
+            r.session = Some(session);
+        }
+        rows
+    }
+
+    /// The time-reversal identity on `rows`, under `c`: row `i`'s forward
+    /// window is the mirror's backward window at the mirrored row, where
+    /// the mirror is the stream with its times negated and its rows
+    /// reversed. `ends(j)` says a break follows row `j`, which ends its
+    /// stretch: the mirror has the same break between the same two rows (a
+    /// gap, a step back of the same size, the same new session). The last
+    /// row is put after one, so the input ends on a stretch of one row and
+    /// no forward window is left open by the end of the input where its
+    /// mirror is whole (task 160, PC2).
+    fn assert_mirror(rows: &[Row], c: ClockCfg, ends: impl Fn(&[Row], usize) -> bool) {
+        let n = rows.len();
+        let t: Vec<f64> = rows.iter().map(clock_of).collect();
+        // The rows whose window of 5 ends exactly on the last row before a
+        // break: the case the mirror catches.
+        let on_edge = (0..n)
+            .filter(|&i| {
+                let end = (i..n).find(|&j| j + 1 == n || ends(rows, j)).unwrap();
+                end + 1 < n && t[end] - t[i] == 5.0
+            })
+            .count();
+        assert!(on_edge > 5, "{on_edge} rows end on the edge");
+        let last = t[n - 1];
+        let mut mirror: Vec<Row> = rows.iter().rev().cloned().collect();
+        for r in &mut mirror {
+            r.clock = Some(ClockValue::F64(last - clock_of(r)));
+        }
+        // The mirror: times negated and reversed, a backward kernel closed
+        // on the far side -- "left" mirrors "right", "both" mirrors itself.
+        for (closed, mirrored) in [(Closed::Right, Closed::Left), (Closed::Both, Closed::Both)] {
+            let k = KernelDef {
+                direction: Direction::Forward,
+                half_life: 3.0,
+                window_size: Some(5.0),
+                window_ns: Some(ns_of(5.0)),
+                closed,
+            };
+            let ops: Vec<OpDef> = [
+                Stat::Mean,
+                Stat::Sum,
+                Stat::Rate,
+                Stat::Quantile,
+                Stat::Quantile,
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(i, stat)| OpDef {
+                kernel: 0,
+                stat,
+                input: 0,
+                min_samples: 1,
+                partial: Partial::Null,
+                bias: false,
+                quantile: (stat == Stat::Quantile).then_some(if i == 3 { 0.2 } else { 0.7 }),
+            })
+            .collect();
+            let fwd = run(std::slice::from_ref(&k), &ops, c, rows, 1).unwrap();
+            let kb = KernelDef {
+                direction: Direction::Backward,
+                closed: mirrored,
+                ..k
+            };
+            let back = run(&[kb], &ops, c, &mirror, 1).unwrap();
+            // Row i's forward window is the mirror's backward window at the
+            // mirrored row i: whole where it is whole, cut short or discarded
+            // where it does not reach its far edge (null both), and the same
+            // number where it is whole.
+            for o in 0..ops.len() {
+                for (i, ti) in t.iter().enumerate() {
+                    let (a, b) = (fwd.values[o][i], back.values[o][n - 1 - i]);
+                    assert_eq!(
+                        a.is_nan(),
+                        b.is_nan(),
+                        "{closed:?} op {o} row {i} at {ti}: {a} vs {b}"
+                    );
+                    if !a.is_nan() {
+                        assert!(
+                            (a - b).abs() <= 1e-9 * (1.0 + a.abs()),
+                            "{closed:?} op {o} row {i}: {a} vs {b}"
+                        );
+                    }
+                }
+                assert!(fwd.values[o].iter().filter(|v| !v.is_nan()).count() > n / 3);
+            }
+        }
+    }
+
+    /// A forward window is a backward one over the reversed stream, less the
+    /// row itself: the mirror of each kernel on the mirror of the stream.
+    #[test]
+    fn a_forward_window_is_a_backward_one_over_the_reversed_stream() {
+        // Distinct stamps on a half-unit grid, so the row itself is the only
+        // exclusion and a row lands exactly on a window's far edge, broken
+        // by gaps past the cap.
+        let mut rows = grid_stream(11, 300, 1, false, false);
+        rows.iter_mut().for_each(|r| r.accept = true);
+        let mut last_row = rows.last().unwrap().clone();
+        last_row.clock = Some(ClockValue::F64(clock_of(&last_row) + 12.0));
+        rows.push(last_row);
+        assert_mirror(&rows, cfg(8.0, None, None), |rows, j| {
+            clock_of(&rows[j + 1]) - clock_of(&rows[j]) > 8.0
+        });
+    }
+
+    /// The identity across resets (task 173, PC2): a reset discards every
+    /// window still open across it, but one whose far edge is the last row
+    /// before it is whole, as at a cut -- every row it covers has arrived,
+    /// and its mirror, a backward window reaching exactly back to its
+    /// stretch's first row, is complete. Before, a reset discarded it, and
+    /// the forward side was null where the mirror had its number.
+    #[test]
+    fn a_forward_window_is_a_backward_one_over_the_reversed_stream_across_resets() {
+        // A step back past `restart_after_step_back` (0: every step back).
+        let mut rows = step_back_stream(11, 300, 1, false);
+        rows.iter_mut().for_each(|r| r.accept = true);
+        let mut last_row = rows.last().unwrap().clone();
+        last_row.clock = Some(ClockValue::F64(clock_of(&last_row) - 12.0));
+        rows.push(last_row);
+        assert_mirror(&rows, cfg(8.0, None, Some(0.0)), |rows, j| {
+            clock_of(&rows[j + 1]) < clock_of(&rows[j])
+        });
+        // A new session under `session_gap = "reset"`.
+        let mut rows = session_reset_stream(11, 300, 1, false);
+        rows.iter_mut().for_each(|r| r.accept = true);
+        let mut last_row = rows.last().unwrap().clone();
+        last_row.clock = Some(ClockValue::F64(clock_of(&last_row) + 1.0));
+        last_row.session = last_row.session.map(|s| s + 1);
+        rows.push(last_row);
+        assert_mirror(&rows, cfg(8.0, Some(SessionGap::Reset), None), |rows, j| {
+            rows[j + 1].session != rows[j].session
+        });
+    }
+
+    /// A stream of many groups, interleaved, `per` rows at each stamp on
+    /// average (1 to `2 * per - 1`), each row's group drawn afresh: rows
+    /// pending in many groups at once at a repeated stamp.
+    fn many_groups_stream(seed: u64, n: usize, groups: usize, per: usize) -> Vec<Row> {
+        let mut rows = stream(seed, n, groups, false, false);
+        let mut rng = Lcg(seed.wrapping_mul(17).wrapping_add(3));
+        let (mut t, mut left) = (0.0, 0);
+        for r in &mut rows {
+            if left == 0 {
+                t += 1.0;
+                left = 1 + rng.below(2 * per - 1);
+            }
+            left -= 1;
+            r.group = Some(format!("g{}", rng.below(groups)));
+            r.clock = Some(ClockValue::F64(t));
+        }
+        rows
+    }
+
+    /// One backward sum under `closed`, with no window and no cap: every
+    /// group stays on the silent list for the whole stream.
+    fn one_sum(closed: Closed) -> (Vec<KernelDef>, Vec<OpDef>) {
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: 50.0,
+            window_size: None,
+            window_ns: None,
+            closed,
+        };
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+            bias: false,
+            quantile: None,
+        };
+        (vec![k], vec![op])
+    }
+
+    /// A row resolves only the groups with rows pending (task 325): the
+    /// walk from the silent list's head stepped over every group ever seen
+    /// on every row, each already resolved, so the rows' cost grew with the
+    /// groups, not the work -- 80 µs a row at 10,000 groups. Counted, not
+    /// timed: over 2,000 interleaved groups, `"left"` and `"none"` pend no
+    /// row and resolve no group as rows arrive; `"right"` and `"both"`
+    /// resolve each group once for each stamp it had rows at, at the next
+    /// stamp, and never one with nothing pending. The head walk made about
+    /// 2,000 calls a row here, nearly all idle.
+    #[test]
+    fn a_row_resolves_only_the_groups_with_rows_pending() {
+        let (n, groups) = (6_000, 2_000);
+        let rows = many_groups_stream(41, n, groups, 4);
+        let last = rows.last().and_then(|r| r.clock);
+        // Each group's stamps before the last: one resolution each.
+        let mut due = std::collections::HashSet::new();
+        for r in rows.iter().filter(|r| r.clock != last) {
+            let Some(ClockValue::F64(t)) = r.clock else {
+                unreachable!("a number clock")
+            };
+            due.insert((r.group.clone(), t.to_bits()));
+        }
+        assert!(due.len() > n / 2, "{} group stamps", due.len());
+        for closed in [Closed::Left, Closed::Neither, Closed::Right, Closed::Both] {
+            let (kernels, ops) = one_sum(closed);
+            let mut core = Windows::new(kernels, ops, cfg(f64::INFINITY, None, None)).unwrap();
+            core.set_grouped(true);
+            FLUSHES.with(|c| c.set((0, 0)));
+            for r in &rows {
+                push(&mut core, r).unwrap();
+            }
+            let (calls, idle) = FLUSHES.with(std::cell::Cell::get);
+            assert!(
+                core.groups.len() > groups * 9 / 10,
+                "{closed:?}: groups seen"
+            );
+            let want = if closed.near(Direction::Backward) {
+                due.len() as u64
+            } else {
+                0
+            };
+            assert_eq!((calls, idle), (want, 0), "{closed:?}: calls, idle");
+        }
+    }
+
+    /// A state saved while many groups have rows pending at a repeated
+    /// stamp resumes to the bit (task 325): the walk reads the pending
+    /// groups off the silent list's tail, which the state carries.
+    #[test]
+    fn a_state_saved_with_many_groups_pending_resumes_to_the_bit() {
+        let (kernels, ops) = all_kernels();
+        let rows = many_groups_stream(43, 600, 60, 6);
+        let c = cfg(f64::INFINITY, None, None);
+        let one = run(&kernels, &ops, c, &rows, 1).unwrap();
+        let mut most = 0;
+        for at in [1, 5, 97, 211, 300, 451, 599] {
+            let mut core = Windows::new(kernels.clone(), ops.clone(), c).unwrap();
+            core.set_grouped(true);
+            let (mut t, mut next) = (Table::default(), 0);
+            for r in &rows[..at] {
+                push(&mut core, r).unwrap();
+            }
+            most = most.max(core.groups.iter().filter(|g| !g.pending.is_empty()).count());
+            t.append(core.drain(), &mut next);
+            let bytes = rmp_serde::to_vec_named(&core).unwrap();
+            let mut core: Windows = rmp_serde::from_slice(&bytes).unwrap();
+            core.check().unwrap();
+            for r in &rows[at..] {
+                push(&mut core, r).unwrap();
+            }
+            t.append(core.finish(), &mut next);
+            assert!(t.same_bits(&one), "resumed at {at}");
+        }
+        assert!(most >= 4, "at most {most} groups pending at a save");
+    }
+
+    /// Every row at a repeated stamp gets the same backward window under
+    /// "right", later rows at the stamp included; under "left" the stamp's
+    /// rows are outside and the window is known as the stamp arrives.
+    #[test]
+    fn rows_at_one_stamp_share_a_backward_window() {
+        let rows: Vec<Row> = [
+            (0.0, 1.0),
+            (1.0, 2.0),
+            (2.0, 3.0),
+            (2.0, 4.0),
+            (2.0, 5.0),
+            (3.0, 6.0),
+            (5.0, 7.0),
+        ]
+        .iter()
+        .map(|&(t, x)| Row {
+            group: None,
+            clock: Some(ClockValue::F64(t)),
+            session: None,
+            values: vec![x],
+            accept: true,
+        })
+        .collect();
+        let c = cfg(100.0, None, None);
+        let sums = |closed: Closed| {
+            let k = KernelDef {
+                direction: Direction::Backward,
+                half_life: f64::INFINITY,
+                window_size: Some(2.0),
+                window_ns: Some(ns_of(2.0)),
+                closed,
+            };
+            let op = OpDef {
+                kernel: 0,
+                stat: Stat::Sum,
+                input: 0,
+                min_samples: 1,
+                partial: Partial::Keep,
+                bias: false,
+                quantile: None,
+            };
+            run(&[k], &[op], c, &rows, 1).unwrap().values[0].clone()
+        };
+        // Polars' rolling_sum_by, window 2, on these stamps (measured
+        // 2026-10-02, docs/PLAN.md task 143).
+        assert_eq!(
+            sums(Closed::Right),
+            vec![1.0, 3.0, 14.0, 14.0, 14.0, 18.0, 7.0]
+        );
+        assert_eq!(
+            sums(Closed::Both),
+            vec![1.0, 3.0, 15.0, 15.0, 15.0, 20.0, 13.0]
+        );
+        let left = sums(Closed::Left);
+        assert!(left[0].is_nan() && left[1..] == [1.0, 3.0, 3.0, 3.0, 14.0, 6.0]);
+        let none = sums(Closed::Neither);
+        assert!(none[0].is_nan() && none[1..6] == [1.0, 2.0, 2.0, 2.0, 12.0] && none[6].is_nan());
+    }
+
+    /// The backward time-weighted mean is `ewm_mean_by`'s recursion with
+    /// `a_1 = 1`, written out, and a repeated stamp moves it not at all.
+    #[test]
+    fn the_backward_mean_is_the_recursion() {
+        let stamps = [0.0, 1.0, 2.0, 2.0, 2.0, 3.0, 5.0, 5.5, 9.0];
+        let xs = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0];
+        let rows: Vec<Row> = stamps
+            .iter()
+            .zip(xs)
+            .map(|(&t, x)| Row {
+                group: None,
+                clock: Some(ClockValue::F64(t)),
+                session: None,
+                values: vec![x],
+                accept: true,
+            })
+            .collect();
+        let h = 1.0;
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: h,
+            window_size: None,
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Mean,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+            bias: false,
+            quantile: None,
+        };
+        let got = run(&[k], &[op], cfg(100.0, None, None), &rows, 1)
+            .unwrap()
+            .values[0]
+            .clone();
+        let mut y = xs[0];
+        let mut want = vec![y];
+        for i in 1..xs.len() {
+            let a = 1.0 - (-(stamps[i] - stamps[i - 1]) / h).exp2();
+            y = a * xs[i] + (1.0 - a) * y;
+            want.push(y);
+        }
+        // Rows at one stamp share the window: the stamp's last recursion
+        // value, which the zero-mass rows did not move.
+        let want: Vec<f64> = (0..xs.len())
+            .map(|i| {
+                let last = (i..xs.len())
+                    .take_while(|&j| stamps[j] == stamps[i])
+                    .last()
+                    .unwrap();
+                want[last]
+            })
+            .collect();
+        for (i, (g, w)) in got.iter().zip(&want).enumerate() {
+            assert!((g - w).abs() < 1e-12, "row {i}: {g} vs {w}");
+        }
+    }
+
+    /// One row's variance by Polars' own `ewm_var(adjust=False)` algorithm
+    /// (pandas' `ewmcov`), written out: the old weight scaled by `1 − α`
+    /// and the new row's by `α`, the weights renormalized to a sum of 1, the
+    /// mean and the co-moment moved together, and unless `bias` the
+    /// co-moment times `sum_wt² / (sum_wt² − sum_wt2)`.
+    fn polars_ewm_var(xs: &[f64], h: f64, bias: bool) -> Vec<f64> {
+        let alpha = 1.0 - (-1.0 / h).exp2();
+        let (mut mean, mut cov) = (xs[0], 0.0);
+        let (mut old_wt, mut sum_wt, mut sum_wt2) = (1.0f64, 1.0f64, 1.0f64);
+        let mut out = vec![if bias { 0.0 } else { f64::NAN }];
+        for &x in &xs[1..] {
+            sum_wt *= 1.0 - alpha;
+            sum_wt2 *= (1.0 - alpha) * (1.0 - alpha);
+            old_wt *= 1.0 - alpha;
+            let old_mean = mean;
+            let wt_sum = old_wt + alpha;
+            mean = (old_wt * old_mean + alpha * x) / wt_sum;
+            cov = (old_wt * (cov + (old_mean - mean) * (old_mean - mean))
+                + alpha * (x - mean) * (x - mean))
+                / wt_sum;
+            sum_wt += alpha;
+            sum_wt2 += alpha * alpha;
+            old_wt += alpha;
+            sum_wt /= old_wt;
+            sum_wt2 /= old_wt * old_wt;
+            old_wt = 1.0;
+            out.push(if bias {
+                cov
+            } else {
+                let num = sum_wt * sum_wt;
+                let den = num - sum_wt2;
+                if den > 0.0 { num / den * cov } else { f64::NAN }
+            });
+        }
+        out
+    }
+
+    /// On a clock that steps by 1, with `half_life` in rows, the variance is
+    /// Polars' `ewm_var(adjust=False)`, whose algorithm is written out above:
+    /// a stretch's first value held from before it weighs `(1 − α)^(n−1)`,
+    /// as `adjust=False`'s first row does (task 212). The standard deviation
+    /// is its root. The Python suite holds the same to Polars itself.
+    #[test]
+    fn the_variance_on_a_unit_clock_is_polars_adjust_false() {
+        let mut rng = Lcg(77);
+        let xs: Vec<f64> = (0..300).map(|_| rng.next() * 10.0 - 3.0).collect();
+        let rows: Vec<Row> = xs
+            .iter()
+            .enumerate()
+            .map(|(i, &x)| Row {
+                group: None,
+                clock: Some(ClockValue::F64(i as f64)),
+                session: None,
+                values: vec![x],
+                accept: true,
+            })
+            .collect();
+        for (h, bias) in [(1.0, false), (6.5, true), (6.5, false), (40.0, false)] {
+            let k = KernelDef {
+                direction: Direction::Backward,
+                half_life: h,
+                window_size: None,
+                window_ns: None,
+                closed: Closed::Right,
+            };
+            let op = |stat| OpDef {
+                kernel: 0,
+                stat,
+                input: 0,
+                min_samples: 1,
+                partial: Partial::Keep,
+                bias,
+                quantile: None,
+            };
+            let got = run(
+                &[k],
+                &[op(Stat::Var), op(Stat::Std)],
+                cfg(100.0, None, None),
+                &rows,
+                1,
+            )
+            .unwrap();
+            let want = polars_ewm_var(&xs, h, bias);
+            for (i, w) in want.iter().enumerate() {
+                let (v, s) = (got.values[0][i], got.values[1][i]);
+                assert_eq!(
+                    v.is_nan(),
+                    w.is_nan(),
+                    "h {h} bias {bias} row {i}: {v} vs {w}"
+                );
+                if !w.is_nan() {
+                    assert!(
+                        (v - w).abs() <= 1e-12 * w.abs().max(1.0),
+                        "h {h} row {i}: {v} vs {w}"
+                    );
+                    assert_eq!(s.to_bits(), v.sqrt().to_bits(), "row {i}");
+                }
+            }
+        }
+    }
+
+    /// Every window holds one value however many rows it weighs, so its
+    /// variance is 0 exactly, at any level and on every kernel: the merge
+    /// of two segments moves the mean by their means' difference, 0, and
+    /// adds nothing to `M2` (task 212). A mean square less a squared mean
+    /// would cancel to rounding noise at a level.
+    #[test]
+    fn a_constant_input_has_a_variance_of_exactly_zero() {
+        let (kernels, ops) = all_kernels();
+        let var: Vec<usize> = (0..ops.len()).filter(|&o| ops[o].stat.is_var()).collect();
+        for level in [0.1, 1e8 + 0.1, -3e12, 7.0] {
+            let rows: Vec<Row> = stream(5, 400, 2, true, true)
+                .into_iter()
+                .map(|mut r| {
+                    for v in &mut r.values {
+                        if !v.is_nan() {
+                            *v = level;
+                        }
+                    }
+                    r
+                })
+                .collect();
+            let c = cfg(8.0, Some(SessionGap::Gap(2.0)), None);
+            let t = run(&kernels, &ops, c, &rows, 1).unwrap();
+            for &o in &var {
+                let valued: Vec<f64> = t.values[o]
+                    .iter()
+                    .copied()
+                    .filter(|v| !v.is_nan())
+                    .collect();
+                assert!(
+                    valued.len() > 20,
+                    "level {level} output {o}: {}",
+                    valued.len()
+                );
+                assert!(
+                    valued.iter().all(|&v| v == 0.0),
+                    "level {level} output {o}: {:?}",
+                    valued.iter().find(|&&v| v != 0.0)
+                );
+            }
+        }
+    }
+
+    /// A variance's mean is a compensated pair (`rheon_core::comp`): a
+    /// value held row after row is approached as exact arithmetic approaches
+    /// it. At 1e8 a plain mean stalls a few rounding steps short of a new
+    /// level, and the variance about it settles on that gap's square, about
+    /// 1e-15; the definition decays as `p (1 − p)`, `p = 2^(−T/h)` the weight
+    /// left on the old level `T` units after its last row. The core's
+    /// discount is an `exp2`, so the bound is relative, not bitwise.
+    #[test]
+    fn a_variance_at_a_level_decays_with_its_history() {
+        let (a, n_a, n, h) = (1e8, 50usize, 500usize, 5.0);
+        let rows: Vec<Row> = (0..n)
+            .map(|i| Row {
+                group: None,
+                clock: Some(ClockValue::F64(i as f64)),
+                session: None,
+                values: vec![if i < n_a { a } else { a + 1.0 }],
+                accept: true,
+            })
+            .collect();
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: h,
+            window_size: None,
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Var,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+            bias: true,
+            quantile: None,
+        };
+        let v = run(&[k], &[op], cfg(100.0, None, None), &rows, 1)
+            .unwrap()
+            .values[0]
+            .clone();
+        for t in [n_a + 20, n_a + 100, n_a + 200, n - 1] {
+            let p = (-((t - (n_a - 1)) as f64) / h).exp2();
+            let want = p * (1.0 - p);
+            assert!(
+                (v[t] - want).abs() <= 1e-9 * want,
+                "row {t}: {} vs {want}",
+                v[t]
+            );
+        }
+    }
+
+    /// A variance looks back only, and needs a window without decay, as a
+    /// mean does: refused when the core is built, and in a core read back
+    /// from a damaged state.
+    #[test]
+    fn a_variance_looks_back_only() {
+        let k = |direction| KernelDef {
+            direction,
+            half_life: 2.0,
+            window_size: Some(4.0),
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let op = |kernel, stat| OpDef {
+            kernel,
+            stat,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+            bias: false,
+            quantile: None,
+        };
+        let err = Windows::new(
+            vec![k(Direction::Forward)],
+            vec![op(0, Stat::Std)],
+            ClockCfg::default(),
+        )
+        .expect_err("refused");
+        assert!(
+            err.contains("a variance reads only the rows up to each row"),
+            "{err}"
+        );
+        let err = Windows::new(
+            vec![KernelDef {
+                half_life: f64::INFINITY,
+                window_size: None,
+                ..k(Direction::Backward)
+            }],
+            vec![op(0, Stat::Var)],
+            ClockCfg::default(),
+        )
+        .expect_err("refused");
+        assert!(err.contains("needs a window_size"), "{err}");
+        let mut core = Windows::new(
+            vec![k(Direction::Backward), k(Direction::Forward)],
+            vec![op(0, Stat::Var), op(1, Stat::Sum)],
+            ClockCfg::default(),
+        )
+        .unwrap();
+        core.check().unwrap();
+        Arc::make_mut(&mut core.ops)[0].kernel = 1;
+        let err = core.check().expect_err("refused");
+        assert!(
+            err.contains("a variance reads only the rows up to each row"),
+            "{err}"
+        );
+    }
+
+    /// A reset discards the windows open across it, whatever `partial`
+    /// says; a cut keeps, nulls or drops them as it says. A window whose far
+    /// edge is the last row before either is whole.
+    #[test]
+    fn a_reset_discards_and_a_cut_follows_partial() {
+        let k = KernelDef {
+            direction: Direction::Forward,
+            half_life: 2.0,
+            window_size: Some(5.0),
+            window_ns: Some(ns_of(5.0)),
+            closed: Closed::Right,
+        };
+        let ops = vec![
+            OpDef {
+                kernel: 0,
+                stat: Stat::Sum,
+                input: 0,
+                min_samples: 1,
+                partial: Partial::Keep,
+                bias: false,
+                quantile: None,
+            },
+            OpDef {
+                kernel: 0,
+                stat: Stat::Sum,
+                input: 0,
+                min_samples: 1,
+                partial: Partial::Null,
+                bias: false,
+                quantile: None,
+            },
+            OpDef {
+                kernel: 0,
+                stat: Stat::Sum,
+                input: 0,
+                min_samples: 1,
+                partial: Partial::Drop,
+                bias: false,
+                quantile: None,
+            },
+        ];
+        let mk = |ts: &[f64]| -> Vec<Row> {
+            ts.iter()
+                .map(|&t| Row {
+                    group: None,
+                    clock: Some(ClockValue::F64(t)),
+                    session: None,
+                    values: vec![1.0],
+                    accept: true,
+                })
+                .collect()
+        };
+        // A gap past the cap at row 3 cuts rows 0..3's windows.
+        let cut = run(
+            std::slice::from_ref(&k),
+            &ops,
+            cfg(4.0, None, None),
+            &mk(&[0.0, 1.0, 2.0, 20.0, 21.0]),
+            1,
+        )
+        .unwrap();
+        assert!(cut.values[0][0] > 0.0 && cut.values[1][0].is_nan() && cut.drop[0]);
+        assert!(!cut.drop[3]);
+        // A step back restarts: discarded, null, never dropped.
+        let reset = run(
+            std::slice::from_ref(&k),
+            &ops,
+            cfg(4.0, None, Some(0.0)),
+            &mk(&[0.0, 1.0, 2.0, 1.5, 2.5]),
+            1,
+        )
+        .unwrap();
+        assert!(reset.values[0][0].is_nan() && reset.values[1][0].is_nan() && !reset.drop[0]);
+        // Task 173, PC2: row 0's window (0, 5] ends exactly on the last row
+        // before the step back, so every row it covers has arrived: whole,
+        // under every `partial`, as before a cut. Its sum from the
+        // definition, `Σ 2^(−d/2)` over the rows 1, 2 and 5 later. The
+        // windows that reach past that row are discarded, never dropped.
+        let reset = run(
+            &[k],
+            &ops,
+            cfg(100.0, None, Some(0.0)),
+            &mk(&[0.0, 1.0, 2.0, 5.0, 3.0]),
+            1,
+        )
+        .unwrap();
+        let whole = 2f64.powf(-0.5) + 2f64.powf(-1.0) + 2f64.powf(-2.5);
+        // `(1.25 k + 2)·2⁻⁵²` for a libm `k` ulps off (docs/PLAN.md task
+        // 273): each side takes `2^(−1/2)` (`k` ulps of `2⁻⁵³`) and
+        // `2^(−5/2)` (`k` of `2⁻⁵⁵`) from its libm, `exp2` here and `powf`
+        // above, `2⁻¹` exactly, and rounds two sums near 1.4 (½ ulp each).
+        // Held at `8·2⁻⁵²`, a libm up to 4.8 ulps off: measured 0 with
+        // Apple's, 3 with Apple's moved by up to 2 ulps and 5 by up to 4,
+        // where `1e-15` (4.5), the bound before, failed.
+        for (o, values) in reset.values.iter().enumerate().take(3) {
+            assert!(
+                (values[0] - whole).abs() <= 8.0 * f64::EPSILON,
+                "op {o}: {} vs {whole}",
+                values[0]
+            );
+            assert!(values[1..].iter().all(|v| v.is_nan()), "op {o}");
+        }
+        assert!(reset.drop.iter().all(|d| !d), "{:?}", reset.drop);
+    }
+
+    /// `min_samples` nulls a window with fewer rows carrying a value.
+    #[test]
+    fn min_samples_counts_rows_with_a_value() {
+        let rows: Vec<Row> = [1.0, f64::NAN, 2.0, 3.0]
+            .iter()
+            .enumerate()
+            .map(|(i, &x)| Row {
+                group: None,
+                clock: Some(ClockValue::F64(i as f64)),
+                session: None,
+                values: vec![x],
+                accept: true,
+            })
+            .collect();
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: f64::INFINITY,
+            window_size: Some(3.0),
+            window_ns: Some(ns_of(3.0)),
+            closed: Closed::Right,
+        };
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples: 2,
+            partial: Partial::Keep,
+            bias: false,
+            quantile: None,
+        };
+        let got = run(&[k], &[op], cfg(100.0, None, None), &rows, 1)
+            .unwrap()
+            .values[0]
+            .clone();
+        assert!(got[0].is_nan() && got[1].is_nan() && got[2] == 3.0 && got[3] == 5.0);
+    }
+
+    /// The state survives msgpack at every row and goes on identically.
+    #[test]
+    fn a_saved_state_resumes_at_any_row() {
+        let (kernels, ops) = all_kernels();
+        // Under `session_gap = "reset"` too, whose saved form no other
+        // state carries (task 252): it must load as itself, not as no
+        // session gap.
+        for (rows, c) in [
+            (
+                stream(9, 120, 2, true, true),
+                cfg(8.0, Some(SessionGap::Gap(2.0)), None),
+            ),
+            (
+                session_reset_stream(10, 120, 2, true),
+                cfg(8.0, Some(SessionGap::Reset), None),
+            ),
+        ] {
+            let one = run(&kernels, &ops, c, &rows, 1).unwrap();
+            for at in [1, 2, 17, 60, 119] {
+                let mut core = Windows::new(kernels.clone(), ops.clone(), c).unwrap();
+                core.set_grouped(true);
+                let (mut t, mut next) = (Table::default(), 0);
+                for r in &rows[..at] {
+                    push(&mut core, r).unwrap();
+                }
+                t.append(core.drain(), &mut next);
+                let bytes = rmp_serde::to_vec_named(&core).unwrap();
+                let mut core: Windows = rmp_serde::from_slice(&bytes).unwrap();
+                core.check().unwrap();
+                assert_eq!(core.clock_cfg(), &c, "resumed at {at}");
+                for r in &rows[at..] {
+                    push(&mut core, r).unwrap();
+                }
+                t.append(core.finish(), &mut next);
+                assert!(t.same_bits(&one), "{c:?}: resumed at {at}");
+            }
+        }
+    }
+
+    /// A step back is refused by name with the step, and nothing moves.
+    #[test]
+    fn a_step_back_is_refused_and_changes_nothing() {
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: 2.0,
+            window_size: None,
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+            bias: false,
+            quantile: None,
+        };
+        let mut core = Windows::new(vec![k], vec![op], cfg(10.0, None, None)).unwrap();
+        let row = |t: f64| Row {
+            group: None,
+            clock: Some(ClockValue::F64(t)),
+            session: None,
+            values: vec![1.0],
+            accept: true,
+        };
+        push(&mut core, &row(0.0)).unwrap();
+        push(&mut core, &row(2.0)).unwrap();
+        let before = rmp_serde::to_vec_named(&core).unwrap();
+        let err = push(&mut core, &row(1.0)).unwrap_err();
+        assert!(matches!(err, Refusal::Backwards { seq: 2, back, .. } if back == 1.0));
+        assert_eq!(rmp_serde::to_vec_named(&core).unwrap(), before);
+    }
+
+    /// Review R2, W1: an edge was decided from two rounded policy times, so
+    /// a row exactly one window from another landed on either side of it
+    /// (0.4 - 0.1 is not 0.3 in a double); it is decided from the two rows'
+    /// clocks, exact in nanoseconds, where Polars puts it, at any age.
+    #[test]
+    fn an_edge_is_decided_from_the_two_rows_clocks() {
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+            bias: false,
+            quantile: None,
+        };
+        let same = |got: &[f64], want: &[f64]| {
+            got.len() == want.len()
+                && got
+                    .iter()
+                    .zip(want)
+                    .all(|(x, y)| x.is_nan() && y.is_nan() || x == y)
+        };
+        const EPOCH_2024_MS: i64 = 1_704_067_200_000;
+        for base in [0, EPOCH_2024_MS] {
+            for (direction, closed, ms, want) in [
+                // Backward "left": the row 300 ms older is at the far edge, in.
+                (
+                    Direction::Backward,
+                    Closed::Left,
+                    [0, 100, 400, 800],
+                    [f64::NAN, 1.0, 1.0, f64::NAN],
+                ),
+                // Backward "right": the row 300 ms older is at the far edge, out.
+                (
+                    Direction::Backward,
+                    Closed::Right,
+                    [0, 400, 700, 1100],
+                    [1.0, 1.0, 1.0, 1.0],
+                ),
+                // Forward "right": the row 300 ms later is at the far edge, in. A
+                // forward window closes only at a stamp past its far edge, so the
+                // fourth row is there to close row 1's; row 2's closes empty, and
+                // row 3's is unresolved at the end.
+                (
+                    Direction::Forward,
+                    Closed::Right,
+                    [0, 100, 400, 800],
+                    [1.0, 1.0, f64::NAN, f64::NAN],
+                ),
+            ] {
+                let k = KernelDef {
+                    direction,
+                    half_life: f64::INFINITY,
+                    window_size: Some(0.3),
+                    window_ns: Some(ns_of(0.3)),
+                    closed,
+                };
+                let rows: Vec<Row> = ms
+                    .iter()
+                    .map(|&m| Row {
+                        group: None,
+                        clock: Some(ClockValue::Ns((base + m) * 1_000_000)),
+                        session: None,
+                        values: vec![1.0],
+                        accept: true,
+                    })
+                    .collect();
+                let c = || cfg(100.0, None, None);
+                let got = run(
+                    std::slice::from_ref(&k),
+                    std::slice::from_ref(&op),
+                    c(),
+                    &rows,
+                    1,
+                )
+                .unwrap();
+                assert!(
+                    same(&got.values[0], &want),
+                    "{direction:?} {closed:?} from {base}: {:?}",
+                    got.values[0]
+                );
+                let bf = brute(
+                    std::slice::from_ref(&k),
+                    std::slice::from_ref(&op),
+                    c(),
+                    &rows,
+                )
+                .unwrap();
+                assert!(got.same_bits(&bf), "the brute force decides the same edges");
+            }
+        }
+    }
+
+    /// Review R2, W3: the stream's clock took every row's session, so groups
+    /// with sessions of their own saw a change at every row, and every
+    /// group's windows started over at every row. With groups a session is
+    /// each group's; without, the stream is the one group and its session
+    /// change still ends the windows.
+    #[test]
+    fn with_groups_a_session_is_each_groups() {
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: f64::INFINITY,
+            window_size: None,
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+            bias: false,
+            quantile: None,
+        };
+        let row = |t: f64, g: Option<&str>, s: u64, x: f64| Row {
+            group: g.map(str::to_string),
+            clock: Some(ClockValue::F64(t)),
+            session: Some(s),
+            values: vec![x],
+            accept: true,
+        };
+        let sums = |rows: &[Row]| {
+            run(
+                std::slice::from_ref(&k),
+                std::slice::from_ref(&op),
+                cfg(10.0, Some(SessionGap::Gap(1.0)), None),
+                rows,
+                1,
+            )
+            .unwrap()
+            .values[0]
+                .clone()
+        };
+        let (a, b) = (Some("a"), Some("b"));
+        let rows = [
+            row(0.0, a, 1, 1.0),
+            row(1.0, b, 2, 10.0),
+            row(2.0, a, 1, 3.0),
+            row(3.0, b, 2, 30.0),
+        ];
+        assert_eq!(sums(&rows), [1.0, 10.0, 4.0, 40.0]);
+        // A group's own session change ends its windows, and no other's.
+        let rows = [
+            row(0.0, a, 1, 1.0),
+            row(1.0, b, 2, 10.0),
+            row(2.0, a, 3, 3.0),
+            row(3.0, b, 2, 30.0),
+        ];
+        assert_eq!(sums(&rows), [1.0, 10.0, 3.0, 40.0]);
+        // One group: the stream's session, a change at rows 1, 2 and 3.
+        let rows = [
+            row(0.0, None, 1, 1.0),
+            row(1.0, None, 2, 10.0),
+            row(2.0, None, 3, 3.0),
+            row(3.0, None, 2, 30.0),
+        ];
+        assert_eq!(sums(&rows), [1.0, 10.0, 3.0, 30.0]);
+    }
+
+    /// The seconds path, for a window given as a number on a temporal
+    /// clock (no `window_ns`): the gap converts with the same operations a
+    /// duration's text does, so every edge falls where the integer path
+    /// puts it.
+    #[test]
+    fn a_numeric_window_on_a_temporal_clock_decides_the_same_edges() {
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+            bias: false,
+            quantile: None,
+        };
+        let rows: Vec<Row> = [0, 100, 400, 800]
+            .iter()
+            .map(|&m| Row {
+                group: None,
+                clock: Some(ClockValue::Ns(m * 1_000_000)),
+                session: None,
+                values: vec![1.0],
+                accept: true,
+            })
+            .collect();
+        for (direction, closed) in [
+            (Direction::Backward, Closed::Left),
+            (Direction::Backward, Closed::Right),
+            (Direction::Forward, Closed::Right),
+            (Direction::Forward, Closed::Left),
+        ] {
+            let integer = KernelDef {
+                direction,
+                half_life: f64::INFINITY,
+                window_size: Some(0.3),
+                window_ns: Some(300_000_000),
+                closed,
+            };
+            let seconds = KernelDef {
+                window_ns: None,
+                ..integer.clone()
+            };
+            let ops = std::slice::from_ref(&op);
+            let a = run(
+                std::slice::from_ref(&integer),
+                ops,
+                cfg(100.0, None, None),
+                &rows,
+                1,
+            )
+            .unwrap();
+            let b = run(
+                std::slice::from_ref(&seconds),
+                ops,
+                cfg(100.0, None, None),
+                &rows,
+                1,
+            )
+            .unwrap();
+            assert!(
+                a.same_bits(&b),
+                "{direction:?} {closed:?}: {a:?} against {b:?}"
+            );
+            assert!(
+                a.values[0].iter().filter(|v| !v.is_nan()).count() >= 2,
+                "edges exercised"
+            );
+        }
+    }
+
+    /// Review R4, A1, recorded and not changed: under groups the stream's
+    /// clock cuts a group silent past `gap_cap` when another group's row
+    /// shows the silence, before the group's next row can say its session
+    /// changed; a `session_gap = "reset"` then discards only what is still
+    /// open. The same rows without a group column discard, since the one
+    /// clock sees the gap and the session change at one row, and the reset
+    /// comes first.
+    #[test]
+    fn a_silent_groups_reset_after_a_capped_gap_is_a_cut() {
+        let k = KernelDef {
+            direction: Direction::Forward,
+            half_life: f64::INFINITY,
+            window_size: Some(10.0),
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+            bias: false,
+            quantile: None,
+        };
+        let row = |t: f64, g: Option<&str>, s: u64, x: f64| Row {
+            group: g.map(str::to_string),
+            clock: Some(ClockValue::F64(t)),
+            session: Some(s),
+            values: vec![x],
+            accept: true,
+        };
+        let (a, b) = (Some("a"), Some("b"));
+        let rows = [
+            row(0.0, a, 1, 1.0),
+            row(1.0, b, 1, 10.0),
+            row(2.0, b, 1, 20.0),
+            row(4.0, a, 1, 1.0),
+            row(8.0, a, 1, 1.0),
+            row(9.0, b, 2, 30.0),
+        ];
+        let c = || cfg(5.0, Some(SessionGap::Reset), None);
+        let grouped = run(
+            std::slice::from_ref(&k),
+            std::slice::from_ref(&op),
+            c(),
+            &rows,
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            grouped.values[0][1], 20.0,
+            "cut at t = 8: the window over what b saw"
+        );
+        let alone: Vec<Row> = rows
+            .iter()
+            .filter(|r| r.group.as_deref() == b)
+            .map(|r| Row {
+                group: None,
+                ..r.clone()
+            })
+            .collect();
+        let one = run(
+            std::slice::from_ref(&k),
+            std::slice::from_ref(&op),
+            c(),
+            &alone,
+            1,
+        )
+        .unwrap();
+        assert!(
+            one.values[0][0].is_nan(),
+            "discarded at t = 9: {:?}",
+            one.values[0]
+        );
+    }
+
+    /// Review R4, A4: a kernel's two forms of its window agree, or the
+    /// kernel is refused.
+    #[test]
+    fn a_kernels_window_ns_must_be_its_window_size() {
+        let op = OpDef {
+            kernel: 0,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples: 1,
+            partial: Partial::Keep,
+            bias: false,
+            quantile: None,
+        };
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: 1.0,
+            window_size: Some(0.3),
+            window_ns: Some(300_000_001),
+            closed: Closed::Right,
+        };
+        let err = Windows::new(vec![k], vec![op], cfg(10.0, None, None)).expect_err("refused");
+        assert!(
+            err.contains("window_ns 300000001 is not window_size 0.3"),
+            "{err}"
+        );
+    }
+
+    /// Task 252: the Rust API's own refusals, which the formula layer's
+    /// checks keep every `with_windows` call from reaching -- a kernel's
+    /// half-life, a forward kernel without a window, a window that is not
+    /// finite and above 0, no operator, an operator naming a kernel there
+    /// is not or counting no row, and a kernel no operator uses.
+    #[test]
+    fn the_core_refuses_what_it_cannot_run_by_name() {
+        let kernel = |direction, half_life, window_size| KernelDef {
+            direction,
+            half_life,
+            window_size,
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        for h in [0.0, -1.0, f64::NAN] {
+            let err = kernel(Direction::Backward, h, Some(2.0))
+                .check()
+                .unwrap_err();
+            assert!(
+                err.starts_with("half_life must be above 0, but it is"),
+                "{h}: {err}"
+            );
+        }
+        let err = kernel(Direction::Forward, 1.0, None).check().unwrap_err();
+        assert!(
+            err.starts_with("window_size is not set, but an operator that reads the rows after"),
+            "{err}"
+        );
+        for w in [0.0, -2.0, f64::INFINITY, f64::NAN] {
+            for direction in [Direction::Backward, Direction::Forward] {
+                let err = kernel(direction, 1.0, Some(w)).check().unwrap_err();
+                assert!(
+                    err.starts_with("window_size must be finite and above 0, but it is"),
+                    "{w}: {err}"
+                );
+            }
+        }
+        kernel(Direction::Backward, 1.0, None).check().unwrap();
+        kernel(Direction::Forward, f64::INFINITY, Some(3.0))
+            .check()
+            .unwrap();
+        let op = |kernel: usize, min_samples: u32| OpDef {
+            kernel,
+            stat: Stat::Sum,
+            input: 0,
+            min_samples,
+            partial: Partial::Keep,
+            bias: false,
+            quantile: None,
+        };
+        let back = || kernel(Direction::Backward, 1.0, Some(2.0));
+        let refused = |kernels: Vec<KernelDef>, ops: Vec<OpDef>| {
+            Windows::new(kernels, ops, cfg(10.0, None, None)).expect_err("refused")
+        };
+        assert_eq!(
+            refused(vec![back()], vec![]),
+            defect("at least one operator is needed")
+        );
+        assert_eq!(
+            refused(vec![back()], vec![op(3, 1)]),
+            defect("operator 0 names kernel 3, which there is not")
+        );
+        // Only a sum takes 0.
+        assert!(
+            Windows::new(
+                vec![back()],
+                vec![op(0, 1), op(0, 0)],
+                cfg(10.0, None, None)
+            )
+            .is_ok()
+        );
+        let mean = OpDef {
+            stat: Stat::Mean,
+            ..op(0, 0)
+        };
+        assert_eq!(
+            refused(vec![back()], vec![op(0, 1), mean]),
+            defect("min_samples must be at least 1 (only a sum may take 0)")
+        );
+        assert_eq!(
+            refused(vec![back(), back()], vec![op(1, 1)]),
+            defect("kernel 0 has no operator")
+        );
+        let err = refused(
+            vec![kernel(Direction::Backward, -1.0, None)],
+            vec![op(0, 1)],
+        );
+        assert!(err.contains("half_life must be above 0"), "{err}");
+        // An increment is no statistic of a window, and reads back one row.
+        assert_eq!(OpKind::Increment.stat(), None);
+        assert_eq!(OpKind::Increment.direction(), Direction::Backward);
+        assert_eq!(OpKind::EwmStd.stat(), Some(Stat::Std));
+    }
+
+    /// Task 252: what the core reports of itself -- its outputs, one per
+    /// operator, and the rows its queues hold -- which a run reads to say
+    /// what its windows cost. A window of 5 over rows a unit apart is read,
+    /// and evicted to, at the next stamp under `"right"` (equal stamps share
+    /// a window): after row `t` the queue holds the 5 rows of row `t - 1`'s
+    /// window `(t - 6, t - 1]` and row `t` itself, 6 however long the
+    /// stream. The end of input reads the last row's window, evicting to its
+    /// 5 rows, and keeps them: a state saved there goes on with the next
+    /// file, whose rows look back into them.
+    #[test]
+    fn the_core_counts_its_outputs_and_the_rows_its_windows_hold() {
+        let k = KernelDef {
+            direction: Direction::Backward,
+            half_life: 3.0,
+            window_size: Some(5.0),
+            window_ns: None,
+            closed: Closed::Right,
+        };
+        let ops: Vec<OpDef> = [Stat::Sum, Stat::Mean, Stat::Var]
+            .into_iter()
+            .map(|stat| OpDef {
+                kernel: 0,
+                stat,
+                input: 0,
+                min_samples: 1,
+                partial: Partial::Keep,
+                bias: false,
+                quantile: None,
+            })
+            .collect();
+        let mut core = Windows::new(vec![k], ops, cfg(10.0, None, None)).unwrap();
+        assert_eq!(core.n_outputs(), 3);
+        assert_eq!(core.queued(), 0);
+        let mut most = 0;
+        for i in 0..200 {
+            let r = Row {
+                group: None,
+                clock: Some(ClockValue::F64(f64::from(i))),
+                session: None,
+                values: vec![f64::from(i % 7)],
+                accept: true,
+            };
+            push(&mut core, &r).unwrap();
+            most = most.max(core.queued());
+            if i >= 5 {
+                assert_eq!(core.queued(), 6, "after row {i}");
+            }
+            core.drain();
+        }
+        assert_eq!(most, 6);
+        core.finish();
+        assert_eq!(core.queued(), 5);
+    }
+
+    /// Task 252: with no cap on a step (`gap_cap` infinite, which only the
+    /// Rust API can give: a call with a clock column requires a finite
+    /// one), no silent group is ever cut, and every operator still matches
+    /// its definition on streams with long gaps, groups and sessions.
+    #[test]
+    fn every_operator_matches_its_definition_without_a_cap() {
+        let (kernels, ops) = all_kernels();
+        for (seed, groups, temporal, sessions) in [
+            (31, 3, true, false),
+            (32, 2, false, true),
+            (33, 1, false, false),
+        ] {
+            let rows = stream(seed, 300, groups, temporal, sessions);
+            let c = cfg(
+                f64::INFINITY,
+                sessions.then_some(SessionGap::Gap(2.0)),
+                None,
+            );
+            assert_matches_brute(&kernels, &ops, c, &rows, seed);
+        }
+    }
+
+    /// Long windows over a stream of `n` rows at steps of 0.5, 1 and 1.5
+    /// (exact in binary), two groups, a long null run in each input, and a
+    /// new session two thirds of the way, so each group fills its first
+    /// window twice: the rows on which a mean's cut reached into `back` and
+    /// was summed row by row (task 270, M-2).
+    fn long_window_stream(n: usize) -> Vec<Row> {
+        let mut rng = Lcg(270);
+        let (mut t, mut rows) = (0.0f64, Vec::with_capacity(n));
+        for i in 0..n {
+            t += [0.5, 1.0, 1.5][rng.below(3)];
+            let session = u64::from(i >= 2 * n / 3);
+            let value = |rng: &mut Lcg, null: bool| {
+                if null || rng.below(9) == 0 {
+                    f64::NAN
+                } else {
+                    rng.next() * 10.0 - 3.0
+                }
+            };
+            let v0 = value(&mut rng, (n / 5..n / 5 + 300).contains(&i));
+            let v1 = value(&mut rng, i < 150 || (n / 2..n / 2 + 500).contains(&i));
+            rows.push(Row {
+                group: Some(format!("g{}", rng.below(2))),
+                clock: Some(ClockValue::F64(t)),
+                session: Some(session),
+                values: vec![v0, v1],
+                accept: rng.below(10) != 0,
+            });
+        }
+        rows
+    }
+
+    /// Kernels of `window` units, wide enough to hold several hundred rows,
+    /// at the half-life given: a mean, a variance and a standard deviation
+    /// on every backward edge, a mean and a sum on every forward one.
+    fn long_kernels(window: f64, half_life: f64) -> (Vec<KernelDef>, Vec<OpDef>) {
+        let (mut kernels, mut ops) = (Vec::new(), Vec::new());
+        for direction in [Direction::Backward, Direction::Forward] {
+            for closed in [Closed::Right, Closed::Left, Closed::Both, Closed::Neither] {
+                let ki = kernels.len();
+                kernels.push(KernelDef {
+                    direction,
+                    half_life,
+                    window_size: Some(window),
+                    window_ns: Some(ns_of(window)),
+                    closed,
+                });
+                let stats: &[(Stat, u32, bool)] = if direction == Direction::Backward {
+                    &[
+                        (Stat::Mean, 1, false),
+                        (Stat::Var, 2, false),
+                        (Stat::Std, 3, true),
+                        (Stat::Mean, 40, false),
+                    ]
+                } else {
+                    &[(Stat::Mean, 1, false), (Stat::Sum, 1, false)]
+                };
+                for &(stat, min_samples, bias) in stats {
+                    ops.push(OpDef {
+                        kernel: ki,
+                        stat,
+                        input: ops.len() % 2,
+                        min_samples,
+                        partial: Partial::Keep,
+                        bias,
+                        quantile: None,
+                    });
+                }
+            }
+        }
+        (kernels, ops)
+    }
+
+    /// FNV-1a over every output's bits and every drop flag, in order.
+    fn digest(t: &Table) -> u64 {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |x: u64| {
+            for b in x.to_le_bytes() {
+                h ^= u64::from(b);
+                h = h.wrapping_mul(0x0100_0000_01b3);
+            }
+        };
+        for col in &t.values {
+            for v in col {
+                eat(v.to_bits());
+            }
+        }
+        for &d in &t.drop {
+            eat(u64::from(d));
+        }
+        h
+    }
+
+    /// The window operators' every output over long windows, at no decay
+    /// (no libm on the path, so the bits are every platform's), held to the
+    /// digest the code before task 270 (M-2) gave on this stream: the fold
+    /// kept between reads and the search that starts past the rows it has
+    /// passed over move no bit, at any chunking and across a save. Also the
+    /// brute force, so the digest is of right numbers.
+    #[test]
+    fn long_windows_keep_their_bits() {
+        let rows = long_window_stream(3_000);
+        let (kernels, ops) = long_kernels(400.0, f64::INFINITY);
+        let c = cfg(8.0, Some(SessionGap::Gap(2.0)), None);
+        let want = brute(&kernels, &ops, c, &rows).unwrap();
+        let one = run(&kernels, &ops, c, &rows, 1).unwrap();
+        one.close_to(&want, 1e-9).unwrap();
+        // Rows valued on each output: the null runs leave none empty.
+        for (o, col) in one.values.iter().enumerate() {
+            assert!(col.iter().any(|v| !v.is_nan()), "output {o} never valued");
+        }
+        assert_eq!(digest(&one), LONG_WINDOWS_DIGEST, "{:#x}", digest(&one));
+        for every in [7, 600, usize::MAX] {
+            let t = run(&kernels, &ops, c, &rows, every).unwrap();
+            assert!(t.same_bits(&one), "every {every}");
+        }
+        for at in [1, 777, 2_100] {
+            let mut core = Windows::new(kernels.clone(), ops.clone(), c).unwrap();
+            core.set_grouped(true);
+            let (mut t, mut next) = (Table::default(), 0);
+            for r in &rows[..at] {
+                push(&mut core, r).unwrap();
+            }
+            t.append(core.drain(), &mut next);
+            let bytes = rmp_serde::to_vec_named(&core).unwrap();
+            let mut core: Windows = rmp_serde::from_slice(&bytes).unwrap();
+            for r in &rows[at..] {
+                push(&mut core, r).unwrap();
+            }
+            t.append(core.finish(), &mut next);
+            assert!(t.same_bits(&one), "resumed at {at}");
+        }
+    }
+
+    /// The search and the fold as the code before task 270 (M-2) ran them:
+    /// from the oldest row each read, and `back`'s rows past the cut summed
+    /// afresh.
+    fn oldest_by_scan(
+        q: &Queue,
+        pred: impl Fn(&Stack, usize) -> bool,
+    ) -> Option<(usize, bool, usize)> {
+        let n = q.front.len();
+        (0..n)
+            .map(|p| (p, true, n - 1 - p))
+            .chain((0..q.back.len()).map(|i| (n + i, false, i)))
+            .find(|&(_, f, i)| pred(q.stack(f), i))
+    }
+
+    fn sum_after_by_rows<const W: bool>(
+        q: &Queue,
+        k: &KernelDef,
+        p: usize,
+        j: usize,
+    ) -> Option<(Acc, f64)> {
+        let var = W && q.var[j];
+        let n = q.front.len();
+        if p + 1 < n {
+            let mut q = q.clone();
+            return q.sum_after_op::<W>(k, p, j);
+        }
+        let mut sum: Option<(Acc, f64)> = None;
+        for i in p + 1 - n..q.back.len() {
+            let own = (q.back.own::<W>(i, j), q.back.tau[i]);
+            sum = Some(match sum {
+                None => own,
+                Some((a, a_at)) => then(k, &mut DecayMemo::default(), a, a_at, own.0, own.1, var),
+            });
+        }
+        sum
+    }
+
+    /// What a kernel's read takes for a valued row: a backward one a held
+    /// value, a forward one a value of the row's own.
+    fn valued(st: &Stack, i: usize, j: usize, fwd: bool) -> bool {
+        match (st.wide, fwd) {
+            (true, true) => st.own::<true>(i, j).n > 0.0,
+            (true, false) => !st.x::<true>(i, j).is_nan(),
+            (false, true) => st.own::<false>(i, j).n > 0.0,
+            (false, false) => !st.x::<false>(i, j).is_nan(),
+        }
+    }
+
+    fn same_acc(a: Option<(Acc, f64)>, b: Option<(Acc, f64)>) -> bool {
+        let bits = |x: Option<(Acc, f64)>| {
+            x.map(|(a, at)| [a.s, a.w, a.n, a.lo, a.q, a.e, at].map(f64::to_bits))
+        };
+        bits(a) == bits(b)
+    }
+
+    /// After every row of a stream through long windows at a finite
+    /// half-life (where `then` discounts), in every queue, for every
+    /// operator: the search kept between reads finds the row a scan from
+    /// the oldest finds, and the fold kept between reads is the bits of
+    /// the rows summed afresh, at the cut a read takes and at a position
+    /// drawn at random besides (task 270, M-2).
+    #[test]
+    fn the_kept_fold_and_search_are_the_row_by_row_ones() {
+        let rows = long_window_stream(2_000);
+        let (kernels, ops) = long_kernels(300.0, 30.0);
+        let c = cfg(8.0, Some(SessionGap::Gap(2.0)), None);
+        let mut core = Windows::new(kernels.clone(), ops, c).unwrap();
+        core.set_grouped(true);
+        let (mut rng, mut checked, mut into_back) = (Lcg(7), 0usize, 0usize);
+        for r in &rows {
+            push(&mut core, r).unwrap();
+            for g in &mut core.groups {
+                for (ki, q) in g.queues.iter_mut().enumerate() {
+                    let k = &kernels[ki];
+                    for j in 0..q.n {
+                        let fwd = k.direction == Direction::Forward;
+                        let pred = |st: &Stack, i: usize| valued(st, i, j, fwd);
+                        let want = oldest_by_scan(q, pred);
+                        assert_eq!(q.find_oldest(j, pred), want);
+                        let len = q.len();
+                        let mut ps: Vec<usize> = want.map(|(p, _, _)| p).into_iter().collect();
+                        if len > 0 && rng.below(17) == 0 {
+                            ps.push(rng.below(len));
+                        }
+                        for p in ps {
+                            into_back += usize::from(p + 1 >= q.front.len() && p + 1 < len);
+                            let (a, b) = if q.wide() {
+                                (
+                                    sum_after_by_rows::<true>(q, k, p, j),
+                                    q.sum_after_op::<true>(k, p, j),
+                                )
+                            } else {
+                                (
+                                    sum_after_by_rows::<false>(q, k, p, j),
+                                    q.sum_after_op::<false>(k, p, j),
+                                )
+                            };
+                            assert!(same_acc(a, b), "p {p}: {a:?} against {b:?}");
+                            checked += 1;
+                        }
+                    }
+                }
+            }
+        }
+        // The cut reached into `back` on most reads: the path this holds.
+        assert!(
+            into_back > checked / 4,
+            "{into_back} of {checked} into back"
+        );
+    }
+}

@@ -40,7 +40,7 @@ noise alone pushes past a threshold set for one test.
    `|t_stat|`.** The table has one row per (feature, target) pair, with
    its moments, `corr`, `beta`, `t_stat` and `n_kish`, the effective number
    of rows behind them. [Its
-   docstring](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.marginal)
+   docstring](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank.marginal)
    defines each column.
 
 This code makes 200 features, of which three move the target, screens
@@ -49,7 +49,7 @@ every pair, and prints the five with the largest `|t_stat|`:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # 200 features, of which three move the target, and one (f150) moves it in a V.
 rng = np.random.default_rng(2)
@@ -101,7 +101,7 @@ Over 1,000 pairs of *independent* AR(1) series with `φ = 0.9` and `0.8`,
    the statistic against it. `"geometric"` fits each series'
    autocorrelations as `ρ(l) = φˡ`, so the lags need not be dense, and
    reports the fitted `phi_x` and `phi_y`. The
-   [docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.marginal)
+   [docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.marginal)
    gives the other two rules, `"truncated"` and `"bartlett"`, for dense
    lags.
 3. **Rank by `|t_stat_serial|` in place of `|t_stat|`.**
@@ -113,7 +113,7 @@ pairs where each statistic passes 1.96:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # 500 smooth features and a smooth target, all independent: no pair is related.
 rng = np.random.default_rng(5)
@@ -231,7 +231,7 @@ This code puts one row of 1,000 into a bin of twenty rows near 0:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # Twenty rows near 0 in the middle bin, among rows whose target is -5 or +5, then a spike there.
 rng = np.random.default_rng(3)
@@ -276,6 +276,6 @@ build from the target with noise, and read where it ranks.
 | a `ValueError` naming `bins` and `window_size` | each of a [hard window](../GLOSSARY.md#fitting-a-model)'s snapshots would hold the whole histogram | bin the features in a second spec without `window_size` |
 
 Every parameter is in `marginal`'s
-[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.marginal),
+[docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.marginal),
 and the model's reference entry is
 [`marginal`](../MODELS.md#marginal--every-pairs-moments-kept-in-the-state).

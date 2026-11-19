@@ -46,7 +46,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from test_oracles_gradient_paths import FEATURES, MAX_DCLOCK, TARGETS, _scaled, _stream
 
 TIER = "mixed"
@@ -58,7 +58,7 @@ CHUNKS = (N, -(-N // 7), 1)
 #: The row the second gap past ``gap_cap`` opens (``_stream``'s ``dt[290]``).
 GAP_ROW = 290
 #: Kish's count of the rows the scaler learns before the fit is held in the
-#: caller's units (`online_core::WARMUP_ROWS`).
+#: caller's units (`rheon_core::WARMUP_ROWS`).
 WARMUP_ROWS = 22.0
 
 #: The grid's tier. Not `oracle_grid`, CI's sharded job for heavy grids

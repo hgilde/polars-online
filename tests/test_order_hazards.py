@@ -22,7 +22,7 @@ import warnings
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -238,7 +238,7 @@ def test_the_prefilter_and_the_walk_cannot_drift_apart():
     import inspect
     import re
 
-    from polars_online import _frame
+    from rheon import _frame
 
     handled = set(re.findall(r'tag == "(\w+)"', inspect.getsource(_frame._walk)))
     assert handled, "the walk's tags could not be read; this guard is not checking anything"
@@ -301,7 +301,7 @@ def test_every_join_variant_carries_its_marker(how, marker):
     without a warning and without a failure."""
     other = right()
     lf = left().join(other, on=None if how == "cross" else "k", how=how)
-    from polars_online._frame import _order_hazards
+    from rheon._frame import _order_hazards
 
     assert marker in lf.explain(optimized=False)
     assert _order_hazards(lf), "a join without maintain_order should still be a hazard"
@@ -314,7 +314,7 @@ def test_the_other_join_forms_carry_the_marker_too(form):
     the walk reports, so the test above cannot reach them by parameter.
     Measured filter-against-raw-walk with no disagreement, and pinned so the
     ``_HAZARD_TAGS`` comment has a test behind every form it names."""
-    from polars_online._frame import _order_hazards
+    from rheon._frame import _order_hazards
 
     other = right()
     if form == "asof":
@@ -333,7 +333,7 @@ def test_an_empty_plan_text_falls_through_rather_than_skipping():
     "inspected, no markers" and skipped the JSON walk, missing a real hazard.
     polars never explains a plan to nothing, so it was unreachable -- but the
     filter's contract is "never blinder", so it is closed here and pinned."""
-    from polars_online._frame import _order_hazards
+    from rheon._frame import _order_hazards
 
     lf = left().join(right(), on="k")
     assert _order_hazards(lf, plan_text=""), "an empty explain must fall through to the walk"
@@ -342,7 +342,7 @@ def test_an_empty_plan_text_falls_through_rather_than_skipping():
 def test_a_plan_with_no_hazard_node_skips_the_json_read(monkeypatch):
     """The saving itself: a plan whose ``explain`` holds no marker must not
     touch ``serialize``, which is the deprecated format this avoids."""
-    from polars_online import _frame
+    from rheon import _frame
 
     # A `BaseException`, deliberately: `_order_hazards` wraps the JSON path in
     # `except Exception`, so an `AssertionError` raised here would be swallowed
@@ -363,7 +363,7 @@ def test_a_plan_that_cannot_be_explained_still_reads_the_json(monkeypatch):
     """Fail open: if ``explain`` raises, the filter must fall through to the
     JSON path rather than skip the check, so it can only make the inspection
     cheaper, never blinder."""
-    from polars_online import _frame
+    from rheon import _frame
 
     monkeypatch.setattr(
         pl.LazyFrame, "explain", lambda self, **kw: (_ for _ in ()).throw(RuntimeError("no plan"))
@@ -448,7 +448,7 @@ def _spread(spec, frame) -> float:
 
 @pytest.mark.parametrize("free", FREE_SPECS)
 def test_an_accumulator_with_no_decay_is_recognised_as_order_free(free):
-    from polars_online._frame import _order_free
+    from rheon._frame import _order_free
 
     assert _order_free([free])
 
@@ -495,7 +495,7 @@ def test_what_is_not_order_free(spec):
     """``window`` lives *inside* the nested ``model`` dict, so a check that
     read only top-level keys would let a windowed spec through -- the worst
     case after a drift reset, which moves the coefficients by 8.9e-01."""
-    from polars_online._frame import _order_free
+    from rheon._frame import _order_free
 
     assert not _order_free([spec])
 
@@ -503,13 +503,13 @@ def test_what_is_not_order_free(spec):
 def test_an_unrecognised_spec_key_is_not_order_free():
     """The property that makes this safe to ship: a key in neither table fails
     the check, so an option added later cannot quietly become exempt."""
-    from polars_online._frame import _order_free
+    from rheon._frame import _order_free
 
     assert not _order_free([{**FREE, "an_option_added_later": 7}])
 
 
 def test_one_disqualifying_spec_disqualifies_the_bank():
-    from polars_online._frame import _order_free
+    from rheon._frame import _order_free
 
     grad = po.spec.sgd("m2", targets=["y"], features=["x0"], lam=1.0, min_weight=1.0)
     assert not _order_free([FREE, grad])
@@ -561,7 +561,7 @@ def test_the_docstrings_quote_the_figures_held_here():
     to."""
     import inspect
 
-    from polars_online._frame import _order_free
+    from rheon._frame import _order_free
 
     (ew_coef, ew_pred), (rls_coef, rls_pred) = QUOTED["ewridge"], QUOTED["rls"]
     quoting = {
@@ -678,7 +678,7 @@ def test_only_a_plan_level_sort_ends_the_walk():
     a plan's has `input`. The walk took it for a plan node and stopped there,
     harmless only because nothing below an expression is a plan step; it
     reads `input` now, so the rule is deliberate (review 2026-09-28)."""
-    from polars_online._frame import _walk
+    from rheon._frame import _walk
 
     hazard = {"Distinct": {"input": {"DataFrameScan": {}}, "options": {}}}
     expression_sort = {"Sort": {"expr": hazard, "options": {}}}

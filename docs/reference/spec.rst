@@ -1,7 +1,7 @@
-``polars_online.spec``
+``rheon.spec``
 ======================
 
-.. automodule:: polars_online.spec
+.. automodule:: rheon.spec
    :no-members:
 
 Regressions
@@ -56,6 +56,6 @@ Typed keyword sets
 The keywords every builder shares, as a typed dictionary a type checker can
 read.
 
-.. automodule:: polars_online._kwargs
+.. automodule:: rheon._kwargs
    :members:
    :undoc-members:

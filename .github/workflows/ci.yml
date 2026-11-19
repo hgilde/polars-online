@@ -71,7 +71,7 @@ env:
   # nothing is ever reused, and the artifacts are large.
   CARGO_INCREMENTAL: 0
 
-# `cargo` is invoked through `uv run` everywhere: online-py is built with pyo3's
+# `cargo` is invoked through `uv run` everywhere: rheon-py is built with pyo3's
 # abi3-py312, which needs an interpreter >= 3.12 at build time. `uv run` puts the
 # project's venv on VIRTUAL_ENV, which is what pyo3's build script picks up; in
 # the test job, that venv is the leg's `UV_PYTHON`.
@@ -305,15 +305,15 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install libomp
 
-      # Every package but online-py. With it in the build, pyo3-polars turns
+      # Every package but rheon-py. With it in the build, pyo3-polars turns
       # on polars-error's `python` feature, so every test binary that links
       # polars links libpython as well. On Linux a system Python's libpython
       # is on the loader's path and a uv-managed one's is not, so the legs for
       # 3.13 and 3.14 could not start the CLI's tests: "libpython3.13.so.1.0:
       # cannot open shared object file", exit code 127 (2026-09-24). No test
-      # is lost. online-py has no Rust tests, and pytest tests it below,
+      # is lost. rheon-py has no Rust tests, and pytest tests it below,
       # through the extension. The CLI is also tested as it ships, since
-      # `cargo build -p online-cli` has no Python in it either.
+      # `cargo build -p rheon-cli` has no Python in it either.
       # tests/test_ci_cost_policy.py holds every workflow and the gate to this.
       # `--no-fail-fast`: one failing test binary stopped the step there, so
       # on the 0.11.0 tag a unit test that failed on Linux and Windows hid
@@ -325,9 +325,9 @@ jobs:
       # faer's larger matrix products keeps a packing buffer of twice the
       # L3 cache, 960 MiB on the Windows runners, and Windows commits all
       # of it, so tests multiplying on many threads at once ran out of
-      # commit ("memory allocation of 1006632960 bytes failed", online-core's
+      # commit ("memory allocation of 1006632960 bytes failed", rheon-core's
       # unit tests, 2026-10-13, twice). Two at a time fits; the tests are the
-      # same. Beside it, online-core's tests that run one computation in
+      # same. Beside it, rheon-core's tests that run one computation in
       # pools of several sizes take their pools from `src/test_pool.rs`,
       # which on Windows x86-64 caps a pool at four threads and all of them
       # together at four: on an Intel Xeon 6973P runner (480 MiB of L3)
@@ -335,14 +335,14 @@ jobs:
       # threads (2026-11-08, PLAN task 362). Every x86 build keeps that kernel, the faster product (PLAN
       # task 264); the Windows alternatives are measured in PLAN task 263.
       - name: cargo test
-        run: uv run cargo test --workspace --exclude online-py --no-fail-fast --locked -- --include-ignored ${{ runner.os == 'Windows' && '--test-threads=2' || '' }}
+        run: uv run cargo test --workspace --exclude rheon-py --no-fail-fast --locked -- --include-ignored ${{ runner.os == 'Windows' && '--test-threads=2' || '' }}
 
       - name: disk after the build
         if: always() && runner.os == 'Linux'
         run: df -h /
 
       - name: build the extension
-        run: uv run maturin develop --release -m crates/online-py/Cargo.toml
+        run: uv run maturin develop --release -m crates/rheon-py/Cargo.toml
 
       # Coverage is measured on one leg's own run, Linux at the floor Python,
       # and reported, never gating (docs/records/TESTING-LOG.md T-D4): a step of its own
@@ -377,7 +377,7 @@ jobs:
           # means every copy failed: it fails, naming the set
           # (tests/offline_skips.py).
           POLARS_ONLINE_DATASETS_RESTORED: "1"
-        run: uv run pytest ${{ runner.os == 'Linux' && matrix.python == '3.12' && '--cov=polars_online --cov-report=term' || '' }}
+        run: uv run pytest ${{ runner.os == 'Linux' && matrix.python == '3.12' && '--cov=rheon --cov-report=term' || '' }}
 
       - name: keep the memory measurements
         if: always()

@@ -23,7 +23,7 @@ import polars as pl
 import pytest
 import xgboost as xgb
 
-from polars_online import gbdt
+from rheon import gbdt
 from test_gbdt import FEATURES, LGB_DATA, TYPES, frame, lgb_trees, numpy_x, xgb_trees
 
 TIER = "essential"

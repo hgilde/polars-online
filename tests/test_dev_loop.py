@@ -208,8 +208,8 @@ def test_the_gate_runs_in_parallel_and_keeps_a_serial_switch():
     assert 'pytest_or_none -q -m "$marks and serial"' in GATE
     # nextest where installed, with cargo's doctests beside it, which
     # nextest does not run; `cargo test` otherwise.
-    assert "cargo nextest run --workspace --exclude online-py" in GATE
-    assert "cargo test --workspace --exclude online-py --doc" in GATE
+    assert "cargo nextest run --workspace --exclude rheon-py" in GATE
+    assert "cargo test --workspace --exclude rheon-py --doc" in GATE
 
 
 def test_nextest_starts_the_slowest_tests_first():
@@ -265,28 +265,28 @@ def test_a_cached_download_is_written_whole_or_not_at_all(tmp_path):
     ("path", "crates", "rebuild", "must_run"),
     [
         (
-            "crates/online-core/src/kalman.rs",
-            {"online-core"},
+            "crates/rheon-core/src/kalman.rs",
+            {"rheon-core"},
             True,
             {"tests/test_kalman.py", "tests/test_kalman_revert.py"},
         ),
         (
-            "crates/online-core/src/ewcov/par.rs",
-            {"online-core"},
+            "crates/rheon-core/src/ewcov/par.rs",
+            {"rheon-core"},
             True,
             {"tests/test_ew_cov.py", "tests/test_ew_cov_bias.py"},
         ),
         (
-            "crates/online-core/src/margbins.rs",
-            {"online-core"},
+            "crates/rheon-core/src/margbins.rs",
+            {"rheon-core"},
             True,
             {"tests/test_marginal_bins.py"},
         ),
-        ("crates/online-polars/src/bank.rs", {"online-polars"}, True, {"tests/test_bank.py"}),
-        ("crates/online-core/tests/golden.rs", {"online-core"}, False, set()),
-        ("crates/online-cli/src/main.rs", {"online-cli"}, False, {"tests/test_cli_terminal.py"}),
+        ("crates/rheon-polars/src/bank.rs", {"rheon-polars"}, True, {"tests/test_bank.py"}),
+        ("crates/rheon-core/tests/golden.rs", {"rheon-core"}, False, set()),
+        ("crates/rheon-cli/src/main.rs", {"rheon-cli"}, False, {"tests/test_cli_terminal.py"}),
         (
-            "python/polars_online/gram.py",
+            "python/rheon/gram.py",
             set(),
             False,
             {"tests/test_gram.py", "tests/test_gram_page.py"},
@@ -328,20 +328,20 @@ def test_quick_names_what_it_cannot_map():
 
 def test_quick_runs_the_banks_state_tests_for_a_models_source():
     """A bank fixture freezes every model's state, so a change to a model's
-    source in `online-core` can move `online-polars`' state tests while every
-    `online-core` test passes (an `sgd` change moved `bank_refit` and the loop
+    source in `rheon-core` can move `rheon-polars`' state tests while every
+    `rheon-core` test passes (an `sgd` change moved `bank_refit` and the loop
     passed). Its source runs them; its own tests do not, and a run of
-    `online-polars` whole needs no target besides."""
+    `rheon-polars` whole needs no target besides."""
     quick = _load("quick")
-    want = {("online-polars", t) for t in quick.STATE_TESTS}
-    assert ("online-polars", "state_fixtures") in want
+    want = {("rheon-polars", t) for t in quick.STATE_TESTS}
+    assert ("rheon-polars", "state_fixtures") in want
     for target in want:
         assert (REPO / "crates" / target[0] / "tests" / f"{target[1]}.rs").exists(), target
-    assert quick.plan(["crates/online-core/src/sgd.rs"]).targets == want
-    assert quick.plan(["crates/online-core/src/solve/condition.rs"]).targets == want
-    assert not quick.plan(["crates/online-core/tests/golden.rs"]).targets
-    both = quick.plan(["crates/online-core/src/sgd.rs", "crates/online-polars/src/bank.rs"])
-    assert both.crates == {"online-core", "online-polars"} and not both.targets
+    assert quick.plan(["crates/rheon-core/src/sgd.rs"]).targets == want
+    assert quick.plan(["crates/rheon-core/src/solve/condition.rs"]).targets == want
+    assert not quick.plan(["crates/rheon-core/tests/golden.rs"]).targets
+    both = quick.plan(["crates/rheon-core/src/sgd.rs", "crates/rheon-polars/src/bank.rs"])
+    assert both.crates == {"rheon-core", "rheon-polars"} and not both.targets
 
 
 def test_quick_runs_the_oracle_hash_guard_for_the_groups_a_change_can_move():
@@ -350,16 +350,16 @@ def test_quick_runs_the_oracle_hash_guard_for_the_groups_a_change_can_move():
     page, none."""
     quick = _load("quick")
     groups = set(quick.ledger_groups())
-    kmeans = quick.plan(["crates/online-core/src/kmeans.rs"]).guards
+    kmeans = quick.plan(["crates/rheon-core/src/kmeans.rs"]).guards
     assert kmeans and all("kmeans" in g for g in kmeans), kmeans
-    assert quick.plan(["python/polars_online/spec_regimes.py"]).guards >= kmeans
-    assert quick.plan(["crates/online-core/src/solve.rs"]).guards == groups
+    assert quick.plan(["python/rheon/spec_regimes.py"]).guards >= kmeans
+    assert quick.plan(["crates/rheon-core/src/solve.rs"]).guards == groups
     own = quick.plan(["tests/test_truth_recovery.py"]).guards
     assert own and all(g.startswith("truth_recovery.") for g in own), own
     assert not quick.plan(["docs/TESTING.md"]).guards
-    args = quick.plan(["crates/online-core/src/kmeans.rs"]).pytest_args()
+    args = quick.plan(["crates/rheon-core/src/kmeans.rs"]).pytest_args()
     assert f"{quick.GUARD}[truth_recovery.kmeans_blobs]" in args, args
-    whole = quick.plan(["crates/online-core/src/kmeans.rs", "tests/test_oracle_ledger.py"])
+    whole = quick.plan(["crates/rheon-core/src/kmeans.rs", "tests/test_oracle_ledger.py"])
     assert not [a for a in whole.pytest_args() if "::" in a], "its file runs whole"
 
 

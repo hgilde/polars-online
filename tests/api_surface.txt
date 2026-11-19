@@ -420,7 +420,7 @@
     strict_binary = False
     common
 
-[resolved defaults]  # what a spec left out resolves to, read off the bank's own build of the spec shown (_polars_online.resolved_defaults): a moved default is a diff here
+[resolved defaults]  # what a spec left out resolves to, read off the bank's own build of the spec shown (_rheon.resolved_defaults): a moved default is a diff here
   chunk_size = 100000
   shared by every kind below:
     clock.gap_cap = "inf"
@@ -2559,7 +2559,7 @@
     sgd: clip_gradient, coef_max, coef_min, coef_sum, eps, huber_delta, huber_refit_rows, huber_scale, huber_scale_half_life, l2, learning_rate, loss, power, quantile, refit_budget, schedule, standardize, strict_binary
 
 [cli flags]  # `polars-online --help`: a flag added, renamed or removed, or one that starts or stops taking a value, is a diff here
-  Usage: polars-online [OPTIONS] --config <CONFIG>
+  Usage: rheon [OPTIONS] --config <CONFIG>
   --config <CONFIG>
   --input <INPUT>
   --output <OUTPUT>

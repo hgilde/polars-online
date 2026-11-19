@@ -20,7 +20,7 @@ import polars as pl
 import pytest
 
 import child
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -268,7 +268,7 @@ def test_more_groups_than_threads_under_auto(tmp_path):
     script.write_text(
         "import sys, hashlib\n"
         "import polars as pl\n"
-        "import polars_online as po\n"
+        "import rheon as po\n"
         f"features = [f'x{{j}}' for j in range({p})]\n"
         "df = pl.read_parquet(sys.argv[1])\n"
         "out = []\n"
@@ -359,7 +359,7 @@ def test_a_count_that_means_nothing_is_refused(shards, error, message):
 
 
 @pytest.mark.parametrize("shards", ['"auto"', "4"])
-def test_the_cli_reads_shards(tmp_path, online_cli, shards):
+def test_the_cli_reads_shards(tmp_path, rheon_cli, shards):
     """``shards`` in the CLI's TOML: the unsplit output, and -- since the
     output struct is ``weight_sum`` alone, which no shard computes -- the pairs of
     the state it saves, to the bit (review 2026-09-26, E1)."""
@@ -391,7 +391,7 @@ def test_the_cli_reads_shards(tmp_path, online_cli, shards):
         ),
         encoding="utf-8",
     )
-    subprocess.run([str(online_cli), "--config", str(cfg)], check=True, capture_output=True)
+    subprocess.run([str(rheon_cli), "--config", str(cfg)], check=True, capture_output=True)
     want_bank = po.ModelBank(
         [
             po.spec.marginal(

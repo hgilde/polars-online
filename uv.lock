@@ -1645,104 +1645,6 @@ wheels = [
 ]
 
 [[package]]
-name = "polars-online"
-version = "1.6.0"
-source = { editable = "." }
-dependencies = [
-    { name = "polars" },
-]
-
-[package.optional-dependencies]
-numpy = [
-    { name = "numpy" },
-]
-
-[package.dev-dependencies]
-dev = [
-    { name = "adbc-driver-manager" },
-    { name = "adbc-driver-sqlite" },
-    { name = "bayesian-changepoint-detection" },
-    { name = "duckdb" },
-    { name = "filterpy" },
-    { name = "hfhd" },
-    { name = "hmmlearn" },
-    { name = "hypothesis" },
-    { name = "lightgbm" },
-    { name = "markdown-it-py" },
-    { name = "maturin" },
-    { name = "mypy" },
-    { name = "numba" },
-    { name = "numpy" },
-    { name = "padasip" },
-    { name = "pandas" },
-    { name = "psutil" },
-    { name = "pyarrow" },
-    { name = "pytest" },
-    { name = "pytest-cov" },
-    { name = "pytest-xdist" },
-    { name = "pyyaml" },
-    { name = "river" },
-    { name = "ruff" },
-    { name = "scikit-learn" },
-    { name = "scipy" },
-    { name = "statsmodels" },
-    { name = "threadpoolctl" },
-    { name = "vowpalwabbit" },
-    { name = "xgboost", marker = "sys_platform == 'darwin'" },
-    { name = "xgboost-cpu", marker = "sys_platform != 'darwin'" },
-]
-docs = [
-    { name = "furo" },
-    { name = "sphinx" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "numpy", marker = "extra == 'numpy'", specifier = ">=1.26" },
-    { name = "polars", specifier = ">=1.37.0,<3" },
-]
-provides-extras = ["numpy"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "adbc-driver-manager", specifier = ">=1.12.0" },
-    { name = "adbc-driver-sqlite", specifier = ">=1.12.0" },
-    { name = "bayesian-changepoint-detection", specifier = ">=0.2.dev1" },
-    { name = "duckdb", specifier = ">=1.5.5" },
-    { name = "filterpy", specifier = ">=1.4.5" },
-    { name = "hfhd", specifier = ">=0.1.4" },
-    { name = "hmmlearn", specifier = ">=0.3.3" },
-    { name = "hypothesis", specifier = ">=6.167.0" },
-    { name = "lightgbm", specifier = ">=4.7.0" },
-    { name = "markdown-it-py", specifier = ">=4.2.0" },
-    { name = "maturin", specifier = ">=1.15,<2.0" },
-    { name = "mypy", specifier = ">=1.14" },
-    { name = "numba", specifier = ">=0.68.1" },
-    { name = "numpy", specifier = ">=2.5.2" },
-    { name = "padasip", specifier = ">=1.2.2" },
-    { name = "pandas", specifier = ">=3.0.5" },
-    { name = "psutil", specifier = ">=5.9" },
-    { name = "pyarrow", specifier = ">=25.0.1" },
-    { name = "pytest", specifier = ">=8.3" },
-    { name = "pytest-cov", specifier = ">=7.1.0" },
-    { name = "pytest-xdist", specifier = ">=3.8.0" },
-    { name = "pyyaml", specifier = ">=6.0" },
-    { name = "river", specifier = ">=0.26.1" },
-    { name = "ruff", specifier = ">=0.14" },
-    { name = "scikit-learn", specifier = ">=1.9.1" },
-    { name = "scipy", specifier = ">=1.18.1" },
-    { name = "statsmodels", specifier = ">=0.15" },
-    { name = "threadpoolctl", specifier = ">=3.7.0" },
-    { name = "vowpalwabbit", specifier = ">=9.11.9" },
-    { name = "xgboost", marker = "sys_platform == 'darwin'", specifier = ">=3.4.1" },
-    { name = "xgboost-cpu", marker = "sys_platform != 'darwin'", specifier = ">=3.4.1" },
-]
-docs = [
-    { name = "furo", specifier = ">=2024.8" },
-    { name = "sphinx", specifier = ">=8.2" },
-]
-
-[[package]]
 name = "polars-runtime-32"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1954,6 +1856,104 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/ac/c3/e2a2b89f2d3e2179abd6d00ebd70bff6273f37fb3e0cc209f48b39d00cbf/requests-2.34.2.tar.gz", hash = "sha256:f288924cae4e29463698d6d60bc6a4da69c89185ad1e0bcc4104f584e960b9ed", size = 142856, upload-time = "2026-05-14T19:25:27.735Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a0/f4/c67b0b3f1b9245e8d266f0f112c500d50e5b4e83cb6f3b71b6528104182a/requests-2.34.2-py3-none-any.whl", hash = "sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0", size = 73075, upload-time = "2026-05-14T19:25:26.443Z" },
+]
+
+[[package]]
+name = "rheon"
+version = "1.6.0"
+source = { editable = "." }
+dependencies = [
+    { name = "polars" },
+]
+
+[package.optional-dependencies]
+numpy = [
+    { name = "numpy" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "adbc-driver-manager" },
+    { name = "adbc-driver-sqlite" },
+    { name = "bayesian-changepoint-detection" },
+    { name = "duckdb" },
+    { name = "filterpy" },
+    { name = "hfhd" },
+    { name = "hmmlearn" },
+    { name = "hypothesis" },
+    { name = "lightgbm" },
+    { name = "markdown-it-py" },
+    { name = "maturin" },
+    { name = "mypy" },
+    { name = "numba" },
+    { name = "numpy" },
+    { name = "padasip" },
+    { name = "pandas" },
+    { name = "psutil" },
+    { name = "pyarrow" },
+    { name = "pytest" },
+    { name = "pytest-cov" },
+    { name = "pytest-xdist" },
+    { name = "pyyaml" },
+    { name = "river" },
+    { name = "ruff" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+    { name = "statsmodels" },
+    { name = "threadpoolctl" },
+    { name = "vowpalwabbit" },
+    { name = "xgboost", marker = "sys_platform == 'darwin'" },
+    { name = "xgboost-cpu", marker = "sys_platform != 'darwin'" },
+]
+docs = [
+    { name = "furo" },
+    { name = "sphinx" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "numpy", marker = "extra == 'numpy'", specifier = ">=1.26" },
+    { name = "polars", specifier = ">=1.37.0,<3" },
+]
+provides-extras = ["numpy"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "adbc-driver-manager", specifier = ">=1.12.0" },
+    { name = "adbc-driver-sqlite", specifier = ">=1.12.0" },
+    { name = "bayesian-changepoint-detection", specifier = ">=0.2.dev1" },
+    { name = "duckdb", specifier = ">=1.5.5" },
+    { name = "filterpy", specifier = ">=1.4.5" },
+    { name = "hfhd", specifier = ">=0.1.4" },
+    { name = "hmmlearn", specifier = ">=0.3.3" },
+    { name = "hypothesis", specifier = ">=6.167.0" },
+    { name = "lightgbm", specifier = ">=4.7.0" },
+    { name = "markdown-it-py", specifier = ">=4.2.0" },
+    { name = "maturin", specifier = ">=1.15,<2.0" },
+    { name = "mypy", specifier = ">=1.14" },
+    { name = "numba", specifier = ">=0.68.1" },
+    { name = "numpy", specifier = ">=2.5.2" },
+    { name = "padasip", specifier = ">=1.2.2" },
+    { name = "pandas", specifier = ">=3.0.5" },
+    { name = "psutil", specifier = ">=5.9" },
+    { name = "pyarrow", specifier = ">=25.0.1" },
+    { name = "pytest", specifier = ">=8.3" },
+    { name = "pytest-cov", specifier = ">=7.1.0" },
+    { name = "pytest-xdist", specifier = ">=3.8.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "river", specifier = ">=0.26.1" },
+    { name = "ruff", specifier = ">=0.14" },
+    { name = "scikit-learn", specifier = ">=1.9.1" },
+    { name = "scipy", specifier = ">=1.18.1" },
+    { name = "statsmodels", specifier = ">=0.15" },
+    { name = "threadpoolctl", specifier = ">=3.7.0" },
+    { name = "vowpalwabbit", specifier = ">=9.11.9" },
+    { name = "xgboost", marker = "sys_platform == 'darwin'", specifier = ">=3.4.1" },
+    { name = "xgboost-cpu", marker = "sys_platform != 'darwin'", specifier = ">=3.4.1" },
+]
+docs = [
+    { name = "furo", specifier = ">=2024.8" },
+    { name = "sphinx", specifier = ">=8.2" },
 ]
 
 [[package]]

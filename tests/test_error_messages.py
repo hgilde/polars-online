@@ -17,9 +17,9 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from conftest import run_online
-from polars_online import _spec
+from rheon import _spec
 
 TIER = "essential"
 
@@ -1109,7 +1109,7 @@ def test_a_narrow_dtype_gives_the_same_answer_as_float64(dtype):
     assert want.equals(got, null_equal=True)
 
 
-def test_a_decimal_parquet_runs_through_the_cli(tmp_path, online_cli):
+def test_a_decimal_parquet_runs_through_the_cli(tmp_path, rheon_cli):
     """Prices in parquet are commonly ``Decimal`` and small codes ``UInt8``. A
     ``Decimal`` once aborted the process at the boundary (IMPROVEMENTS U5),
     which for the CLI meant a file it could not open at all; its test went
@@ -1129,7 +1129,7 @@ def test_a_decimal_parquet_runs_through_the_cli(tmp_path, online_cli):
     )
     df.write_parquet(src)
     spec = po.spec.ewridge("m", targets=["y"], features=["price", "code"], half_life=50.0)
-    run_online(online_cli, tmp_path, [spec], input=src, output=out)
+    run_online(rheon_cli, tmp_path, [spec], input=src, output=out)
     plain = df.with_columns(pl.col("price", "code").cast(pl.Float64))
     want = po.ModelBank([spec]).fit_predict(plain)["m"]
     got = pl.read_parquet(out)["m"]
@@ -1245,7 +1245,7 @@ def test_the_stream_operators_release_the_gil(what):
     the second refused with a sentence naming the class and the method."""
     import json
 
-    from polars_online import _polars_online as native
+    from rheon import _rheon as native
 
     n = 400_000
     big = pl.DataFrame(

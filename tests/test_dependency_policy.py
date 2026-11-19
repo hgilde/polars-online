@@ -36,7 +36,7 @@ LOCAL = {
     p.stem
     for d in ("tests", "tests/_site", "examples", "scripts", "docs/reference")
     for p in (REPO / d).glob("*.py")
-} | {"polars_online"}
+} | {"rheon"}
 
 
 def _name(requirement: str) -> str:

@@ -37,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fold  # noqa: E402
 import streams  # noqa: E402
 
-import polars_online as po  # noqa: E402
+import rheon as po  # noqa: E402
 
 OUT = streams.CACHE / "startup"
 OUT.mkdir(parents=True, exist_ok=True)

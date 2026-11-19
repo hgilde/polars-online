@@ -1,0 +1,73 @@
+[package]
+name = "rheon-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Streaming / online regression models. Pure Rust, no Polars dependency."
+
+# Not published to crates.io. The Python wheel is the deliverable, and it is
+# built from this workspace by maturin with these as *path* dependencies -- the
+# sdist vendors them, so `pip install` from source needs nothing from the
+# registry (verified: a clean-venv sdist install compiles and runs). Publishing
+# would commit us to a second public API surface for no user-facing gain.
+# Revisit for `rheon-core` alone if it is ever wanted standalone: it has no
+# Polars dependency, no `unsafe`, and is exhaustively tested.
+publish = false
+
+[lints.rust]
+unsafe_code = "forbid"
+
+
+[dependencies]
+faer.workspace = true
+# Not used by name: faer's `std` feature less `private-gemm-x86` (the
+# workspace Cargo.toml, task 258). All four are faer's own dependencies,
+# already linked; nothing new is linked (CLAUDE.md rule 12). A test names
+# `libm` for a stream that is the same bits on every platform (task 273,
+# `gramfit/lars_tie_tests.rs`); the library calls none of it. `pulp` is
+# named too, by `sgd::standardize_row`'s AVX2 lanes on x86-64 (task 290).
+faer-traits.workspace = true
+pulp.workspace = true
+nano-gemm.workspace = true
+libm.workspace = true
+# The Gram product's own tiles across threads (`gram_threads`, docs/PLAN.md
+# task 225); already linked, through faer and rheon-polars.
+rayon.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+
+# faer's `std` feature, and with it `private-gemm-x86`, on every x86-64
+# build (docs/PLAN.md tasks 260 and 264). That crate's product kernel is the
+# faster one, and it keeps a packing buffer of twice the L3 cache on each
+# thread that has multiplied: address space reserved on Linux and macOS,
+# backed only where a product touches it, but committed whole on Windows,
+# where many threads multiplying can exhaust the commit limit (only a
+# smaller pool, `threads=`, bounds it: a solve spreads over the whole pool
+# whatever `gram_threads` says, `rheon-bench/tests/solve_threads.rs`;
+# PLAN task 263 holds the measured alternatives, none chosen). Version 0.1.22 at least: 0.1.20, which 1.0.0 and 1.0.1 shipped
+# and which is yanked, sized its blocks so that they could stop tiling the
+# product once a chunk was clamped to the L3, and computed wrong products
+# -- a ridge solve 100 times past its rounding bound on every Windows EPYC
+# 7763 runner, whose CPUID reports no L3 (tasks 266 to 268). Not used by
+# name: the entry holds the minimum. aarch64 has no such kernel; there the
+# feature would link nothing more but change the crate graph, which once
+# moved an unrelated loop's code generation by 5%, so aarch64 keeps the
+# build it was measured with.
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+faer = { workspace = true, features = ["std"] }
+private-gemm-x86.workspace = true
+
+[dev-dependencies]
+rmp-serde.workspace = true
+proptest.workspace = true
+# Tests only: a readable way to feed a config that omits a `#[serde(default)]`
+# field, which is what a state file written before that field existed looks like.
+serde_json.workspace = true
+# Tests only: a state edited in msgpack itself, infinities intact
+# (tests/model_contract.rs, states written before the means' low parts).
+rmpv.workspace = true
+# Tests only: a variance computed to a thousand bits (`src/oracle.rs`).
+dashu-float.workspace = true
+

@@ -23,7 +23,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from conftest import run_online
 from data import synthetic
 from test_semantics_all_models import IDS, SWEEP
@@ -556,11 +556,11 @@ class TestRunner:
         df.write_parquet(path)
         return df
 
-    def test_predict_scores_the_loaded_bank(self, tmp_path, online_cli):
+    def test_predict_scores_the_loaded_bank(self, tmp_path, rheon_cli):
         train = self._write(tmp_path / "train.parquet")
         state = tmp_path / "bank.state"
         run_online(
-            online_cli,
+            rheon_cli,
             tmp_path,
             [self._spec()],
             input=tmp_path / "train.parquet",
@@ -572,7 +572,7 @@ class TestRunner:
         )
         score.write_parquet(tmp_path / "score.parquet")
         run_online(
-            online_cli,
+            rheon_cli,
             tmp_path,
             [self._spec()],
             input=tmp_path / "score.parquet",
@@ -599,7 +599,7 @@ class TestRunner:
         # the same answer again.
         again = tmp_path / "scored2.parquet"
         run_online(
-            online_cli,
+            rheon_cli,
             tmp_path,
             [self._spec()],
             input=tmp_path / "score.parquet",
@@ -610,10 +610,10 @@ class TestRunner:
         )
         assert pl.read_parquet(again).equals(got, null_equal=True)
 
-    def test_predict_needs_a_state_and_refuses_to_save_one(self, tmp_path, online_cli):
+    def test_predict_needs_a_state_and_refuses_to_save_one(self, tmp_path, rheon_cli):
         self._write(tmp_path / "in.parquet")
         res = run_online(
-            online_cli,
+            rheon_cli,
             tmp_path,
             [self._spec()],
             input=tmp_path / "in.parquet",
@@ -625,7 +625,7 @@ class TestRunner:
         assert "predict = true needs load_state" in res.stderr, res.stderr
         state = tmp_path / "bank.state"
         run_online(
-            online_cli,
+            rheon_cli,
             tmp_path,
             [self._spec()],
             input=tmp_path / "in.parquet",
@@ -633,7 +633,7 @@ class TestRunner:
             save_state=state,
         )
         res = run_online(
-            online_cli,
+            rheon_cli,
             tmp_path,
             [self._spec()],
             input=tmp_path / "in.parquet",
@@ -646,7 +646,7 @@ class TestRunner:
         assert res.returncode != 0
         assert "save_state has nothing to save" in res.stderr, res.stderr
 
-    def test_one_toml_serves_both_the_learning_and_the_scoring_run(self, tmp_path, online_cli):
+    def test_one_toml_serves_both_the_learning_and_the_scoring_run(self, tmp_path, rheon_cli):
         """A checked-in config carries `save_state` for the learning run;
         `predict=True` from Python and `--predict` from the CLI drop it rather
         than refusing, so the same file drives both sides. An explicit
@@ -679,12 +679,12 @@ class TestRunner:
             encoding="utf-8",
         )
         subprocess.run(
-            [str(online_cli), "--config", str(toml), "--quiet"], check=True, capture_output=True
+            [str(rheon_cli), "--config", str(toml), "--quiet"], check=True, capture_output=True
         )
         mtime = state.stat().st_mtime_ns
         subprocess.run(
             [
-                str(online_cli), "--config", str(toml),
+                str(rheon_cli), "--config", str(toml),
                 "--output", str(tmp_path / "scored.parquet"),
                 "--load-state", str(state), "--predict", "--quiet",
             ],
@@ -693,7 +693,7 @@ class TestRunner:
         )  # fmt: skip
         assert state.stat().st_mtime_ns == mtime, "predict must not rewrite the state"
         self._cli_agrees(
-            online_cli, toml, state, mtime, pl.read_parquet(tmp_path / "scored.parquet")
+            rheon_cli, toml, state, mtime, pl.read_parquet(tmp_path / "scored.parquet")
         )
 
     def _cli_agrees(self, exe, toml, state, mtime, want):
@@ -730,11 +730,11 @@ class TestRunner:
         assert res.returncode != 0
         assert "save_state has nothing to save" in res.stderr
 
-    def test_empty_input_still_writes_the_schema(self, tmp_path, online_cli):
+    def test_empty_input_still_writes_the_schema(self, tmp_path, rheon_cli):
         df = self._write(tmp_path / "in.parquet")
         state = tmp_path / "bank.state"
         run_online(
-            online_cli,
+            rheon_cli,
             tmp_path,
             [self._spec()],
             input=tmp_path / "in.parquet",
@@ -743,7 +743,7 @@ class TestRunner:
         )
         df.clear().write_parquet(tmp_path / "empty.parquet")
         run_online(
-            online_cli,
+            rheon_cli,
             tmp_path,
             [self._spec()],
             input=tmp_path / "empty.parquet",

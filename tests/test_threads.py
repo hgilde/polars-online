@@ -13,8 +13,8 @@ save carries none of it and a load takes its own. Every surface refuses a
 count that is not an integer of 1 or more with the one message, and given a
 count the bank never reads the variable. The Rust tests hold the pool
 itself: the registry's sharing and release
-(``crates/online-polars/src/pool.rs``) and that a bank of one thread runs
-every task on it (``crates/online-polars/src/bank/threads_tests.rs``).
+(``crates/rheon-polars/src/pool.rs``) and that a bank of one thread runs
+every task on it (``crates/rheon-polars/src/bank/threads_tests.rs``).
 
 Every kind is held to the same bits (task 278, batch 31): each builder as
 ``MINIMAL`` builds it and at its fullest, on four groups with a clock and a
@@ -40,10 +40,10 @@ import polars as pl
 import pytest
 
 import child
-import polars_online as po
-from polars_online import _polars_online as native
-from polars_online._bank import _threads_refusal
-from polars_online._spec import _json
+import rheon as po
+from rheon import _rheon as native
+from rheon._bank import _threads_refusal
+from rheon._spec import _json
 from test_model_registry import MINIMAL, fullest
 
 TIER = "mixed"
@@ -51,7 +51,7 @@ TIER = "mixed"
 REPO = Path(__file__).resolve().parent.parent
 
 #: Wide enough that a row's Gram update splits across the pool
-#: (`crates/online-core/src/ewcov/par.rs`, from 725 columns).
+#: (`crates/rheon-core/src/ewcov/par.rs`, from 725 columns).
 K_WIDE = 730
 N = 600
 
@@ -497,7 +497,7 @@ def _python(code: str, *args: str, **env: str) -> str:
 
 
 SMALL = (
-    "import polars as pl, polars_online as po\n"
+    "import polars as pl, rheon as po\n"
     "spec = po.spec.ewridge('m', targets=['y'], features=['x'], half_life=10.0)\n"
     "df = pl.DataFrame({'x': [1.0, 2.0, 3.0], 'y': [2.0, 4.0, 6.0]})\n"
 )
@@ -720,7 +720,7 @@ def test_every_kind_is_the_same_at_every_count(case):
 POOL_CHILD = """
 import json, sys, warnings
 sys.path.insert(0, sys.argv[1])
-import polars as pl, polars_online as po, psutil
+import polars as pl, rheon as po, psutil
 from test_threads import FIRST_CHUNK, kind_frame, kind_specs
 
 def cpu_by_thread():

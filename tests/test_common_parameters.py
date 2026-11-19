@@ -58,12 +58,12 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from test_model_registry import MINIMAL
 
 TIER = "mixed"
 
-pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+pytestmark = pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
 
 N = 400
 #: The clock's long steps, and a cap that cuts them.

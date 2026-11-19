@@ -67,7 +67,7 @@ code builds its own data:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # Quotes, a row a second, with the three faults planted.
 rng = np.random.default_rng(1)
@@ -122,7 +122,7 @@ knowing, and often fine). Its `code` names the check, such as `missing`,
 where it was found, the measured `value` sits beside its `threshold`, and
 the `message` says what is wrong and, for most codes, what to do. The guide
 [docs/DATA-QUALITY.md](../DATA-QUALITY.md) lists every code under the problem it belongs to, and the docstring of
-[`ModelBank.check`](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.check)
+[`ModelBank.check`](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank.check)
 lists every check with its threshold.
 
 **A finding's `value` gives the number measured,** here the share
@@ -191,7 +191,7 @@ warning duplicate b3 x0_cents
 ## Read every group as one stream
 
 `bank.audit()` reads the audit's counts as a table, and its
-[docstring](https://hgilde.github.io/polars-online/polars_online.html#polars_online.ModelBank.audit)
+[docstring](https://hgilde.github.io/polars-online/rheon.html#rheon.ModelBank.audit)
 defines each column.
 
 1. **Call `bank.audit()`.** It returns one row per
@@ -202,7 +202,7 @@ defines each column.
    Groups merge into one audit: the counts exactly, the moments to rounding,
    and the repeats past `distinct_cap` and the median within the bounds the
    docstring of
-   [`po.spec.audit`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.audit)
+   [`po.spec.audit`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.audit)
    gives.
 
 This code reads the audit of [Find a

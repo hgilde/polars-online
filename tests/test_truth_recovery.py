@@ -34,9 +34,9 @@ from sklearn.cluster import KMeans
 from sklearn.metrics import adjusted_rand_score
 
 import ledger
-import polars_online as po
-from polars_online import sim
+import rheon as po
 from public_benchmarks import franti_or_skip, tcpd_or_skip
+from rheon import sim
 from tcpdbench_metrics import f_measure
 
 TIER = "mixed"

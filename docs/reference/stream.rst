@@ -1,10 +1,10 @@
-``polars_online.stream``
+``rheon.stream``
 ========================
 
-.. automodule:: polars_online.stream
+.. automodule:: rheon.stream
    :no-members:
 
-.. autodata:: polars_online.stream.ROLE
+.. autodata:: rheon.stream.ROLE
 
 Columns made before a bank
 --------------------------

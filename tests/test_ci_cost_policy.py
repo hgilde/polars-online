@@ -387,7 +387,7 @@ class TestPythonVersions:
         (suite,) = suites
         assert "continue-on-error" not in suite and "if" not in suite
         run = " ".join(suite["run"].split())
-        assert "--cov=polars_online" in run, run
+        assert "--cov=rheon" in run, run
         assert "runner.os == 'Linux'" in run and f"matrix.python == '{floor}'" in run, run
 
     def test_the_canary_varies_polars_alone(self):
@@ -415,7 +415,7 @@ class TestPythonVersions:
 
 class TestMutationTesting:
     """mutants.yml (docs/records/TESTING-LOG.md T-D4): the changed lines on every push
-    and pull request, gating; all of online-core weekly, reporting."""
+    and pull request, gating; all of rheon-core weekly, reporting."""
 
     MUT = ALL["mutants.yml"]
 
@@ -736,7 +736,7 @@ class TestMutationTesting:
             assert f"--shard ${{{{ matrix.shard }}}}/{self._count(job)}" in run, job
 
     def test_every_run_skips_the_doctests_and_leaves_a_survivor_room(self):
-        """Task 155: a test run of online-core took 67 seconds, 39 of them its
+        """Task 155: a test run of rheon-core took 67 seconds, 39 of them its
         three doctests, and a mutant's time limit is a multiple of that run.
         Every run skips the doctests, which CI and the gate still run. The
         multiplier is 10, not the 3 first tried: a survivor runs the whole
@@ -814,14 +814,14 @@ class TestMutationTesting:
 
 
 class TestTheRustTestsLinkNoPython:
-    """`cargo test --workspace` leaves online-py out, in every workflow and in
+    """`cargo test --workspace` leaves rheon-py out, in every workflow and in
     the gate (2026-09-24). With it in the build, pyo3-polars turns on
     polars-error's `python` feature, and every test binary that links polars
     links libpython too. uv's own interpreters keep libpython off the Linux
     loader's path, so on the 3.13 and 3.14 legs the CLI's tests could not
-    start. online-py has no Rust tests to lose; pytest covers it."""
+    start. rheon-py has no Rust tests to lose; pytest covers it."""
 
-    EXCLUDE = "--exclude online-py"
+    EXCLUDE = "--exclude rheon-py"
     ROOT = pathlib.Path(__file__).resolve().parents[1]
 
     def test_every_workflow_leaves_the_extension_out(self):
@@ -875,10 +875,10 @@ class TestTheRustTestsLinkNoPython:
     def test_without_it_nothing_in_the_build_links_python(self):
         """The mechanism, asked of cargo: pyo3-ffi is the package whose build
         script links libpython. The control shows the check can fail: with
-        online-py in, it is there."""
+        rheon-py in, it is there."""
         assert "pyo3-ffi" in self._packages("--workspace")
         left = self._packages("--workspace", *self.EXCLUDE.split())
-        assert "online-cli" in left and "online-polars" in left
+        assert "rheon-cli" in left and "rheon-polars" in left
         assert not {"pyo3", "pyo3-ffi"} & left, sorted({"pyo3", "pyo3-ffi"} & left)
 
 

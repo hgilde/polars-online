@@ -64,7 +64,7 @@ def one(out: Path, case: str, n: int, h: str) -> None:
     """Run one case in this process and print its line."""
     import polars as pl
 
-    import polars_online as po
+    import rheon as po
 
     lf = pl.scan_parquet(out / f"ticks_{n}.parquet")
     spec = po.spec.ewridge(

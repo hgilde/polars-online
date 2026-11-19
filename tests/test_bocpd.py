@@ -22,7 +22,7 @@ import pytest
 from scipy.special import logsumexp
 from scipy.stats import multivariate_t
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 

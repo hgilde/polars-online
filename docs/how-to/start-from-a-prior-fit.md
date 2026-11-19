@@ -23,7 +23,7 @@ start from:
   gives them in that order, from a bank of one spec, one group and one half-life.
 
 `ridge`, `ridge_scale` and `coef_prior` are defined in [`po.spec.ewridge`'s
-docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge),
+docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.ewridge),
 and [`ewridge`'s update](../MODELS.md#the-update) gives the two systems a
 [solve](../GLOSSARY.md#fitting-a-model) reads.
 
@@ -66,7 +66,7 @@ lets each predict from its first row:
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # Today's truth: y = 0.5 + 2.2 x plus noise. Yesterday's fit was 0.5 + 2.0 x.
 rng = np.random.default_rng(11)

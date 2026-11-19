@@ -27,7 +27,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -575,7 +575,7 @@ class TestStreamContract:
         out = po.ModelBank([s]).fit_predict(self._df(k=2))
         assert field(out, "pc0_var@h50")[-1] != field(out, "pc0_var@h500")[-1]
 
-    def test_a_toml_config_carries_the_new_keys(self, tmp_path, online_cli):
+    def test_a_toml_config_carries_the_new_keys(self, tmp_path, rheon_cli):
         df = self._df(n=300)
         src, dst = tmp_path / "in.parquet", tmp_path / "out.parquet"
         df.write_parquet(src)
@@ -599,7 +599,7 @@ class TestStreamContract:
             encoding="utf-8",
         )
         res = subprocess.run(
-            [str(online_cli), "--config", str(cfg), "--quiet"],
+            [str(rheon_cli), "--config", str(cfg), "--quiet"],
             capture_output=True,
             text=True,
             encoding="utf-8",

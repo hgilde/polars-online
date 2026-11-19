@@ -16,8 +16,8 @@ import warnings
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online import _warnings
+import rheon as po
+from rheon import _warnings
 
 TIER = "essential"
 

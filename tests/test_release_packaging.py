@@ -38,14 +38,14 @@ REPO = Path(__file__).resolve().parent.parent
 WORKFLOW = REPO / ".github" / "workflows" / "release.yml"
 
 TARGETS = {
-    "x86_64-pc-windows-msvc": "polars-online.exe",
-    "aarch64-apple-darwin": "polars-online",
-    "x86_64-unknown-linux-gnu": "polars-online",
+    "x86_64-pc-windows-msvc": "rheon.exe",
+    "aarch64-apple-darwin": "rheon",
+    "x86_64-unknown-linux-gnu": "rheon",
 }
-WHEEL = "polars_online-0.1.0-cp312-abi3-macosx_11_0_arm64.whl"
+WHEEL = "rheon-0.1.0-cp312-abi3-macosx_11_0_arm64.whl"
 #: The same platform's wheel of the other PyPI project, and its sdist.
 COMPAT_WHEEL = "polars_online_compat-0.1.0-cp312-abi3-macosx_11_0_arm64.whl"
-SDIST = "polars_online-0.1.0.tar.gz"
+SDIST = "rheon-0.1.0.tar.gz"
 COMPAT_SDIST = "polars_online_compat-0.1.0.tar.gz"
 
 
@@ -100,22 +100,24 @@ def _collect(cwd) -> list[str]:
 
 
 def test_every_artifact_is_collected_and_named_by_target(staged):
-    assert _collect(staged) == [
-        "budgets-baseline.json",
-        "polars-online-aarch64-apple-darwin",
-        "polars-online-x86_64-pc-windows-msvc.exe",
-        "polars-online-x86_64-unknown-linux-gnu",
-        WHEEL,
-        SDIST,
-        COMPAT_WHEEL,
-        COMPAT_SDIST,
-    ]
+    assert _collect(staged) == sorted(
+        [
+            "budgets-baseline.json",
+            "rheon-aarch64-apple-darwin",
+            "rheon-x86_64-pc-windows-msvc.exe",
+            "rheon-x86_64-unknown-linux-gnu",
+            WHEEL,
+            SDIST,
+            COMPAT_WHEEL,
+            COMPAT_SDIST,
+        ]
+    )
 
 
 def test_the_windows_binary_keeps_its_suffix_and_the_others_gain_none(staged):
     names = _collect(staged)
     exes = [n for n in names if n.endswith(".exe")]
-    assert exes == ["polars-online-x86_64-pc-windows-msvc.exe"], (
+    assert exes == ["rheon-x86_64-pc-windows-msvc.exe"], (
         "exactly the Windows artifact keeps .exe; a rename that drops it "
         "produces a file Windows will not execute, and one that adds it "
         "everywhere breaks the unix downloads"
@@ -124,17 +126,19 @@ def test_the_windows_binary_keeps_its_suffix_and_the_others_gain_none(staged):
 
 def test_the_binaries_are_copied_not_just_renamed(staged):
     names = _collect(staged)
-    for name in ["polars-online-aarch64-apple-darwin", "polars-online-x86_64-pc-windows-msvc.exe"]:
+    for name in ["rheon-aarch64-apple-darwin", "rheon-x86_64-pc-windows-msvc.exe"]:
         assert name in names, f"{name} was not produced; got {names}"
         assert (staged / "release" / name).read_bytes() == b"\x7fELF fake binary"
 
 
 def test_it_does_not_collapse_two_targets_onto_one_name(staged):
-    """Both unix binaries are called `polars-online` in their own directories, so a
+    """Both unix binaries are called `rheon` in their own directories, so a
     rename that forgot the target would silently ship one of them twice."""
     names = _collect(staged)
     assert len(names) == len(set(names))
-    assert len([n for n in names if n.startswith("polars-online-")]) == len(TARGETS)
+    assert len([n for n in names if n.startswith("rheon-") and n not in (WHEEL, SDIST)]) == len(
+        TARGETS
+    )
 
 
 def test_the_publish_job_collects_only_wheels_and_sdists_each_project_in_its_own_folder(staged):

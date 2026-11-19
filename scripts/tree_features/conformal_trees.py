@@ -17,7 +17,7 @@ import numpy as np  # noqa: E402
 import polars as pl  # noqa: E402
 from leafrefit import synth, train_trees  # noqa: E402
 
-import polars_online as po  # noqa: E402
+import rheon as po  # noqa: E402
 
 
 def online_interval(clock, r, hl, gap, learn_clock=None):

@@ -12,8 +12,8 @@ import re
 import polars as pl
 import pytest
 
-import polars_online as po
-from polars_online import _polars_online as native
+import rheon as po
+from rheon import _rheon as native
 
 TIER = "essential"
 

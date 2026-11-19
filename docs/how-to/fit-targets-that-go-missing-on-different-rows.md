@@ -17,9 +17,9 @@ These steps need the library:
   on some rows. A null target leaves the row predicted and the clock
   moving, but the model learns nothing about that target from the row.
 - The parameters of
-  [`po.spec.rls`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.rls)
+  [`po.spec.rls`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.rls)
   and
-  [`po.spec.ewridge`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.ewridge),
+  [`po.spec.ewridge`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.ewridge),
   which their docstrings define.
 
 ## Give each target its own `rls` spec
@@ -73,7 +73,7 @@ from an `rls` spec of `a`'s own, and from one `ewridge` spec under each
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # Two targets on x: a's slope steps from 2 to 3 at row 3,000, where b goes missing.
 rng = np.random.default_rng(3)

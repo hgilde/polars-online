@@ -44,7 +44,7 @@ from scipy.stats import kstwobign
 from statsmodels.tsa.regime_switching.markov_regression import MarkovRegression
 
 import ledger
-import polars_online as po
+import rheon as po
 
 TIER = "mixed"
 

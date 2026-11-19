@@ -20,7 +20,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from conftest import run_online
 
 TIER = "essential"
@@ -406,14 +406,14 @@ def test_refresh_time_orders_an_integer_clock_exactly():
     assert grid["time_refresh"].to_list() == [T0 + 6]
 
 
-def test_the_command_line_reads_an_integer_clock_as_the_bank_does(online_cli, tmp_path):
+def test_the_command_line_reads_an_integer_clock_as_the_bank_does(rheon_cli, tmp_path):
     """The CLI runs the bank's own reader: the same output, the clock fields
     in ``Int64``, and a step back of one nanosecond refused by row."""
     df = frame(steps=(1, 7, 50, 100))
     spec = ridge(embargo=150)
     df.write_parquet(tmp_path / "in.parquet")
     run_online(
-        online_cli, tmp_path, [spec], input=tmp_path / "in.parquet", output=tmp_path / "out.parquet"
+        rheon_cli, tmp_path, [spec], input=tmp_path / "in.parquet", output=tmp_path / "out.parquet"
     )
     got = pl.read_parquet(tmp_path / "out.parquet").unnest("m")
     want = po.ModelBank([spec]).fit_predict(df).unnest("m")
@@ -422,7 +422,7 @@ def test_the_command_line_reads_an_integer_clock_as_the_bank_does(online_cli, tm
     back = pl.DataFrame({"t": [T0 + 5, T0 + 6, T0 + 5], "x": [1.0, 2.0, 3.0], "y": [1.0, 2.0, 3.0]})
     back.write_parquet(tmp_path / "back.parquet")
     res = run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [ridge()],
         input=tmp_path / "back.parquet",
@@ -486,12 +486,12 @@ def test_an_int128_clock_is_refused_by_name(surface):
         call()
 
 
-def test_the_command_line_refuses_an_int128_clock_by_name(online_cli, tmp_path):
+def test_the_command_line_refuses_an_int128_clock_by_name(rheon_cli, tmp_path):
     """The CLI runs the bank's reader, so a parquet file's ``Int128`` clock is
     refused there too, with the same words."""
     _wide(frame(n=5, steps=(1, 7))).write_parquet(tmp_path / "wide.parquet")
     res = run_online(
-        online_cli,
+        rheon_cli,
         tmp_path,
         [ridge()],
         input=tmp_path / "wide.parquet",
@@ -583,7 +583,7 @@ def _call(surface: str, df: pl.DataFrame):
     return lambda: getattr(bank, surface)(df)
 
 
-@pytest.mark.filterwarnings("ignore::polars_online.UnstableWarning")
+@pytest.mark.filterwarnings("ignore::rheon.UnstableWarning")
 @pytest.mark.parametrize("surface", SURFACES)
 @pytest.mark.parametrize("role", ["clock", "other"])
 def test_a_uint128_column_is_refused_by_name(surface, role):

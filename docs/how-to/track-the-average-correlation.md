@@ -58,7 +58,7 @@ over the banks, beside the truth:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # Two sectors: the banks' common correlation rises at row 2,000, the miners' holds at 0.4.
 rng = np.random.default_rng(4)
@@ -108,6 +108,6 @@ measures how far `rho` reads below the truth.
 | `rho` about two-thirds of an `ew_cov`'s mean `corr` | the estimate's downward bias, which Engle and Kelly note: `E[u]` is about 0.20 for a true 0.30 at six series | expected: read `rho` for how the correlation moves, and `corr` for its size |
 
 Every parameter is in `deco`'s
-[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.deco),
+[docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.deco),
 including `dynamics="linear"`, which steps the level once a row with
 its own `alpha` and `beta`, and the fields in [OUTPUTS.md](../OUTPUTS.md#deco).

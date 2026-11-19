@@ -5,7 +5,7 @@ goes to OSV's batch API (``https://api.osv.dev/v1/querybatch``), and each
 advisory that comes back is sorted three ways:
 
 - **failing**: a vulnerability against a crate in a shipped graph -- the
-  wheel's (``online-py``) or the command line's (``online-cli``), its normal
+  wheel's (``rheon-py``) or the command line's (``rheon-cli``), its normal
   and build edges on every target, as ``cargo tree`` lists them;
 - **notices**: an informational advisory against a shipped crate (RustSec's
   ``unmaintained``, ``unsound``, ``notice``: what ``cargo audit`` warns of
@@ -37,7 +37,7 @@ OSV = "https://api.osv.dev/v1"
 #: OSV's batch takes at most 1,000 queries.
 BATCH = 1000
 #: The crates whose graphs ship: the wheel's extension and the command line.
-SHIPPED_ROOTS = ("online-py", "online-cli")
+SHIPPED_ROOTS = ("rheon-py", "rheon-cli")
 
 #: Advisories against a shipped crate that are known, cannot be fixed here,
 #: and are reported as notices rather than failing the job: id -> reason.

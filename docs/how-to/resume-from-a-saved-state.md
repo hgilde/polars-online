@@ -144,8 +144,8 @@ Here the first command fits `job.toml`'s spec over its input,
 `today.parquet`:
 
 ```sh
-polars-online --config job.toml --save-state run.state
-polars-online --config job.toml --load-state run.state --input today.parquet --output today-fitted.parquet --save-state run.state
+rheon --config job.toml --save-state run.state
+rheon --config job.toml --load-state run.state --input today.parquet --output today-fitted.parquet --save-state run.state
 ```
 
 ```text
@@ -242,8 +242,8 @@ of it twice. The rows it drops get no output row, so its output file is
 empty:
 
 ```sh
-polars-online --config job.toml --save-state run.state
-polars-online --config job.toml --load-state run.state --skip-learned --output rerun-fitted.parquet --save-state run.state
+rheon --config job.toml --save-state run.state
+rheon --config job.toml --load-state run.state --skip-learned --output rerun-fitted.parquet --save-state run.state
 ```
 
 ```text

@@ -42,7 +42,7 @@ This code simulates four series in two regimes and prints the columns of
 each frame:
 
 ```python
-import polars_online as po
+import rheon as po
 
 sim = po.sim.regimes(                                  # 1.
     4, states=[0.2, 0.7],                     # four series; two regimes, at these equicorrelations
@@ -72,7 +72,7 @@ truth_blocks: 8 rows; block, state, n_rows, corr
 | `truth_blocks` | each block's true correlation matrix, the mean over its rows, as its upper triangle with the diagonal, row by row: for two series `[1, rho, 1]` |
 
 Every keyword, and what it refuses, is in `po.sim.regimes`'
-[docstring](https://hgilde.github.io/polars-online/sim.html#polars_online.sim.regimes).
+[docstring](https://hgilde.github.io/polars-online/sim.html#rheon.sim.regimes).
 
 ## Score the detector against the truth
 

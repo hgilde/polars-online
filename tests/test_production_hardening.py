@@ -36,7 +36,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from doc_recipes import TIMED, differences, shown_outputs, untimed
 from doc_recipes import run as run_recipe
 from polars_version import block_marks
@@ -302,7 +302,7 @@ class TestParameterExtremes:
 #: the second save fail partway through, the way a full disk would.
 SAVE_INTERRUPTED = """
 import os, resource, signal
-import numpy as np, polars as pl, polars_online as po
+import numpy as np, polars as pl, rheon as po
 
 path = STATE_PATH
 rng = np.random.default_rng(0)
@@ -1057,12 +1057,12 @@ class TestReadmeExamples:
         ]
         assert all(" s" in text or "rows a second" in text for text in timed), timed
 
-    def test_a_runner_recipe_prints_what_it_shows(self, tmp_path, monkeypatch, online_cli):
+    def test_a_runner_recipe_prints_what_it_shows(self, tmp_path, monkeypatch, rheon_cli):
         """The runner guide's shell blocks that show their output: each runs
         through the built `polars-online`, as `test_a_shell_block_runs` runs every
         one, and what its commands print, stdout and stderr in the order a
         terminal shows them, is held to the ```text block under it."""
-        monkeypatch.setenv("PATH", f"{online_cli.parent}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.setenv("PATH", f"{rheon_cli.parent}{os.pathsep}{os.environ['PATH']}")
         problems = []
         for line, code, shown in RUNNER_RECIPES:
             here = tmp_path / f"L{line}"
@@ -1086,7 +1086,7 @@ class TestReadmeExamples:
             problems += [f"docs/RUNNER.md:{line}:\n{p}" for p in differences(shown, printed)]
         assert not problems, "\n\n".join(problems)
 
-    def test_a_runner_python_recipe_prints_what_it_shows(self, tmp_path, monkeypatch, online_cli):
+    def test_a_runner_python_recipe_prints_what_it_shows(self, tmp_path, monkeypatch, rheon_cli):
         """The runner guide shows that its TOML file builds the same bank in
         Python. Its python recipes read `job.toml` and the output the
         guide's first run wrote beside it, so each runs in a directory where
@@ -1100,7 +1100,7 @@ class TestReadmeExamples:
             monkeypatch.chdir(here)
             _readme_namespace(here)  # writes job.toml and ticks.parquet
             first = subprocess.run(
-                [str(online_cli), "--config", "job.toml", "--quiet"],
+                [str(rheon_cli), "--config", "job.toml", "--quiet"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -1330,7 +1330,7 @@ class TestReadmeExamples:
         SHELL_BLOCKS,
         ids=[f"{p}:L{ln}" for p, ln, _ in SHELL_BLOCKS],
     )
-    def test_a_shell_block_runs(self, path, line, code, tmp_path, monkeypatch, online_cli):
+    def test_a_shell_block_runs(self, path, line, code, tmp_path, monkeypatch, rheon_cli):
         """The runner guide is all command line now, so its examples are shell.
         They run the same way the python blocks do: against the files the
         fixture writes, in a directory of their own, with the built `polars-online` on
@@ -1340,7 +1340,7 @@ class TestReadmeExamples:
         drive the toolchain, which a test must not do."""
         monkeypatch.chdir(tmp_path)
         _readme_namespace(tmp_path)  # writes job.toml, run.state and the inputs
-        monkeypatch.setenv("PATH", f"{online_cli.parent}{os.pathsep}{os.environ['PATH']}")
+        monkeypatch.setenv("PATH", f"{rheon_cli.parent}{os.pathsep}{os.environ['PATH']}")
         for command in (c for c in code.splitlines() if c.strip()):
             res = subprocess.run(
                 command,

@@ -56,7 +56,7 @@ the vanished cluster reaches the new one, under three values of
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # Three clusters; at row 4,000 the one at (0, 6) stops and one at (6, 6) starts.
 rng = np.random.default_rng(6)
@@ -101,7 +101,7 @@ before the default's 4.3 half-lives have passed. The new rows sit far
 from every center at first, but each check counts them in their nearest
 center's radius as if they sat at the cut. So that radius widens until
 the center learns them and moves toward them. The Notes of `kmeans`'s
-[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kmeans)
+[docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.kmeans)
 give the rule, under *Far rows, split and merge*.
 
 ## Check that it worked
@@ -119,7 +119,7 @@ come to sit on a cluster that still has rows.
 
 The fields are defined in [OUTPUTS.md](../OUTPUTS.md#kmeans), and every
 parameter in `kmeans`'s
-[docstring](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kmeans),
+[docstring](https://hgilde.github.io/polars-online/spec.html#rheon.spec.kmeans),
 whose Notes give the measurements behind `dead_frac`'s limit under *Dead
 centers*. [`kmeans` in
 MODELS.md](../MODELS.md#kmeans--exponentially-weighted-k-means) shows the

@@ -6,13 +6,13 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-import polars_online
+import rheon
 
 TIER = "essential"
 
 
 def test_native_extension_loads() -> None:
-    assert polars_online.native_version() == polars_online.__version__
+    assert rheon.native_version() == rheon.__version__
 
 
 # The version the wheel is built and tested against. Cargo.toml pins rust

@@ -21,7 +21,7 @@ import polars as pl
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
 
-import polars_online as po  # noqa: E402
+import rheon as po  # noqa: E402
 from data import VALIDATION_DATES as DATES  # noqa: E402
 from data import public_intraday, synthetic  # noqa: E402
 

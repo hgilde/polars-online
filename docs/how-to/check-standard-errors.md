@@ -51,7 +51,7 @@ slope is 0, and a test at 5% should reject on about 5% of the streams:
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # 100 independent streams of 3,000 rows. x is persistent (AR(1) at 0.95); the target sums the next
 # h = 10 shocks, which x knows nothing about, so its true slope is 0.
@@ -127,7 +127,7 @@ both are quiet.
 read Kish's size (the effective number of rows of the weighted fit), and are silent
 about the overlap. Read `po.gram.coef_stats`' t as a scale for comparing
 coefficients. For `marginal`, read `t_stat_serial`, which its `lags=` and
-`serial_rule=` add ([`po.spec.marginal`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.marginal)
+`serial_rule=` add ([`po.spec.marginal`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.marginal)
 gives their values), and which corrects each pair's count for rows that
 resemble their neighbors ([Can its t be
 trusted?](../DIAGNOSTICS.md#can-its-t-be-trusted)).

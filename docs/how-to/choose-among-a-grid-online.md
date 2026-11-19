@@ -48,7 +48,7 @@ averages beside each half-life:
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # y = b x0 + 0.5 x1 + noise, where b wanders as a slow random walk.
 rng = np.random.default_rng(9)

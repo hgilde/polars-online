@@ -31,7 +31,7 @@ emitted column:
 A *build* is an interpreter whose environment has the package installed: a
 venv's path or its ``python`` (``--a`` and ``--b``), or ``release:X.Y.Z``,
 a released wheel in the cache `compare_release.py` keeps. ``--a-path DIR``
-puts a directory holding a ``polars_online`` first on the path of A's runs,
+puts a directory holding a ``rheon`` first on the path of A's runs,
 for a build that is a directory and not an environment. Each run reports
 which package it imported (path, version, native library's hash), and a
 comparison of a build with itself is refused.
@@ -387,13 +387,13 @@ def worker(args: argparse.Namespace) -> None:
         sys.path.insert(0, args.pythonpath)
     import polars as pl
 
-    import polars_online as po
+    import rheon as po
 
     native = ""
     try:
-        from polars_online import _polars_online
+        from rheon import _rheon
 
-        native = hashlib.sha256(Path(_polars_online.__file__).read_bytes()).hexdigest()[:12]
+        native = hashlib.sha256(Path(_rheon.__file__).read_bytes()).hexdigest()[:12]
     except Exception:  # a layout with no native file of its own
         pass
     meta: dict[str, Any] = {
@@ -956,7 +956,7 @@ def parse(argv: list[str]) -> argparse.Namespace:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--a", help="build A: a venv, its python, or release:X.Y.Z")
     ap.add_argument("--b", help="build B, as --a")
-    ap.add_argument("--a-path", help="a directory holding polars_online, put first on A's path")
+    ap.add_argument("--a-path", help="a directory holding rheon, put first on A's path")
     ap.add_argument("--b-path", help="the same for B")
     ap.add_argument("--a-label")
     ap.add_argument("--b-label")

@@ -43,9 +43,9 @@ import pytest
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
-import polars_online as po
-from polars_online._polars_online import format_duration, parse_duration
+import rheon as po
 from polars_version import needs_polars
+from rheon._rheon import format_duration, parse_duration
 from test_model_registry import MINIMAL, REGRESSIONS, _build
 from test_temporal_clock import START, UNIT_KEYWORD, UNIT_NS, _column, _kind, _tables
 from tiers import examples
@@ -568,7 +568,7 @@ def _assert_same_numbers(one: pl.Series, many: pl.Series) -> None:
 @pytest.mark.parametrize("model", CLOCK_MODELS)
 class TestTemporalClockStreams:
     # A tiny or stale fit gets the readiness notice; it is beside the point.
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     @STREAMS
     @given(data=st.data())
     def test_chunking_never_changes_the_numbers(self, model, data):
@@ -580,7 +580,7 @@ class TestTemporalClockStreams:
         _assert_same_numbers(one, many)
 
     # A tiny or stale fit gets the readiness notice; it is beside the point.
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     @STREAMS
     @given(data=st.data())
     def test_a_save_and_load_at_any_row_is_transparent(self, model, data):
@@ -649,7 +649,7 @@ def delayed_streams(draw):
 
 class TestADelayedLabel:
     # A tiny or stale fit gets the readiness notice; it is beside the point.
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     @settings(STREAMS, max_examples=examples(150, essential=20))
     @given(data=st.data())
     def test_labels_in_flight_across_chunks_change_no_number(self, data):
@@ -736,7 +736,7 @@ def late_streams(draw):
 
 class TestNanosecondsAreExact:
     # A tiny or stale fit gets the readiness notice; it is beside the point.
-    @pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+    @pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
     @pytest.mark.parametrize("model", sorted(N_EFF_MODELS))
     @STREAMS
     @given(case=late_streams(), data=st.data())

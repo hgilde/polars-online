@@ -14,7 +14,7 @@ import numpy as np
 import polars as pl
 import xgboost as xgb
 
-import polars_online as po
+import rheon as po
 
 fs = sorted(glob.glob(str(C.SLOT / ".cache" / "BTCUSDT-1m-2024-*.parquet")))[:60]
 df = (

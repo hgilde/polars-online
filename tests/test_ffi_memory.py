@@ -30,7 +30,7 @@ import psutil
 import pytest
 
 import child
-import polars_online as po
+import rheon as po
 
 TIER = "extended"
 pytestmark = [
@@ -414,7 +414,7 @@ class TestNothingCrashes:
     def test_gc_of_frames_mid_flight(self):
         run_isolated("""
             import gc
-            import numpy as np, polars as pl, polars_online as po
+            import numpy as np, polars as pl, rheon as po
             rng = np.random.default_rng(0)
             spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
                                    half_life=20.0, min_weight=2.0)
@@ -438,7 +438,7 @@ class TestNothingCrashes:
     def test_repeated_reference_and_dereference(self):
         run_isolated("""
             import gc, sys
-            import numpy as np, polars as pl, polars_online as po
+            import numpy as np, polars as pl, rheon as po
             rng = np.random.default_rng(1)
             spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
                                    half_life=20.0, min_weight=2.0)
@@ -463,7 +463,7 @@ class TestNothingCrashes:
         that would strand Rust state the GC can see but never free."""
         run_isolated("""
             import gc
-            import numpy as np, polars as pl, polars_online as po
+            import numpy as np, polars as pl, rheon as po
             # Deliberately NOT gc.DEBUG_SAVEALL: that parks *everything*
             # collected in gc.garbage, so it cannot distinguish "collected" from
             # "uncollectable". Left alone, only genuinely uncollectable objects
@@ -487,7 +487,7 @@ class TestNothingCrashes:
 
     def test_empty_and_degenerate_frames(self):
         run_isolated("""
-            import polars as pl, polars_online as po
+            import polars as pl, rheon as po
             spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
                                    half_life=20.0, min_weight=2.0)
             bank = po.ModelBank([spec])
@@ -508,7 +508,7 @@ class TestNothingCrashes:
     def test_pickled_bank_survives_a_round_trip(self):
         run_isolated("""
             import pickle
-            import numpy as np, polars as pl, polars_online as po
+            import numpy as np, polars as pl, rheon as po
             rng = np.random.default_rng(4)
             spec = po.spec.ewridge("m", targets=["y"], features=["x0"],
                                    half_life=20.0, min_weight=2.0)

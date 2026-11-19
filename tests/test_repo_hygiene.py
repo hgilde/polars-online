@@ -53,7 +53,7 @@ TOOL_OUTPUT_DIRS = {"mutants.out", "mutants.out.old", "target", ".venv", "htmlco
 
 #: The largest a source file has any business being, in bytes. The frozen v1
 #: state fixture was the biggest legitimate one, a hex constant, until
-#: `crates/online-polars/src/bank.rs` passed 200 KB with the readiness fields
+#: `crates/rheon-polars/src/bank.rs` passed 200 KB with the readiness fields
 #: (task 87, 2026-09-21); a data file would still be caught, only later.
 MAX_SOURCE_BYTES = 250_000
 
@@ -177,7 +177,7 @@ def test_a_clean_checkout_has_what_the_build_needs(tracked):
     make CI and every other machine fail in a way that is invisible here."""
     # `as_posix()`, not `str()`: git always reports forward slashes, while
     # `str(WindowsPath(...))` gives backslashes, so this compared
-    # "python\\polars_online\\__init__.py" against a forward-slash literal and
+    # "python\\rheon\\__init__.py" against a forward-slash literal and
     # declared a tracked file missing. Caught by the first Windows CI run.
     names = {p.as_posix() for p in tracked}
     for needed in [
@@ -188,9 +188,9 @@ def test_a_clean_checkout_has_what_the_build_needs(tracked):
         "README.md",
         "LICENSE",
         "CLAUDE.md",
-        "python/polars_online/__init__.py",
-        "crates/online-py/Cargo.toml",
-        "crates/online-py/src/lib.rs",
+        "python/rheon/__init__.py",
+        "crates/rheon-py/Cargo.toml",
+        "crates/rheon-py/src/lib.rs",
         "scripts/env.sh",
         "scripts/env.ps1",
         "scripts/gate.sh",

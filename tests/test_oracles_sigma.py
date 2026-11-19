@@ -5,7 +5,7 @@ residuals: each residual the bank emitted before the row at ``w * 0.5 **
 (age / half-life)``, the age on the capped clock the decay uses and counted
 from the last accepted row, so a row with no residual -- warm-up, a null
 target, a skipped row's step folded into the next -- still ages the rest
-(the ``polars_online.spec`` diagnostics table). ``zscore`` is ``resid /
+(the ``rheon.spec`` diagnostics table). ``zscore`` is ``resid /
 sigma``. Every other diagnostic that reads the spread -- ``zscore``,
 drift's scale, the conformal band, ``emit_selected`` and ``emit_averaged``
 -- takes this number as its input in its own tests, and until now only the
@@ -27,7 +27,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 from test_oracles_lasso_paths import FEATURES, TARGETS, _stream
 
 TIER = "essential"
@@ -124,7 +124,7 @@ def _spec(model, half_life, *, gated=True):
 
 
 # The 0.5 slot is ridge-dominated on purpose, which ReadinessWarning says.
-@pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+@pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
 @pytest.mark.parametrize(
     ("model", "half_life"),
     [

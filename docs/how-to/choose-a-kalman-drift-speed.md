@@ -17,7 +17,7 @@ These steps need the library and a stream with a clock:
 - A [clock](../GLOSSARY.md#time) column, and the `gap_cap` a clock
   requires. The recipes' clock `t` steps by 1 a row.
 - The parameters of
-  [`po.spec.kalman`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.kalman),
+  [`po.spec.kalman`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.kalman),
   which its docstring defines, and its entry in
   [MODELS.md](../MODELS.md#kalman--random-walk-β-dynamic-linear-model).
 
@@ -72,7 +72,7 @@ data:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # y = 2 + b·x0 + 0.5·x1 + noise of variance 1, where b wanders as a random walk.
 rng = np.random.default_rng(5)

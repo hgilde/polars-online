@@ -28,7 +28,7 @@ blend among them as the stream runs:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # y = x0 - x1 plus noise, a row each unit of the clock column t.
 rng = np.random.default_rng(1)
@@ -200,7 +200,7 @@ than another, and chooses one on the first half of the rows:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # y = x0 + noise; z0 ... z19 are noise that y never reads.
 rng = np.random.default_rng(3)

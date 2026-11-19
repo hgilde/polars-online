@@ -28,9 +28,9 @@ fit's residuals: a [refit](../GLOSSARY.md#fitting-a-model).
 
 `huber_delta`, `huber_scale`, `huber_scale_half_life`, `huber_refit_rows`,
 `quantile_refit_rows` and `refit_budget` are defined in the docstrings of
-[`po.spec.huber`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.huber),
-[`po.spec.quantile`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.quantile)
-and [`po.spec.sgd`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.sgd).
+[`po.spec.huber`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.huber),
+[`po.spec.quantile`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.quantile)
+and [`po.spec.sgd`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.sgd).
 Each model's update is in its entry in MODELS.md:
 [`huber`](../MODELS.md#huber--robust-regression),
 [`quantile`](../MODELS.md#quantile--robust-regression) and
@@ -176,7 +176,7 @@ This code fits one such stream of 2,000 rows, at about
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # y = 1000 + 2x plus noise, with about 12.5% of the rows 50 too high, all where x is above 0.
 rng = np.random.default_rng(6)

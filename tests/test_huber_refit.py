@@ -22,7 +22,7 @@ import pytest
 import statsmodels.api as sm
 from statsmodels.robust.norms import HuberT
 
-import polars_online as po
+import rheon as po
 from test_huber_scale import _frame, stream
 
 TIER = "essential"

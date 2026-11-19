@@ -201,7 +201,7 @@ def library_names() -> tuple[frozenset[str], frozenset[str], frozenset[str]]:
     the output fields ``docs/OUTPUTS.md`` lists."""
     import polars as pl
 
-    import polars_online as po
+    import rheon as po
 
     params: set[str] = set()
     calls: set[str] = set()
@@ -251,7 +251,7 @@ def _classify(tok: str) -> tuple[str, str] | None:
     """A backticked span as (name, kind): a parameter, a call, an output
     field or a quoted value; None for anything that is not the library's."""
     params, calls, stems = library_names()
-    t = re.sub(r"^(po|pl|bank|lf|df|self|polars_online)\.", "", tok.strip())
+    t = re.sub(r"^(po|pl|bank|lf|df|self|rheon)\.", "", tok.strip())
     t = re.sub(r"^(spec|stream|eval|gram|corr|sim|ops|online)\.", "", t)
     if re.fullmatch(r'"[A-Za-z_][\w./-]*"', t):
         return t, "value"

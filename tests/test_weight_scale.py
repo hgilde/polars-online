@@ -21,7 +21,7 @@ import numpy as np
 import polars as pl
 import pytest
 
-import polars_online as po
+import rheon as po
 
 TIER = "essential"
 
@@ -31,7 +31,7 @@ assert _spec and _spec.loader
 probe = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(probe)
 
-pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+pytestmark = pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
 
 #: The specs whose outputs a weight's scale reaches, and why: each is in its
 #: builder's docs.

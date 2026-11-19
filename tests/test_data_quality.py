@@ -17,9 +17,9 @@ import polars as pl
 import pytest
 
 import check_streams as cs
-import polars_online as po
+import rheon as po
 from doc_recipes import differences, recipes, run
-from polars_online import _check
+from rheon import _check
 
 TIER = "essential"
 

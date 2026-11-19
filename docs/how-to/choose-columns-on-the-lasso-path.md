@@ -20,7 +20,7 @@ These steps need the library:
   `pip install "polars-online[numpy]"` adds. Each recipe builds its own
   data and saves it to a parquet file.
 - For the model, the parameters of
-  [`po.spec.lasso`](https://hgilde.github.io/polars-online/spec.html#polars_online.spec.lasso),
+  [`po.spec.lasso`](https://hgilde.github.io/polars-online/spec.html#rheon.spec.lasso),
   which its docstring defines. Its entry in
   [MODELS.md](../MODELS.md#lasso--lasso-path-its-penalty-chosen-as-it-runs)
   gives its update equation.
@@ -61,7 +61,7 @@ own data:
 ```python
 import numpy as np
 import polars as pl
-import polars_online as po
+import rheon as po
 
 # 10 features, of which only x0, x1 and x2 carry weight in y; y10 is ten times y.
 rng = np.random.default_rng(3)
@@ -189,7 +189,7 @@ path two ways, and each suits a different question:
 |---|---|---|
 | computes | each knot exactly, from the largest penalty down, by least angle regression | the solution at each penalty given, each started from the one before, by coordinate descent |
 | stops | after `max_iter` knots past its first, or at the first knot with at least `max_active` columns active | at the last penalty |
-| time | 4 ms for the whole path, 201 knots, at 200 columns. [`po.gram.lars_path`'s docstring](https://hgilde.github.io/polars-online/gram.html#polars_online.gram.lars_path) gives 0.2 ms for 40 knots at 200 columns, and 3 ms at 2,000 | 3 to 8 ms for 25 penalties at 200 columns |
+| time | 4 ms for the whole path, 201 knots, at 200 columns. [`po.gram.lars_path`'s docstring](https://hgilde.github.io/polars-online/gram.html#rheon.gram.lars_path) gives 0.2 ms for 40 knots at 200 columns, and 3 ms at 2,000 | 3 to 8 ms for 25 penalties at 200 columns |
 | takes | `penalty_weights=`, a scale above 0 on each column's penalty | `penalty_weights=`, where a weight of 0 keeps a column in the fit at every penalty, and an elastic net (`l1_ratio` below 1) |
 | use it for | the first columns to enter: a selection, and [stability selection](select-columns-stably-over-weeks.md) | a penalty chosen by held-out error, an elastic net, a column that must stay in |
 
@@ -220,7 +220,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 # 40 weeks, a row every 20 minutes. 200 features in 40 families of five that share a factor, so
 # two features of one family correlate at 0.5. y depends on six of them, and x25's coefficient is

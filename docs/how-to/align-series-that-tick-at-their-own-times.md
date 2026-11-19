@@ -45,7 +45,7 @@ refresh grid they make:
 
 ```python
 import polars as pl
-import polars_online as po
+import rheon as po
 
 ticks = pl.DataFrame({
     "symbol": ["AAA", "BBB", "AAA", "CCC", "BBB", "AAA", "AAA", "CCC"],  # which series ticked
@@ -161,7 +161,7 @@ series holding the refresh grid up, whose tick completes each refresh time, keep
 | an error naming a series not in `names` | a tick names a series `names` does not list, such as a misspelling | add it to `names`, or filter it out before the call |
 
 Every parameter is in `refresh_time`'s
-[docstring](https://hgilde.github.io/polars-online/stream.html#polars_online.stream.refresh_time).
+[docstring](https://hgilde.github.io/polars-online/stream.html#rheon.stream.refresh_time).
 For a block's covariance on the refresh grid's changes, robust to noise, see
 [Estimate a block's covariance from
 ticks](estimate-a-blocks-covariance-from-ticks.md).

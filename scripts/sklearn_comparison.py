@@ -35,7 +35,7 @@ import time
 import numpy as np
 import polars as pl
 
-import polars_online as po
+import rheon as po
 
 ROWS = 100_000
 K = 20

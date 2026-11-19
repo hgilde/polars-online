@@ -32,12 +32,12 @@ import polars as pl
 import pytest
 from sklearn.model_selection import ParameterGrid, TimeSeriesSplit
 
-import polars_online as po
-from polars_online.eval import _points, _time_series_folds
+import rheon as po
+from rheon.eval import _points, _time_series_folds
 
 TIER = "essential"
 
-pytestmark = pytest.mark.filterwarnings("ignore::polars_online.ReadinessWarning")
+pytestmark = pytest.mark.filterwarnings("ignore::rheon.ReadinessWarning")
 
 
 def wander(path, n=3_000, seed=9):

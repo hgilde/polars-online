@@ -3,7 +3,7 @@ requires = ["maturin>=1.15,<2.0"]
 build-backend = "maturin"
 
 [project]
-name = "polars-online"
+name = "rheon"
 version = "1.6.0"
 description = "Streaming / online regression models for Polars"
 readme = "README.md"
@@ -78,15 +78,15 @@ Changelog = "https://github.com/hgilde/polars-online/blob/main/CHANGELOG.md"
 Issues = "https://github.com/hgilde/polars-online/issues"
 
 [tool.maturin]
-manifest-path = "crates/online-py/Cargo.toml"
-module-name = "polars_online._polars_online"
+manifest-path = "crates/rheon-py/Cargo.toml"
+module-name = "rheon._rheon"
 python-source = "python"
 features = ["pyo3/extension-module"]
 # The CPU features the build was compiled to need, written by
-# crates/online-py/build.rs and read by the import-time CPU check. It is not
+# crates/rheon-py/build.rs and read by the import-time CPU check. It is not
 # committed (.gitignore), and maturin leaves out what git ignores, so the wheel
 # is told to take it; a build that wrote none has nothing to take.
-include = [{ path = "python/polars_online/_build_flags.py", format = "wheel" }]
+include = [{ path = "python/rheon/_build_flags.py", format = "wheel" }]
 
 [dependency-groups]
 # The package depends on polars alone. A test may use any other library it
@@ -228,7 +228,7 @@ default-groups = ["dev", "docs"]
 [tool.mypy]
 # The package only: it must type-check against its own stub with nothing
 # built, which is how the lint job runs it. Tests are deliberately untyped.
-files = ["python/polars_online"]
+files = ["python/rheon"]
 mypy_path = "python"
 python_version = "3.12"
 warn_unused_ignores = true
@@ -248,7 +248,7 @@ addopts = "-ra -m 'not soak and not oracle_grid'"
 # A name renamed for 1.0 still works with a warning, so a test or a recipe
 # could read one unnoticed: under the suite it is an error, and a test that
 # means to read one says so with `pytest.warns` (tests/test_deprecation.py).
-filterwarnings = ["error::polars_online.PolarsOnlineDeprecationWarning"]
+filterwarnings = ["error::rheon.PolarsOnlineDeprecationWarning"]
 markers = [
     "soak: long-running stability tests (millions of rows)",
     "extended: the extended tier, which runs before every push, in CI and before a release, and which the essentials gate leaves out (`scripts/gate.sh`; `scripts/gate.sh --extended` runs it). Every use says why: `pytest.mark.extended(reason=\"...\")`, a second or more, the network, a document's experiments, memory or threads, or a grid (docs/TESTING.md, \"Two tiers\"; tests/test_tiers.py)",
@@ -272,4 +272,4 @@ exclude = ["*.md"]
 select = ["E", "F", "I", "UP", "B", "SIM"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["polars_online"]
+known-first-party = ["rheon"]

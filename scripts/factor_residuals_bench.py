@@ -118,7 +118,7 @@ def specs(window: str, case: str = "pipeline") -> tuple[list[dict[str, object]],
     forward window and no embargo."""
     import polars as pl
 
-    import polars_online as po
+    import rheon as po
 
     size, _, every = window.partition("/")
     cadence = {"snapshot_every": every} if every else {}

@@ -54,7 +54,7 @@ def test_the_windows_state_version_is_the_one_the_code_writes():
     call a 9 foreign. Both are read against the constant the code writes."""
     import re
 
-    source = (REPO / "crates/online-polars/src/windows_frame.rs").read_text(encoding="utf-8")
+    source = (REPO / "crates/rheon-polars/src/windows_frame.rs").read_text(encoding="utf-8")
     (written,) = re.findall(r"const WINDOWS_VERSION: u32 = (\d+);", source)
     guide = re.findall(r"The windows state is version (\d+)", PAGE.read_text(encoding="utf-8"))
     record = re.findall(
