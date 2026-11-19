@@ -1358,6 +1358,11 @@ def test_a_subnormal_half_life_is_refused() -> None:
         po.stream.with_windows(df, y=po.ewm_rate("x", half_life=5e-324, window_size=2.0), **CLOCK)
 
 
+#: The first py-polars whose `rolling_sum_by` gives 0.0, not null, for a
+#: window with no row in it.
+_ROLLING_EMPTY_ZERO = (1, 41, 1)
+
+
 @pytest.mark.parametrize("base", [0, EPOCH_2024_MS])
 def test_a_row_exactly_one_window_from_another_lands_as_in_polars(base: int) -> None:
     """R2-W1: an edge was decided from two rounded policy times, so a row
@@ -1374,7 +1379,12 @@ def test_a_row_exactly_one_window_from_another_lands_as_in_polars(base: int) -> 
     df = _ms([base, base + 100, base + 400])
     got = po.stream.with_windows(df, y=back("left"), **clock)["y"].to_list()
     want = df.select(pl.col("x").rolling_sum_by("t", "300ms", closed="left"))["x"].to_list()
-    assert got == want == [0.0, 1.0, 1.0]
+    # py-polars before 1.41.1 gives null for an empty window's sum; from it,
+    # 0.0. Ours is 0.0 on every version, so the edges are checked against
+    # Polars on every version and the empty window from 1.41.1 on.
+    assert got == [0.0, 1.0, 1.0] and want[1:] == got[1:]
+    if INSTALLED >= _ROLLING_EMPTY_ZERO:
+        assert want == got
     # Backward "right": the row 300 ms older is at the far edge, out.
     df = _ms([base, base + 400, base + 700])
     got = po.stream.with_windows(df, y=back("right"), **clock)["y"].to_list()
@@ -1395,7 +1405,8 @@ def test_a_row_exactly_one_window_from_another_lands_as_in_polars(base: int) -> 
         .to_list()[::-1]
     )
     assert got[:2] == mirror[:2] == [1.0, 1.0] and got[2:] == [0.0, None]
-    assert mirror[2] == 0.0
+    if INSTALLED >= _ROLLING_EMPTY_ZERO:
+        assert mirror[2] == 0.0
 
 
 def test_with_groups_a_session_is_each_groups() -> None:
