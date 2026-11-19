@@ -41,6 +41,8 @@ from rheon._errors import RefusedValueError, WrongTypeError
 from rheon._rheon import parse_duration
 
 #: The prefix of the column an operator stands in as.
+# The @po: spelling is kept: it is part of the serialized formula, so a rename
+# would break formulas saved by 1.x.
 PREFIX = "@po:"
 
 #: The window operators, and the one that reads one row back.

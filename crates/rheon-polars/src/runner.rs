@@ -1,4 +1,4 @@
-//! Streaming runner behind the `polars-online` CLI (docs/PLAN.md
+//! Streaming runner behind the `rheon` CLI (docs/PLAN.md
 //! §11 task 15; docs/ENHANCEMENTS.md E32).
 //!
 //! Any source polars can scan comes in, any file format polars can write goes
@@ -584,7 +584,7 @@ impl RunConfig {
         }
     }
 
-    /// What `polars-online --dry-run` checks beyond [`Self::validate`], reading no
+    /// What `rheon --dry-run` checks beyond [`Self::validate`], reading no
     /// row: the input's schema as the run's scan resolves it -- a parquet
     /// footer, a CSV's first rows, a glob's first file, `keep_columns`
     /// applied -- the bank as the run opens it ([`Self::open_bank`]), and

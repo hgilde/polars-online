@@ -445,7 +445,7 @@ fn resume_rejects_mismatched_specs() {
     }
 }
 
-/// The `polars-online` binary over a config written to `dir`, with `args` after
+/// The `rheon` binary over a config written to `dir`, with `args` after
 /// `--config`: its exit status, stdout and stderr.
 fn online(dir: &Path, input: &Path, output: &Path, args: &[&str]) -> (bool, String, String) {
     let (code, stdout, stderr) = online_with(dir, input, output, "", 50.0, args);

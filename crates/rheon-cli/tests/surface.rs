@@ -272,7 +272,7 @@ fn version_names_the_state_schema_and_the_rust_polars() {
     assert_eq!(
         stdout,
         format!(
-            "polars-online {}\nstate schema {}\nRust Polars {}\n",
+            "rheon {}\nstate schema {}\nRust Polars {}\n",
             env!("CARGO_PKG_VERSION"),
             rheon_polars::rheon_core::SCHEMA_VERSION,
             polars::VERSION,
@@ -280,10 +280,7 @@ fn version_names_the_state_schema_and_the_rust_polars() {
     );
     let (code, stdout, err) = run(cli().arg("-V"));
     assert_eq!(code, Some(0), "{err}");
-    assert_eq!(
-        stdout,
-        format!("polars-online {}\n", env!("CARGO_PKG_VERSION"))
-    );
+    assert_eq!(stdout, format!("rheon {}\n", env!("CARGO_PKG_VERSION")));
 }
 
 /// A `chunk_size` of 0 is refused in the words Python uses for it, from the

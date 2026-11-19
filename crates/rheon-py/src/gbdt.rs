@@ -2,7 +2,7 @@
 //! LightGBM's libraries, loaded by the paths their Python packages loaded
 //! them from, build the binned training objects from frames pulled through a
 //! Python iterator, and hand back the handle, which
-//! `python/rheon/gbdt.py` wraps in the library's own class.
+//! `python/rheon/polars/_gbdt.py` wraps in the library's own class.
 //!
 //! A frame crosses on the Arrow C Data Interface, as `ModelBank`'s do. The
 //! build runs with the GIL released; the reader thread takes it for each

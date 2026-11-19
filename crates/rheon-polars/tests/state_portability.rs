@@ -2,8 +2,8 @@
 //!
 //! A state written on one OS must load on another and go on. The release
 //! does the real hand-off: `release.yml`'s write-state leg runs this test on
-//! macOS with `ONLINE_WRITE_STATE`, uploads the file, and the read-state legs
-//! run it on Windows and Linux with `ONLINE_FOREIGN_STATE`. That is the
+//! macOS with `RHEON_WRITE_STATE`, uploads the file, and the read-state legs
+//! run it on Windows and Linux with `RHEON_FOREIGN_STATE`. That is the
 //! interface, and it is unchanged. One file carries three states, framed
 //! (`pack`):
 //!
@@ -595,13 +595,13 @@ fn state_bytes_are_deterministic() {
 }
 
 /// When CI hands over a file written on the other OS
-/// (`ONLINE_FOREIGN_STATE`), load each state and go on: the output is the
+/// (`RHEON_FOREIGN_STATE`), load each state and go on: the output is the
 /// run that never left this machine, to the golden pipeline's tolerance,
 /// and each state re-saves the bytes it came in.
 #[test]
 fn loads_a_state_written_on_another_os() {
-    let Some(path) = std::env::var_os("ONLINE_FOREIGN_STATE") else {
-        eprintln!("ONLINE_FOREIGN_STATE not set; skipping the cross-OS hand-off");
+    let Some(path) = std::env::var_os("RHEON_FOREIGN_STATE") else {
+        eprintln!("RHEON_FOREIGN_STATE not set; skipping the cross-OS hand-off");
         return;
     };
     let path = PathBuf::from(path);
@@ -622,10 +622,10 @@ fn loads_a_state_written_on_another_os() {
 }
 
 /// Writes the file CI hands to the other OS. Run with
-/// `ONLINE_WRITE_STATE=<path> cargo test -p rheon-polars --test state_portability`.
+/// `RHEON_WRITE_STATE=<path> cargo test -p rheon-polars --test state_portability`.
 #[test]
 fn writes_the_handoff_state_when_asked() {
-    let Some(path) = std::env::var_os("ONLINE_WRITE_STATE") else {
+    let Some(path) = std::env::var_os("RHEON_WRITE_STATE") else {
         return;
     };
     std::fs::write(PathBuf::from(path), save_all(&first_part())).unwrap();

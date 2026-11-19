@@ -459,7 +459,7 @@ jobs:
       # tiers"); `ci` above runs the rest of the suite the same way.
       - name: write the hand-off state
         env:
-          ONLINE_WRITE_STATE: ${{ github.workspace }}/handoff.state
+          RHEON_WRITE_STATE: ${{ github.workspace }}/handoff.state
         run: cargo test --locked -p rheon-polars --test state_portability -- --include-ignored
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -495,7 +495,7 @@ jobs:
         # `handoff.state` is "No such file or directory". The first
         # rehearsal failed here on both OSes.
         env:
-          ONLINE_FOREIGN_STATE: ${{ github.workspace }}/handoff.state
+          RHEON_FOREIGN_STATE: ${{ github.workspace }}/handoff.state
         run: cargo test --locked -p rheon-polars --test state_portability -- --include-ignored
 
   next-polars:

@@ -430,6 +430,8 @@ fn nullable_column(name: &str, mut v: Vec<f64>) -> Column {
 }
 
 /// The hidden column an operator stands in as, in a formula.
+/// The `@po:` prefix is kept: it is part of the serialized formula (a rename would break
+/// formulas saved by 1.x) and is never shown.
 fn hidden(op: &OpNode) -> String {
     format!("@po:{}", op.key())
 }

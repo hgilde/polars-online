@@ -2,7 +2,7 @@
 //! `python/rheon/_build_flags.py`, for the import-time CPU check
 //! (`python/rheon/_cpu_check.py`).
 //!
-//! The wheels of `polars-online` for x86-64 are built with
+//! The wheels of `rheon` for x86-64 are built with
 //! `-C target-feature=+avx2,+fma,...` (release.yml), so the compiler may
 //! emit instructions an older CPU does not have, and that CPU would die on
 //! an illegal instruction. The check runs in Python before the extension

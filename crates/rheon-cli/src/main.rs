@@ -1,13 +1,13 @@
-//! `polars-online` — run a model bank over a stream of rows, config from TOML
+//! `rheon` — run a model bank over a stream of rows, config from TOML
 //! (docs/PLAN.md §11 task 15). Reads and writes parquet, ipc, csv and ndjson,
 //! each told from its extension or named with `--input-format` /
 //! `--output-format`.
 //!
 //! ```sh
-//! polars-online --config examples/bank.toml
-//! polars-online --config examples/bank.toml --input other.parquet --load-state bank.state
-//! polars-online --config examples/bank.toml --input today.parquet --load-state bank.state --predict
-//! polars-online --config examples/bank.toml --input ticks.csv --output scored.ndjson
+//! rheon --config examples/bank.toml
+//! rheon --config examples/bank.toml --input other.parquet --load-state bank.state
+//! rheon --config examples/bank.toml --input today.parquet --load-state bank.state --predict
+//! rheon --config examples/bank.toml --input ticks.csv --output scored.ndjson
 //! ```
 
 use std::io::{IsTerminal, Write};
@@ -182,7 +182,7 @@ impl Progress {
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "polars-online",
+    name = "rheon",
     version,
     long_version = LONG_VERSION.as_str(),
     about,
@@ -676,7 +676,7 @@ mod tests {
             fn mi_option_get(option: std::ffi::c_int) -> std::ffi::c_long;
         }
         const TEST: &str = "tests::the_purge_delay_index_is_the_purge_delay";
-        if std::env::var_os("ONLINE_CLI_MI_CHILD").is_some() {
+        if std::env::var_os("RHEON_CLI_MI_CHILD").is_some() {
             super::bound_allocator();
             // SAFETY: reads one option.
             let got = unsafe { mi_option_get(super::MI_OPTION_PURGE_DELAY) };
@@ -688,7 +688,7 @@ mod tests {
         }
         let out = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--exact", TEST, "--nocapture"])
-            .env("ONLINE_CLI_MI_CHILD", "1")
+            .env("RHEON_CLI_MI_CHILD", "1")
             .env("MIMALLOC_PURGE_DELAY", "777")
             .output()
             .unwrap();
