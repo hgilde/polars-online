@@ -124,11 +124,11 @@ pub(crate) fn damaged(kind: &str, since: impl std::fmt::Display) -> StateError {
 /// the words an old one is.
 fn schema_refusal(found: u32, current: u32) -> String {
     if found > current {
-        "it was written by a newer version of polars-online than this one reads. Upgrade \
-         polars-online to load it."
+        "it was written by a newer version of rheon than this one reads. Upgrade \
+         rheon to load it."
             .into()
     } else {
-        "it was written by a version of polars-online older than this one reads. Rebuild it \
+        "it was written by a version of rheon older than this one reads. Rebuild it \
          from its input."
             .into()
     }
@@ -1323,13 +1323,13 @@ mod tests {
         let (min, now) = (MIN_SCHEMA_VERSION, SCHEMA_VERSION);
         assert_eq!(
             refused(min - 1),
-            "it was written by a version of polars-online older than this one reads. Rebuild it \
+            "it was written by a version of rheon older than this one reads. Rebuild it \
              from its input."
         );
         assert_eq!(
             refused(now + 1),
-            "it was written by a newer version of polars-online than this one reads. Upgrade \
-             polars-online to load it."
+            "it was written by a newer version of rheon than this one reads. Upgrade \
+             rheon to load it."
         );
     }
 

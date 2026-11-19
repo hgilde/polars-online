@@ -189,7 +189,7 @@ def bocpd(
     row is learned. ``p_change`` is the posterior once this row's evidence
     is in.
     `docs/OUTPUTS.md#bocpd
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#bocpd>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#bocpd>`_
     gives each field's type and when it is null:
 
     ``p_change``
@@ -320,7 +320,7 @@ def bocpd(
       features.
     - :func:`hmm`, a fixed number of regimes the stream moves between.
     - `docs/REGIMES.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/REGIMES.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/REGIMES.md>`_,
       the models of regimes and changes, side by side.
 
     .. rubric:: Notes
@@ -613,7 +613,7 @@ def corrchange(
     clock break (a step ``gap_cap`` shortened, or a session change)
     abandons the span, the windows or the cycle.
     `docs/OUTPUTS.md#corrchange
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#corrchange>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#corrchange>`_
     gives each field's type and when it is null:
 
     ``stat``
@@ -751,7 +751,7 @@ def corrchange(
     - :func:`bocpd`, a posterior over the age of the current regime.
     - :func:`deco`, an equicorrelation that moves with the stream.
     - `docs/REGIMES.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/REGIMES.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/REGIMES.md>`_,
       the size and power of these tests, measured against their papers.
 
     .. rubric:: Notes

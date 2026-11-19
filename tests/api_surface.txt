@@ -1,4 +1,4 @@
-# polars-online public API surface. Regenerate: UPDATE_API_SURFACE=1 pytest
+# rheon public API surface. Regenerate: UPDATE_API_SURFACE=1 pytest
 
 [rheon]  # a function with its signature, keyword names and defaults included
   ArrowStruct  # unstable
@@ -2556,7 +2556,7 @@
     seqtest: a, a_suffix, b, b_suffix
     sgd: clip_gradient, coef_max, coef_min, coef_sum, eps, huber_delta, huber_refit_rows, huber_scale, huber_scale_half_life, l2, learning_rate, loss, power, quantile, refit_budget, schedule, standardize, strict_binary
 
-[cli flags]  # `polars-online --help`: a flag added, renamed or removed, or one that starts or stops taking a value, is a diff here
+[cli flags]  # `rheon --help`: a flag added, renamed or removed, or one that starts or stops taking a value, is a diff here
   Usage: rheon [OPTIONS] --config <CONFIG>
   --config <CONFIG>
   --input <INPUT>

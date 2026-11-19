@@ -962,7 +962,7 @@ def target(column: str, *, name: str | None = None) -> Target:
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1438,7 +1438,7 @@ def ewridge(
 
     One output column, named after the spec, whose value in each row is a
     record of these fields. `docs/OUTPUTS.md#ewridge
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#ewridge>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#ewridge>`_
     gives each field's type and when it is null:
 
     ``pred_<t>``, ``resid_<t>``
@@ -1561,7 +1561,7 @@ def ewridge(
     .. rubric:: See also
 
     - `ewridge in docs/MODELS.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/MODELS.md#ewridge--exponentially-weighted-ridge-regression>`_:
+      <https://github.com/rheon-dev/rheon/blob/main/docs/MODELS.md#ewridge--exponentially-weighted-ridge-regression>`_:
       recipes on data whose answer is known, and what the model is checked
       against.
     - :func:`rls`, the fit ``ridge_scale="sum"`` gives, by recursive least
@@ -1958,7 +1958,7 @@ def rls(
 
     One output column, named after the spec, whose value in each row is a
     record of these fields. `docs/OUTPUTS.md#rls
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#rls>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#rls>`_
     gives each field's type and when it is null:
 
     ``pred_<t>``, ``resid_<t>``
@@ -2217,7 +2217,7 @@ def lasso(
 
     One output column, named after the spec, whose value in each row is a
     record of these fields. `docs/OUTPUTS.md#lasso
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#lasso>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#lasso>`_
     gives each field's type and when it is null:
 
     ``pred_<t>``, ``resid_<t>``
@@ -2539,7 +2539,7 @@ def kalman(
         moves with the scale, z-score the column in the query before the bank
         and give it with ``standardize = False``. `Scale a feature by its
         spread
-        <https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_
+        <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_
         builds the column with :func:`rheon.polars.ewm_mean
         <rheon.polars.ops.ewm_mean>` and :func:`rheon.polars.ewm_std
         <rheon.polars.ops.ewm_std>`.
@@ -2548,7 +2548,7 @@ def kalman(
 
     One output column, named after the spec, whose value in each row is a
     record of these fields. `docs/OUTPUTS.md#kalman
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#kalman>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#kalman>`_
     gives each field's type and when it is null:
 
     ``pred_<t>``, ``resid_<t>``
@@ -2910,7 +2910,7 @@ def ftrl(
 
     One output column, named after the spec, whose value in each row is a
     record of these fields. `docs/OUTPUTS.md#ftrl
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#ftrl>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#ftrl>`_
     gives each field's type and when it is null:
 
     ``pred_<t>``, ``resid_<t>``
@@ -3124,7 +3124,7 @@ def ftrl(
     at ``L``, the squared loss's error is about ``0.018 * L``: 18.3 at 1,000 and
     at -1,000, and 1.8e6 at 1e8, against 0.75 at 0.5. Standardize or z-score
     such a feature before the bank, as `Scale a feature by its spread
-    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_
     shows. There is no ``standardize`` here because ``l1`` zeroes a coefficient
     in the feature's own units: a scale inside the model would move which
     coefficients it zeroes as the feature's spread moved.
@@ -3303,7 +3303,7 @@ def ew_cov(
     One output column, named after the spec, whose value in each row is a
     record of these fields, read before the row is learned.
     `docs/OUTPUTS.md#ew_cov
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#ew_cov>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#ew_cov>`_
     gives each field's type and when it is null:
 
     ``mean_<column>``, ``var_<column>``, ``std_<column>``
@@ -3672,7 +3672,7 @@ def pa(
 
     One output column, named after the spec, whose value in each row is a
     record of these fields. `docs/OUTPUTS.md#pa
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#pa>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#pa>`_
     gives each field's type and when it is null:
 
     ``pred_<t>``, ``resid_<t>``
@@ -3772,7 +3772,7 @@ def pa(
       losses, with the same scaler and constraints.
     - :func:`ewridge`, an exact fit on running sums.
     - `pa in docs/MODELS.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/MODELS.md#pa--passive-aggressive-regression>`_:
+      <https://github.com/rheon-dev/rheon/blob/main/docs/MODELS.md#pa--passive-aggressive-regression>`_:
       recipes on data whose answer is known.
 
     .. rubric:: Notes
@@ -4005,7 +4005,7 @@ def seqtest(
     One output column, named after the spec, whose value in each row is a
     record of these fields, per target ``t`` and read before the row is
     learned. `docs/OUTPUTS.md#seqtest
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#seqtest>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#seqtest>`_
     gives each field's type and when it is null:
 
     ``log_e_pos_<t>``, ``log_e_neg_<t>``
@@ -4416,7 +4416,7 @@ def marginal(
     record of one field, ``weight_sum``: the weight the model has
     accumulated before the row and before the row's own decay.
     `docs/OUTPUTS.md#marginal
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#marginal>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#marginal>`_
     gives its type. The pairs live in the state, and
     :meth:`rheon.polars.ModelBank.marginal` reads them: one row per (group,
     instance, feature, target), an instance being the part of the model
@@ -4804,7 +4804,7 @@ def deco(
     record of these fields, all but ``coef`` read from the state before the
     row, so they are safe as features for that same row.
     `docs/OUTPUTS.md#deco
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#deco>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#deco>`_
     gives each field's type and when it is null:
 
     ``u``

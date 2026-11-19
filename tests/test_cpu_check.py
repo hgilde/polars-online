@@ -1,6 +1,6 @@
 """The import-time CPU check of the x86-64 wheels.
 
-The x86-64 wheels of ``polars-online`` are compiled for CPUs with AVX2, FMA
+The x86-64 wheels of ``rheon`` are compiled for CPUs with AVX2, FMA
 and the rest of Polars' feature set, and a CPU without one dies on an
 illegal instruction. ``rheon/_cpu_check.py`` reads the CPU's
 features in pure Python, first thing in ``__init__``, and warns. These
@@ -36,7 +36,7 @@ REPO = Path(__file__).resolve().parents[1]
 BUILD_RS = REPO / "crates" / "rheon-py" / "build.rs"
 RELEASE = yaml.safe_load((REPO / ".github" / "workflows" / "release.yml").read_text("utf-8"))
 
-#: The flags the release gives the x86-64 wheels of `polars-online`.
+#: The flags the release gives the x86-64 wheels of `rheon`.
 X86_FEATURES = RELEASE["env"]["X86_FEATURES"]
 
 ON_X86 = platform.machine().lower() in {"x86_64", "amd64", "x64"} and sys.maxsize > 2**32
@@ -218,8 +218,8 @@ def test_a_missing_feature_warns_with_the_feature_the_remedy_and_the_way_out(cpu
     text = str(warning.message)
     assert "avx2, fma" in text
     # The package to install, which one to remove, Rosetta, and the variable.
-    assert "polars-online-compat" in text
-    assert "pip uninstall polars-online" in text
+    assert "rheon-compat" in text
+    assert "pip uninstall rheon" in text
     assert "Rosetta" in text
     assert "RHEON_SKIP_CPU_CHECK" in text
     assert "crash" in text

@@ -122,7 +122,7 @@ def hmm(
     One output column, named after the spec, whose value in each row is a
     record of these fields, all but ``coef`` read before the row is learned,
     so they are safe as features for that same row. `docs/OUTPUTS.md#hmm
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#hmm>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#hmm>`_
     gives each field's type and when it is null:
 
     ``filtered_state<j>``, ``predicted_state<j>``
@@ -258,7 +258,7 @@ def hmm(
     - :func:`ew_class`, the same Gaussian densities against labeled classes.
     - :func:`kmeans`, whose ``init`` seeds the states.
     - `docs/REGIMES.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/REGIMES.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/REGIMES.md>`_,
       regime models measured on streams whose regimes are known.
 
     .. rubric:: Notes
@@ -329,7 +329,7 @@ def hmm(
     true state, the rows before seeding counted as right, and about half of
     the rows after seeding. The same filter given the true ``covs`` put 98%
     there, and 95% when it went on learning (`docs/REGIMES.md
-    <https://github.com/hgilde/polars-online/blob/main/docs/REGIMES.md>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/REGIMES.md>`_
     §1). Pass ``means`` and ``covs``, or a feature in which the regime is a
     shift in location.
     """
@@ -450,7 +450,7 @@ def rcov(
 
     One output column, named after the spec, whose value in each row is a
     record holding ``weight_sum`` alone. `docs/OUTPUTS.md#rcov
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#rcov>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#rcov>`_
     gives its type. The estimate is in the row
     :meth:`rheon.polars.ModelBank.closed_groups` returns when the group
     closes:

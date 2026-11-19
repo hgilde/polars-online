@@ -29,8 +29,7 @@ use polars::prelude::*;
 use rheon_polars::{Bank, Spec};
 
 /// Where the warning sends its reader.
-const READY: &str =
-    "https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready";
+const READY: &str = "https://github.com/rheon-dev/rheon/blob/main/docs/DIAGNOSTICS.md#is-it-ready";
 
 const N: usize = 120;
 

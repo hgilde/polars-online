@@ -5,7 +5,7 @@ parameters every model shares -- the clock, the decay, the groups, the weights
 and the warm-up. It is a plain dict, JSON-able, and the same thing as a
 ``[[specs]]`` entry in the CLI's TOML. A builder assembles one, checks it and
 returns it. :class:`rheon.polars.ModelBank`, the ``rheon`` namespaces and
-the ``polars-online`` command line take lists of them.
+the ``rheon`` command line take lists of them.
 
 The builders are the documented way to write a spec. A dict written by hand is
 checked the same way when it is used. Only a builder can tell a misspelt
@@ -15,7 +15,7 @@ keyword from a missing one at the call.
 
 Every builder takes these after its own parameters, with the meaning, units and
 refusals below. `What every spec takes
-<https://github.com/hgilde/polars-online/blob/main/docs/MODELS.md#what-every-spec-takes>`_
+<https://github.com/rheon-dev/rheon/blob/main/docs/MODELS.md#what-every-spec-takes>`_
 shows them at work.
 
 ``targets``, ``features``
@@ -300,7 +300,7 @@ the diagnostics
     rows, and 6 lags. A horizon read from ``embargo`` gives at most 64 lags,
     and a :class:`rheon.ReadinessWarning` says so past it.
     `docs/DIAGNOSTICS.md
-    <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/DIAGNOSTICS.md>`_
     orders them by the question each answers, with their thresholds,
     false-alarm rates, costs and the theory behind them, and a recipe for each.
 
@@ -459,7 +459,7 @@ releases none. A regression writes, with ``<t>`` a target:
 A model that is not a regression writes fields of its own, which its builder
 describes. Per model, the fields of the plainest spec are listed in
 `docs/OUTPUTS.md
-<https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md>`_, and
+<https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md>`_, and
 :func:`output_fields` lists them for the exact spec you built.
 
 A grid writes one set of fields per instance or slot, suffixed. A grid is a

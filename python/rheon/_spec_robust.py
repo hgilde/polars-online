@@ -150,7 +150,7 @@ def huber(
 
     One output column, named after the spec, whose value in each row is a
     record of these fields. `docs/OUTPUTS.md#huber
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#huber>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#huber>`_
     gives each field's type and when it is null:
 
     ``pred_<t>``, ``resid_<t>``
@@ -557,7 +557,7 @@ def quantile(
 
     One output column, named after the spec, whose value in each row is a
     record of these fields. `docs/OUTPUTS.md#quantile
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#quantile>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#quantile>`_
     gives each field's type and when it is null:
 
     ``pred_<t>``, ``resid_<t>``

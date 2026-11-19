@@ -66,7 +66,7 @@ class ColumnNotFoundError(ValueError):
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -98,7 +98,7 @@ class OutputColumnNotFoundError(ColumnNotFoundError):
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -123,7 +123,7 @@ class WrongTypeError(TypeError):
 
     The value may be a float where a whole number is needed, one spec where
     a list of them is, a text column where a number is, or a ``UInt128``
-    column, which polars-online cannot read. It is a ``TypeError``, the
+    column, which rheon cannot read. It is a ``TypeError``, the
     class for a value of the wrong type.
 
     .. rubric:: Examples

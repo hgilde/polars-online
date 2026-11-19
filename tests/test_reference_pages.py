@@ -24,7 +24,9 @@ TIER = "essential"
 
 ROOT = Path(__file__).resolve().parent.parent
 REFERENCE = ROOT / "docs" / "reference"
-LINK = re.compile(r"https://hgilde\.github\.io/polars-online/([\w-]+)\.html(?:#([\w.\-]+))?")
+LINK = re.compile(
+    r"https://(?:hgilde\.github\.io/polars-online|rheon-dev\.github\.io/rheon)/([\w-]+)\.html(?:#([\w.\-]+))?"
+)
 
 sys.path.insert(0, str(REFERENCE))
 import families  # noqa: E402 -- the reference's own list, beside conf.py

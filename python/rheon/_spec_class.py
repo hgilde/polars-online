@@ -119,7 +119,7 @@ def ew_class(
     One output column, named after the spec, whose value in each row is a
     record of these fields, all but ``coef`` read before the row is learned.
     `docs/OUTPUTS.md#ew_class
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#ew_class>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#ew_class>`_
     gives each field's type and when it is null:
 
     ``class``

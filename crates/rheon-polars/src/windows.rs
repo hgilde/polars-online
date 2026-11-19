@@ -2060,8 +2060,8 @@ struct Held<'a> {
 /// (`formula.rs`, `windows_frame.rs`), so a refusal there is this library's.
 fn defect(what: &str) -> String {
     format!(
-        "internal: {what}, which is a defect in polars-online. Open an issue at \
-         https://github.com/hgilde/polars-online/issues with this message."
+        "internal: {what}, which is a defect in rheon. Open an issue at \
+         https://github.com/rheon-dev/rheon/issues with this message."
     )
 }
 

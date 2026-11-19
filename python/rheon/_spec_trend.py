@@ -71,7 +71,7 @@ def holt(
 
     One output column, named after the spec, whose value in each row is a
     record of these fields. `docs/OUTPUTS.md#holt
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#holt>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#holt>`_
     gives each field's type and when it is null:
 
     ``pred_<t>``, ``resid_<t>``

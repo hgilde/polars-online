@@ -286,13 +286,13 @@ CASES: list[Case] = [
         "value-state-is-not-a-state",
         lambda w: rp.ModelBank.load_bytes(b"not a bank"),
         ValueError,
-        "not a polars-online bank state file",
+        "not a rheon bank state file",
     ),
     Case(
         "value-a-file-that-is-not-a-state",
         lambda w: rp.ModelBank.load(_garbage(w)),
         ValueError,
-        "not a polars-online bank state file",
+        "not a rheon bank state file",
     ),
     Case(
         "value-a-broken-bank-does-not-save",
@@ -473,7 +473,7 @@ CASES: list[Case] = [
         "assertion-error-the-model-gave-the-wrong-count",
         _stub_native,
         AssertionError,
-        "a defect in polars-online",
+        "a defect in rheon",
     ),
     Case(
         "module-not-found-bank-gram",

@@ -219,7 +219,7 @@ def sgd(
 
     One output column, named after the spec, whose value in each row is a
     record of these fields. `docs/OUTPUTS.md#sgd
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#sgd>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#sgd>`_
     gives each field's type and when it is null:
 
     ``pred_<t>``, ``resid_<t>``

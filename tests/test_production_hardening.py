@@ -703,7 +703,7 @@ RECIPE_BLOCKS = {
 RUNNER_PYTHON_RECIPES = shown_outputs(REPO / "docs" / "RUNNER.md")
 
 #: The runner guide's shell blocks whose output a ```text block shows, held
-#: to what `polars-online` prints, stdout and stderr as a terminal interleaves them.
+#: to what `rheon` prints, stdout and stderr as a terminal interleaves them.
 RUNNER_RECIPES = shown_outputs(REPO / "docs" / "RUNNER.md", "sh")
 
 
@@ -760,7 +760,7 @@ def _example_data_block() -> str:
     return blocks[0]
 
 
-#: The runner guide's shell blocks, run against the built `polars-online` binary.
+#: The runner guide's shell blocks, run against the built `rheon` binary.
 #: Only this document's: the README's ```sh blocks are `pip install`, `uv sync`
 #: and the development commands, which must never run from a test.
 SHELL_BLOCKS = _doc_blocks("docs/RUNNER.md", "sh")
@@ -1062,7 +1062,7 @@ class TestReadmeExamples:
 
     def test_a_runner_recipe_prints_what_it_shows(self, tmp_path, monkeypatch, rheon_cli):
         """The runner guide's shell blocks that show their output: each runs
-        through the built `polars-online`, as `test_a_shell_block_runs` runs every
+        through the built `rheon`, as `test_a_shell_block_runs` runs every
         one, and what its commands print, stdout and stderr in the order a
         terminal shows them, is held to the ```text block under it."""
         monkeypatch.setenv("PATH", f"{rheon_cli.parent}{os.pathsep}{os.environ['PATH']}")
@@ -1093,7 +1093,7 @@ class TestReadmeExamples:
         """The runner guide shows that its TOML file builds the same bank in
         Python. Its python recipes read `job.toml` and the output the
         guide's first run wrote beside it, so each runs in a directory where
-        `polars-online --config job.toml` has just run, and what it prints
+        `rheon --config job.toml` has just run, and what it prints
         is held to the ```text block under it."""
         assert RUNNER_PYTHON_RECIPES, "the runner guide shows no python recipe"
         problems = []
@@ -1336,7 +1336,7 @@ class TestReadmeExamples:
     def test_a_shell_block_runs(self, path, line, code, tmp_path, monkeypatch, rheon_cli):
         """The runner guide is all command line now, so its examples are shell.
         They run the same way the python blocks do: against the files the
-        fixture writes, in a directory of their own, with the built `polars-online` on
+        fixture writes, in a directory of their own, with the built `rheon` on
         PATH so the block runs exactly as written.
 
         Only this document's: the README's ```sh blocks install the package and

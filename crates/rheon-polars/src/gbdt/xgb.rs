@@ -281,7 +281,7 @@ extern "C" fn xgb_next(h: Handle) -> c_int {
         Err(p) => {
             it.error = Some(GbdtError::msg(format!(
                 "{XGB}: handing XGBoost a chunk of rows panicked ({}), which is a defect in \
-                 polars-online. Open an issue at https://github.com/hgilde/polars-online/issues \
+                 rheon. Open an issue at https://github.com/rheon-dev/rheon/issues \
                  with this message.",
                 panic_message(&p)
             )));

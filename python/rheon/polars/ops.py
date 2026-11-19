@@ -11,7 +11,7 @@ target. A target that looks ahead is known only once its window has
 closed, so the bank learns it then, under an ``embargo``
 (:mod:`rheon.spec`) of at least the window. The guide `How a window
 operator weighs the rows near each row
-<https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md>`_ explains
+<https://github.com/rheon-dev/rheon/blob/main/docs/WINDOWS.md>`_ explains
 each.
 
 Every operator is defined once, by the library that has it, and held to it
@@ -125,7 +125,7 @@ For one side's VWAP, put ``when/then`` inside both sums, with
 ``min_samples=1`` in both: a window with no such trade is then null, where a
 sum of nothing is 0.0 and its ratio NaN. The operators take no ``weight=``.
 This code reads ``trades`` from `Example data
-<https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+<https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
 .. code-block:: python
 
@@ -148,9 +148,9 @@ on it has a coefficient per standard deviation of the feature, as the
 spread stands on each row, where a model on ``x`` has one per unit. Where a
 target responds to a feature relative to its volatility, fit on the
 z-score. Every model reads it as a column. `Scale a feature by its spread
-<https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_
+<https://github.com/rheon-dev/rheon/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_
 gives the measured gain. This code reads ``trades.parquet`` from
-`Example data <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+`Example data <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
 .. code-block:: python
 
@@ -410,7 +410,7 @@ def ewm_mean(
     - :func:`rheon.polars.stream.with_windows`, which computes the operators
       over a stream.
     - `How a window operator weighs the rows near each row
-      <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/WINDOWS.md>`_,
       the guide.
 
     .. rubric:: Notes
@@ -559,7 +559,7 @@ def ewm_sum(
     - :func:`rheon.polars.stream.with_windows`, which computes the operators
       over a stream.
     - `Make a weighted mean, such as a VWAP
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/make-window-features.md#make-a-weighted-mean-such-as-a-vwap>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/make-window-features.md#make-a-weighted-mean-such-as-a-vwap>`_,
       the forward VWAP built from two sums.
 
     .. rubric:: Notes
@@ -708,7 +708,7 @@ def ewm_rate(
     - :func:`rheon.polars.stream.with_windows`, which computes the operators
       over a stream.
     - `How a window operator weighs the rows near each row
-      <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/WINDOWS.md>`_,
       the guide.
 
     .. rubric:: Notes
@@ -856,7 +856,7 @@ def ewm_quantile(
     - :func:`rheon.polars.stream.with_windows`, which computes the operators
       over a stream.
     - `Quantiles and a robust scale
-      <https://github.com/hgilde/polars-online/blob/main/docs/WINDOWS.md#quantiles-and-a-robust-scale>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/WINDOWS.md#quantiles-and-a-robust-scale>`_,
       the guide's worked example.
 
     .. rubric:: Notes
@@ -1025,7 +1025,7 @@ def ewm_var(
     - :func:`rheon.polars.stream.with_windows`, which computes the operators
       over a stream.
     - `Scale a feature by its spread
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_,
       the guide.
 
     .. rubric:: Notes
@@ -1187,7 +1187,7 @@ def ewm_std(
     - :func:`rheon.polars.stream.with_windows`, which computes the operators
       over a stream.
     - `Scale a feature by its spread
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/scale-a-feature-by-its-spread.md>`_,
       the guide's measured gain.
 
     .. rubric:: Notes

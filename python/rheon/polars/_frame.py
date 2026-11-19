@@ -273,7 +273,7 @@ def _explain_kwargs(specs: Iterable[dict[str, Any]]) -> dict[str, Any]:
 
 def _explain_named(detail: str) -> dict[str, Any]:
     """:func:`_explain_kwargs` for any of this package's sources: the name
-    ``polars-online`` and ``detail``, when the installed polars takes them."""
+    ``rheon`` and ``detail``, when the installed polars takes them."""
     import inspect
 
     try:
@@ -282,7 +282,7 @@ def _explain_named(detail: str) -> dict[str, Any]:
         return {}
     if "explain_name" not in takes:
         return {}
-    return {"explain_name": "polars-online", "explain_detail": detail}
+    return {"explain_name": "rheon", "explain_detail": detail}
 
 
 def _spec_columns(specs: Iterable[dict[str, Any]]) -> set[str]:
@@ -371,7 +371,7 @@ class OrderNotGuaranteedWarning(RheonWarning, UserWarning):
     .. rubric:: Examples
 
     This code reads ``ticks.parquet`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -393,7 +393,7 @@ class OrderNotGuaranteedWarning(RheonWarning, UserWarning):
     .. rubric:: See also
 
     - `Put rows in clock order
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/put-rows-in-clock-order.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/put-rows-in-clock-order.md>`_,
       how to give a bank each group's rows in order, and how to read this
       warning.
     - :class:`RheonWarning`, the base class every warning of this
@@ -450,7 +450,7 @@ class ConsumedSourceWarning(RheonWarning, UserWarning):
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1474,7 +1474,7 @@ class LazyFrameRheonNamespace:
         .. rubric:: Examples
 
         This code reads ``lf`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1636,7 +1636,7 @@ class LazyFrameRheonNamespace:
         .. rubric:: Examples
 
         This code reads ``lf`` and ``later`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1731,7 +1731,7 @@ class LazyFrameRheonNamespace:
         .. rubric:: Examples
 
         This code reads ``lf`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1797,7 +1797,7 @@ class LazyFrameRheonNamespace:
         .. rubric:: Examples
 
         This code reads ``trades.parquet`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1918,7 +1918,7 @@ class DataFrameRheonNamespace:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -2008,7 +2008,7 @@ class DataFrameRheonNamespace:
         .. rubric:: Examples
 
         This code reads ``df`` and ``today`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -2067,7 +2067,7 @@ class DataFrameRheonNamespace:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -2127,7 +2127,7 @@ class DataFrameRheonNamespace:
         .. rubric:: Examples
 
         This code reads ``trades`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -2247,7 +2247,7 @@ def fit_predict(
     .. rubric:: Examples
 
     This code reads ``lf`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -2345,7 +2345,7 @@ def predict(
     .. rubric:: Examples
 
     This code reads ``df`` and ``today`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -2425,7 +2425,7 @@ def unnest(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 

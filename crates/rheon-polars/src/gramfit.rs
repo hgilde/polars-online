@@ -372,8 +372,8 @@ pub fn repeated_slot(slots: &[usize]) -> Option<usize> {
 /// from the names a reader gives and check each count first.
 fn internal(what: String) -> PolarsError {
     polars_err!(ComputeError:
-        "rheon.gram: internal: {what}, which is a defect in polars-online. Open an issue at \
-         https://github.com/hgilde/polars-online/issues with this message."
+        "rheon.gram: internal: {what}, which is a defect in rheon. Open an issue at \
+         https://github.com/rheon-dev/rheon/issues with this message."
     )
 }
 

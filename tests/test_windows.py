@@ -1533,7 +1533,7 @@ def test_a_windows_state_of_another_version_is_refused_by_its_version(tmp_path: 
     path.write_bytes(header)
     with pytest.raises(
         ValueError,
-        match=r"the state's version is 2, but this version of polars-online reads versions 9 to 10",
+        match=r"the state's version is 2, but this version of rheon reads versions 9 to 10",
     ):
         rp.stream.with_windows(
             ticks(5, 1), y=rp.ewm_sum("x", half_life=1.0), load_state=path, **CLOCK

@@ -39,8 +39,8 @@ pub fn resolved_defaults(spec: &Spec) -> Result<Value, String> {
     let stream = Stream::new(&spec)?;
     let (_, model) = stream.models.first().ok_or_else(|| {
         format!(
-            "spec {:?}: it builds no model, which is a defect in polars-online. Open an \
-                 issue at https://github.com/hgilde/polars-online/issues with this message.",
+            "spec {:?}: it builds no model, which is a defect in rheon. Open an \
+                 issue at https://github.com/rheon-dev/rheon/issues with this message.",
             spec.name
         )
     })?;
@@ -64,7 +64,7 @@ pub(crate) fn faithful_json<T: Serialize + DeserializeOwned>(v: &T) -> Result<Va
     let back: T = serde_json::from_value(json.clone()).map_err(|e| {
         format!(
             "spec defaults: a setting does not read back from its JSON ({e}), which is a defect \
-             in polars-online. Open an issue at https://github.com/hgilde/polars-online/issues \
+             in rheon. Open an issue at https://github.com/rheon-dev/rheon/issues \
              with this message."
         )
     })?;
@@ -72,7 +72,7 @@ pub(crate) fn faithful_json<T: Serialize + DeserializeOwned>(v: &T) -> Result<Va
     if bytes(&back)? != bytes(v)? {
         return Err(
             "spec defaults: a setting's JSON reads back as another value, which is a defect in \
-             polars-online. Open an issue at https://github.com/hgilde/polars-online/issues with \
+             rheon. Open an issue at https://github.com/rheon-dev/rheon/issues with \
              this message."
                 .into(),
         );

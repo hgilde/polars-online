@@ -55,7 +55,7 @@ too: statsmodels' ``corr_nearest`` for :func:`nearest`, and scikit-learn's
 ``ledoit_wolf`` for :func:`shrink` toward the identity.
 
 The module needs numpy, an optional extra of this package (``pip install
-polars-online[numpy]``) and not a dependency, since it is not one of
+rheon[numpy]``) and not a dependency, since it is not one of
 Polars' either. Nothing here needs scipy or scikit-learn.
 
 .. warning::
@@ -114,7 +114,7 @@ def _np() -> Any:
     except ModuleNotFoundError as e:  # pragma: no cover - exercised by a stub
         msg = (
             "rheon.corr: it works in numpy arrays, but numpy is not installed. "
-            "Install it with `pip install numpy` or `pip install polars-online[numpy]`."
+            "Install it with `pip install numpy` or `pip install rheon[numpy]`."
         )
         raise ModuleNotFoundError(msg) from e
     return np
@@ -1623,7 +1623,7 @@ def epps_invert(gram_or_row: Any, *, L: int) -> Any:  # noqa: N803 - the paper's
     .. rubric:: Examples
 
     This code reads ``trades`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 

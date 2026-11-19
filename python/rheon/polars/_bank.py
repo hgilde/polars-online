@@ -160,7 +160,7 @@ def _refuse_uint128(schema: pl.Schema, who: str, clocks: Collection[str | None] 
             )
         else:
             msg = (
-                f"{who}: column {name!r} is UInt128, which polars-online cannot read. Cast it "
+                f"{who}: column {name!r} is UInt128, which rheon cannot read. Cast it "
                 "to Int64 if its values fit, or to Float64, or leave it out of the frame."
             )
         raise WrongTypeError(msg)
@@ -173,7 +173,7 @@ class ModelBank:
     query you hand it to read in chunks, and when you want to read, save or
     serve what it has learned between chunks. To run the same bank inside a
     Polars query, use ``lf.rheon.fit_predict(specs)``, and to run it outside
-    Python, from a file to a file, use the ``polars-online`` command line.
+    Python, from a file to a file, use the ``rheon`` command line.
 
     .. rubric:: Parameters
 
@@ -222,7 +222,7 @@ class ModelBank:
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -399,7 +399,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -480,7 +480,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -557,7 +557,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -581,7 +581,7 @@ class ModelBank:
 
         - :meth:`load`, which loads the saved bank.
         - `Resume from a saved state
-          <https://github.com/hgilde/polars-online/blob/main/docs/how-to/resume-from-a-saved-state.md#resume-on-input-that-overlaps-the-state>`_.
+          <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/resume-from-a-saved-state.md#resume-on-input-that-overlaps-the-state>`_.
 
         .. rubric:: Notes
 
@@ -679,7 +679,7 @@ class ModelBank:
         ``pred_y__r0.1``. :attr:`output_fields` lists a
         bank's fields, :mod:`rheon.spec` describes them under *What
         a spec writes*, and `docs/OUTPUTS.md
-        <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md>`_
+        <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md>`_
         gives every model's. Each prediction is out-of-sample: the model
         makes it from what it learned before the row, and only then learns
         the row. ``coef``, ``support_coef`` and the standard errors are the
@@ -696,7 +696,7 @@ class ModelBank:
             A column of a type its role cannot take. It is both a
             ``TypeError`` and a ``ValueError``. When:
 
-            - a column of ``df`` is ``UInt128``, which polars-online cannot
+            - a column of ``df`` is ``UInt128``, which rheon cannot
               read;
             - a target column (other than ``ew_class``'s), a feature or a
               weight column is neither numeric nor Boolean;
@@ -765,7 +765,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -790,7 +790,7 @@ class ModelBank:
         - :meth:`fit`, which learns and keeps no output.
         - :meth:`predict`, which predicts and learns nothing.
         - `Why every prediction is out-of-sample
-          <https://github.com/hgilde/polars-online/blob/main/docs/explanation/out-of-sample.md>`_.
+          <https://github.com/rheon-dev/rheon/blob/main/docs/explanation/out-of-sample.md>`_.
 
         .. rubric:: Notes
 
@@ -913,7 +913,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` and ``today`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1002,7 +1002,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1075,7 +1075,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1204,7 +1204,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``lf`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1437,7 +1437,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``lf`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1588,7 +1588,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1691,8 +1691,8 @@ class ModelBank:
             if coef is not None and len(coef) != n:
                 msg = (
                     f'spec "{self._specs[idx]["name"]}": the model returned {len(coef)} '
-                    f"coefficients for {n} positions, which is a defect in polars-online. Open "
-                    "an issue at https://github.com/hgilde/polars-online/issues with this message."
+                    f"coefficients for {n} positions, which is a defect in rheon. Open "
+                    "an issue at https://github.com/rheon-dev/rheon/issues with this message."
                 )
                 raise AssertionError(msg)
             groups += [g] * n
@@ -1766,7 +1766,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1951,7 +1951,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -1976,7 +1976,7 @@ class ModelBank:
           more.
         - :meth:`solve_failures`, one of these columns alone.
         - `Is it ready?
-          <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`__,
+          <https://github.com/rheon-dev/rheon/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`__,
           on ``settled_frac``, ``error_inflation`` and ``weight_sum_settled``.
 
         .. rubric:: Notes
@@ -1991,7 +1991,7 @@ class ModelBank:
         second memory the model keeps beside it, such as ``holt``'s trend: the
         diagnostics wait for the longest of those instead (`One memory per
         diagnostic
-        <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#one-memory-per-diagnostic-run-once-or-windowed>`__).
+        <https://github.com/rheon-dev/rheon/blob/main/docs/DIAGNOSTICS.md#one-memory-per-diagnostic-run-once-or-windowed>`__).
 
         ``error_inflation`` is ``ewridge``'s ``sqrt(1 + edf / n_kish)``,
         ``rls``'s ``sqrt(1 + k_total / n_kish)`` and ``lasso``'s
@@ -2082,7 +2082,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -2261,12 +2261,12 @@ class ModelBank:
             its column (see Notes).
         ``ModuleNotFoundError``
             numpy is not installed. It is not a dependency of this package, as
-            it is not of Polars: ``pip install polars-online[numpy]`` adds it.
+            it is not of Polars: ``pip install rheon[numpy]`` adds it.
 
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -2296,7 +2296,7 @@ class ModelBank:
         - :meth:`closed_groups`, the same sums for each group that has closed.
         - :meth:`coef`, the fit the model solved.
         - `How a Gram stands in for the rows
-          <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md#how-a-gram-stands-in-for-the-rows>`__.
+          <https://github.com/rheon-dev/rheon/blob/main/docs/GRAM.md#how-a-gram-stands-in-for-the-rows>`__.
 
         .. rubric:: Notes
 
@@ -2389,7 +2389,7 @@ class ModelBank:
         except ModuleNotFoundError as e:  # pragma: no cover - exercised by a stub
             msg = (
                 "ModelBank.gram: it returns numpy arrays, and numpy is not installed. Install "
-                "it with `pip install numpy` or `pip install polars-online[numpy]`."
+                "it with `pip install numpy` or `pip install rheon[numpy]`."
             )
             raise ModuleNotFoundError(msg) from e
 
@@ -2596,7 +2596,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -2794,7 +2794,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -2968,7 +2968,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -2995,7 +2995,7 @@ class ModelBank:
         - :func:`rheon.gram.from_row`, a closed row's sums as
           :meth:`gram` gives them.
         - `Close groups and read each one's row
-          <https://github.com/hgilde/polars-online/blob/main/docs/how-to/close-groups.md>`__,
+          <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/close-groups.md>`__,
           a worked example.
 
         .. rubric:: Notes
@@ -3064,7 +3064,7 @@ class ModelBank:
         ``message``
             What is wrong and, for most codes, what to do. It ends with
             a link to the code's section of `docs/DATA-QUALITY.md
-            <https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md>`_,
+            <https://github.com/rheon-dev/rheon/blob/main/docs/DATA-QUALITY.md>`_,
             which shows what the problem does to each model and how to fix it
             with Polars, before the bank, in a program that runs.
 
@@ -3237,7 +3237,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -3259,7 +3259,7 @@ class ModelBank:
         .. rubric:: See also
 
         - `Data quality
-          <https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md>`__,
+          <https://github.com/rheon-dev/rheon/blob/main/docs/DATA-QUALITY.md>`__,
           each problem, what it does to each model, and its fix.
         - :meth:`summary`, :meth:`describe` and :meth:`audit`, the counts the
           findings are read from.
@@ -3278,7 +3278,7 @@ class ModelBank:
         **Every threshold was measured before it shipped**, for how often it
         finds a planted problem and how often it fires on clean data. `How
         the checks work
-        <https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md#how-the-checks-work>`__
+        <https://github.com/rheon-dev/rheon/blob/main/docs/DATA-QUALITY.md#how-the-checks-work>`__
         gives the clean streams, the planted problems and the numbers each
         line was set from.
 
@@ -3440,7 +3440,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -3556,7 +3556,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -3576,7 +3576,7 @@ class ModelBank:
         - :meth:`save_bytes` and :meth:`write_json`, the state as bytes and as
           JSON.
         - `Resume from a saved state
-          <https://github.com/hgilde/polars-online/blob/main/docs/how-to/resume-from-a-saved-state.md>`_.
+          <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/resume-from-a-saved-state.md>`_.
 
         .. rubric:: Notes
 
@@ -3641,7 +3641,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -3723,7 +3723,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -3850,7 +3850,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` and ``today`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 
@@ -3873,7 +3873,7 @@ class ModelBank:
         - :meth:`skip_learned`, for input that overlaps what the state has
           learned.
         - `Resume from a saved state
-          <https://github.com/hgilde/polars-online/blob/main/docs/how-to/resume-from-a-saved-state.md>`_.
+          <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/resume-from-a-saved-state.md>`_.
 
         .. rubric:: Notes
 
@@ -3949,7 +3949,7 @@ class ModelBank:
         .. rubric:: Examples
 
         This code reads ``df`` from `Example data
-        <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+        <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
         .. code-block:: python
 

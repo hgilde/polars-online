@@ -88,7 +88,7 @@ impl Frames for PlanFrames {
             .join()
             .map_err(|_| GbdtError::msg(
                     "rheon.polars._gbdt: internal: Polars panicked while it read the source, which is a defect. \
-                     Open an issue at https://github.com/hgilde/polars-online/issues with this message.",
+                     Open an issue at https://github.com/rheon-dev/rheon/issues with this message.",
                 ))?;
         if wanted {
             done?;
@@ -166,8 +166,8 @@ impl Reader {
                     Ok(Err(e)) => Msg::Fail(e),
                     Err(p) => Msg::Fail(GbdtError::msg(format!(
                         "rheon.polars._gbdt: reading the source panicked ({}), which is a defect in \
-                         polars-online. Open an issue at \
-                         https://github.com/hgilde/polars-online/issues with this message.",
+                         rheon. Open an issue at \
+                         https://github.com/rheon-dev/rheon/issues with this message.",
                         panic_message(&p)
                     ))),
                 };
@@ -201,8 +201,8 @@ impl Reader {
             }
             Err(_) => Err(GbdtError::msg(
                 "rheon.polars._gbdt: the thread reading the source stopped before the end of its pass, which \
-                 is a defect in polars-online. Open an issue at \
-                 https://github.com/hgilde/polars-online/issues with this message.",
+                 is a defect in rheon. Open an issue at \
+                 https://github.com/rheon-dev/rheon/issues with this message.",
             )),
         }
     }
@@ -271,8 +271,8 @@ fn check_kinds<'a>(
     if width != layout.width() {
         return Err(GbdtError::msg(format!(
             "rheon.polars._gbdt: a frame of {width} columns arrived where {} were expected, which is a \
-             defect in polars-online. Open an issue at \
-             https://github.com/hgilde/polars-online/issues with this message.",
+             defect in rheon. Open an issue at \
+             https://github.com/rheon-dev/rheon/issues with this message.",
             layout.width()
         )));
     }
@@ -287,8 +287,8 @@ pub(crate) fn segments(df: &DataFrame, layout: &Layout) -> Result<Vec<Segment>, 
     if df.width() != width {
         return Err(GbdtError::msg(format!(
             "rheon.polars._gbdt: a frame of {} columns arrived where {width} were expected (the features, \
-             the label{}{}), which is a defect in polars-online. Open an issue at \
-             https://github.com/hgilde/polars-online/issues with this message.",
+             the label{}{}), which is a defect in rheon. Open an issue at \
+             https://github.com/rheon-dev/rheon/issues with this message.",
             df.width(),
             if layout.weight.is_some() {
                 ", the weight"

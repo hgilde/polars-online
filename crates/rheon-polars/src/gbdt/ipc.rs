@@ -54,7 +54,7 @@ impl IpcFrames {
         if categories.len() != layout.names.len() {
             return Err(GbdtError::msg(
                 "rheon.polars._gbdt: internal: the native engine was not given a category list per feature, \
-                 which is a defect in polars-online. Open an issue at https://github.com/hgilde/polars-online/issues with this message.",
+                 which is a defect in rheon. Open an issue at https://github.com/rheon-dev/rheon/issues with this message.",
             ));
         }
         Ok(Self {

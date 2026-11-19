@@ -1,7 +1,7 @@
 """Every link the package prints lands on a page and a heading that exist.
 
 A message names its long form by a stable address a terminal shows in full,
-``https://github.com/hgilde/polars-online/blob/main/docs/<page>.md#<anchor>``
+``https://github.com/rheon-dev/rheon/blob/main/docs/<page>.md#<anchor>``
 (docs/WRITING.md §11). A released wheel keeps printing that address for as
 long as it is installed, so the heading it names must stay. This reads every
 such address in the Rust sources and the Python package, and holds each to a
@@ -30,7 +30,7 @@ _spec.loader.exec_module(doc_structure)
 #: A link into the repository's main branch, as code writes one: a Rust
 #: string may continue it on the next line after a backslash.
 LINK = re.compile(
-    r"https://github\.com/hgilde/polars-online/blob/main/((?:[\w./-]|\\\s*)+?\.md)"
+    r"https://github\.com/rheon-dev/rheon/blob/main/((?:[\w./-]|\\\s*)+?\.md)"
     r"(?:#((?:[\w-]|\\\s*)+))?"
 )
 

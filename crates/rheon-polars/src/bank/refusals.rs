@@ -114,7 +114,7 @@ pub(super) fn over_budget_message(
 /// Where a step-back error sends its reader: the how-to that says how to
 /// put rows in clock order, at the section on a refused chunk. A message
 /// link is never changed once shipped, so that heading stays.
-pub(crate) const CLOCK_ORDER_HOW_TO: &str = "https://github.com/hgilde/polars-online/blob/main/\
+pub(crate) const CLOCK_ORDER_HOW_TO: &str = "https://github.com/rheon-dev/rheon/blob/main/\
     docs/how-to/put-rows-in-clock-order.md#fix-a-chunk-the-bank-refused";
 
 /// The error for a refused backwards clock, in the parts every message

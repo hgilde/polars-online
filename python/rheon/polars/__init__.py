@@ -9,9 +9,9 @@ One Rust core, run three ways, with the same numbers from each:
    grows with the models' state and never with the number of rows that
    have passed. Handed a query, it reads the query a chunk at a time
    (:meth:`ModelBank.fit_predict_batches`, :meth:`ModelBank.fit`);
-3. the ``polars-online`` command line: Parquet, Arrow IPC, CSV or NDJSON
+3. the ``rheon`` command line: Parquet, Arrow IPC, CSV or NDJSON
    in and out, with the state saved and resumed between runs (`docs/RUNNER.md
-   <https://github.com/hgilde/polars-online/blob/main/docs/RUNNER.md>`_).
+   <https://github.com/rheon-dev/rheon/blob/main/docs/RUNNER.md>`_).
 
 A spec names a model and the columns it reads (:mod:`rheon.spec`).
 Every way in takes a list of specs and writes one output column per spec. A
@@ -95,10 +95,10 @@ as it was, apart from the two cases :meth:`ModelBank.fit_predict` names.
 .. rubric:: See also
 
 - The `feature index
-  <https://github.com/hgilde/polars-online/blob/main/docs/FEATURES.md>`_,
+  <https://github.com/rheon-dev/rheon/blob/main/docs/FEATURES.md>`_,
   every feature of the library with a line each.
 - The `highlights page
-  <https://github.com/hgilde/polars-online/blob/main/docs/HIGHLIGHTS.md>`_,
+  <https://github.com/rheon-dev/rheon/blob/main/docs/HIGHLIGHTS.md>`_,
   four use cases run end to end.
 """
 

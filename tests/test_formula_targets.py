@@ -1026,8 +1026,7 @@ def test_a_bank_state_from_before_the_windows_state_changed_is_refused_by_number
         old = state[:i] + bytes([before]) + state[i + 1 :]
         with pytest.raises(
             ValueError,
-            match="^state file: it was written by a version of polars-online older than this one "
-            "reads",
+            match="^state file: it was written by a version of rheon older than this one reads",
         ):
             rp.ModelBank.load_bytes(old)
     rp.ModelBank.load_bytes(state[:i] + bytes([61]) + state[i + 1 :])

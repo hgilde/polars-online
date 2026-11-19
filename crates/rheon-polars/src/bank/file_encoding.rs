@@ -44,8 +44,8 @@ pub(super) fn json_is_faithful(file: &BankFile, text: &str) -> Result<(), String
             // A field that writes NaN or ±inf as null, which needs
             // `#[serde(with = "crate::humanfloat::f64_or_tag")]` in rheon-core.
             "ModelBank.write_json: the export dropped a value the state holds ({e}), which is a \
-             defect in polars-online. Open an issue at \
-             https://github.com/hgilde/polars-online/issues with this message and the lines it \
+             defect in rheon. Open an issue at \
+             https://github.com/rheon-dev/rheon/issues with this message and the lines it \
              shows{}",
             near(text, e.line())
         )
@@ -54,8 +54,8 @@ pub(super) fn json_is_faithful(file: &BankFile, text: &str) -> Result<(), String
     if got != want {
         return Err(
             "ModelBank.write_json: the export did not read back as the state it came from, \
-             which is a defect in polars-online. Open an issue at \
-             https://github.com/hgilde/polars-online/issues with this message."
+             which is a defect in rheon. Open an issue at \
+             https://github.com/rheon-dev/rheon/issues with this message."
                 .to_string(),
         );
     }

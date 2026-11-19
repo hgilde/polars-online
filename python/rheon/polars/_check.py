@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 #: The page that explains each finding, with a recipe for it: a message ends
 #: with this address and ``#<code>``, the anchor of that code's section
 #: (docs/PLAN.md task 224).
-DATA_QUALITY = "https://github.com/hgilde/polars-online/blob/main/docs/DATA-QUALITY.md"
+DATA_QUALITY = "https://github.com/rheon-dev/rheon/blob/main/docs/DATA-QUALITY.md"
 
 #: Every code a finding can carry. ``tests/test_data_quality.py`` holds it to
 #: the docstring's tables and to the anchors of ``docs/DATA-QUALITY.md``.
@@ -514,7 +514,7 @@ def _spec_findings(
                 None,
                 None,
                 "numpy is not installed, so collinearity and leakage were not "
-                "checked: pip install polars-online[numpy]",
+                "checked: pip install rheon[numpy]",
             )
         elif np is not None:
             _gram_findings(bank, i, spec, keys, flagged, np, add)

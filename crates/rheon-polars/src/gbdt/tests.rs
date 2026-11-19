@@ -520,7 +520,7 @@ fn a_source_that_panics_is_an_error_naming_the_panic() {
             e,
             format!(
                 "rheon.polars._gbdt: reading the source panicked ({what}), which is a defect in \
-                 polars-online. Open an issue at https://github.com/hgilde/polars-online/issues \
+                 rheon. Open an issue at https://github.com/rheon-dev/rheon/issues \
                  with this message."
             )
         );
@@ -535,15 +535,15 @@ fn a_frame_of_the_wrong_width_is_refused_naming_the_columns_expected() {
     assert_eq!(
         e,
         "rheon.polars._gbdt: a frame of 2 columns arrived where 3 were expected (the features, the label), \
-         which is a defect in polars-online. Open an issue at \
-         https://github.com/hgilde/polars-online/issues with this message."
+         which is a defect in rheon. Open an issue at \
+         https://github.com/rheon-dev/rheon/issues with this message."
     );
     let e = segments(&df, &layout(2, true)).err().unwrap().to_string();
     assert_eq!(
         e,
         "rheon.polars._gbdt: a frame of 2 columns arrived where 4 were expected (the features, the label, the \
-         weight), which is a defect in polars-online. Open an issue at \
-         https://github.com/hgilde/polars-online/issues with this message."
+         weight), which is a defect in rheon. Open an issue at \
+         https://github.com/rheon-dev/rheon/issues with this message."
     );
 }
 

@@ -192,7 +192,7 @@ def _download(
 
 
 #: PyPI's JSON description of this package: every version and its files.
-PYPI_JSON = "https://pypi.org/pypi/polars-online/json"
+PYPI_JSON = "https://pypi.org/pypi/rheon/json"
 
 
 def pypi_releases(text: str | None = None) -> list[str]:
@@ -420,7 +420,7 @@ def nist_strd_linear(name: str) -> dict[str, object]:
     out_dir.mkdir(parents=True, exist_ok=True)
     cached = out_dir / f"{name}.dat"
     if not cached.exists():
-        body = _download(_STRD_URL.format(name=name), headers={"User-Agent": "polars-online-tests"})
+        body = _download(_STRD_URL.format(name=name), headers={"User-Agent": "rheon-tests"})
         write_atomically(cached, lambda tmp: tmp.write_bytes(body))
     text = cached.read_text(encoding="utf-8")
     lines = text.splitlines()

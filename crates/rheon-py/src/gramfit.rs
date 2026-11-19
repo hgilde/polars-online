@@ -162,8 +162,8 @@ fn floats(py: Python<'_>, obj: &Bound<'_, PyAny>, what: &str) -> PyResult<Vec<f6
 /// native module. Said as such, with where to report it.
 pub(crate) fn internal(what: String) -> PyErr {
     PyValueError::new_err(format!(
-        "rheon.gram: internal: {what}, which is a defect in polars-online. Open an issue at \
-         https://github.com/hgilde/polars-online/issues with this message."
+        "rheon.gram: internal: {what}, which is a defect in rheon. Open an issue at \
+         https://github.com/rheon-dev/rheon/issues with this message."
     ))
 }
 

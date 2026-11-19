@@ -547,7 +547,7 @@ def test_without_numpy_the_gram_checks_say_they_did_not_run(monkeypatch):
     assert "collinear" not in set(f["code"])
     row = f.filter(code="not_checked").row(0, named=True)
     assert row["severity"] == "info"
-    assert "polars-online[numpy]" in row["message"]
+    assert "rheon[numpy]" in row["message"]
     # A bank that has seen no rows says nothing: there is no group whose
     # Gram the checks would have read, so nothing was left unchecked.
     unfed = rp.ModelBank(specs[:1]).check()

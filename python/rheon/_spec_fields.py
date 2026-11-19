@@ -76,7 +76,7 @@ def output_fields(spec: dict[str, Any]) -> list[str]:
 
     - :func:`output_index`, each field with the values its name encodes.
     - `OUTPUTS.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md>`_,
       every model's fields.
     """
     return spec_output_fields(_json(spec))
@@ -165,7 +165,7 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -191,7 +191,7 @@ def output_index(spec: dict[str, Any]) -> pl.DataFrame:
     - :func:`output_fields`, the names alone.
     - :func:`coef_fields`, each coefficient's place in ``coef``.
     - `OUTPUTS.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md>`_,
       every model's fields.
 
     .. rubric:: Notes
@@ -271,7 +271,7 @@ def coef_fields(spec: dict[str, Any]) -> pl.DataFrame:
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -388,7 +388,7 @@ def coef_index(spec: dict[str, Any]) -> pl.DataFrame:
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 

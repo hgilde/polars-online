@@ -50,7 +50,7 @@ FRANTI = "https://cs.uef.fi/sipu/datasets/{name}"
 TCPD = "https://raw.githubusercontent.com/alan-turing-institute/TCPD/master/{path}"
 LIBSVM = "https://www.csie.ntu.edu.tw/~cjlin/libsvmtools/datasets/{path}"
 #: NIST's server answers urllib's default agent with a 403.
-USER_AGENT = "polars-online-tests (https://github.com/hgilde/polars-online)"
+USER_AGENT = "rheon-tests (https://github.com/rheon-dev/rheon)"
 
 
 def _lenient_tls() -> ssl.SSLContext:

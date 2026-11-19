@@ -5048,14 +5048,14 @@ impl Bank {
         // The decoder's own text names the file's fields and MessagePack
         // markers, words of the code: the header's failure is said whole.
         let header: BankHeader = rmp_serde::from_slice(bytes).map_err(|_| {
-            "state file: these bytes are not a polars-online bank state file, or the file is \
+            "state file: these bytes are not a rheon bank state file, or the file is \
              cut short. Load a whole file that ModelBank.save or the command line's save_state \
              wrote."
                 .to_string()
         })?;
         if header.magic != BANK_MAGIC {
             return Err(
-                "state file: these bytes are not a polars-online bank state file. Load a \
+                "state file: these bytes are not a rheon bank state file. Load a \
                         file that ModelBank.save or the command line's save_state wrote."
                     .into(),
             );
@@ -5063,7 +5063,7 @@ impl Bank {
         if header.format_version > BANK_FORMAT_VERSION {
             return Err(format!(
                 "state file: its format version is {}, newer than the {} this build of \
-                 polars-online reads. Upgrade polars-online to load it.",
+                 rheon reads. Upgrade rheon to load it.",
                 header.format_version, BANK_FORMAT_VERSION
             ));
         }
@@ -5071,14 +5071,14 @@ impl Bank {
         let (found, reads) = (header.schema_version, rheon_core::SCHEMA_VERSION);
         if found > reads {
             return Err(
-                "state file: it was written by a newer version of polars-online than \
-                 this one reads. Upgrade polars-online to load it."
+                "state file: it was written by a newer version of rheon than \
+                 this one reads. Upgrade rheon to load it."
                     .into(),
             );
         }
         if found < MIN_BANK_SCHEMA_VERSION {
             return Err(
-                "state file: it was written by a version of polars-online older than \
+                "state file: it was written by a version of rheon older than \
                  this one reads, and keeps settings and diagnostics this version no longer has. \
                  Build the bank again from its specs and fit it on its input."
                     .into(),

@@ -87,7 +87,7 @@ def audit(
     One output column, named after the spec, whose value in each row is a
     record holding ``weight_sum`` alone, the count of rows before this one.
     `docs/OUTPUTS.md#audit
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#audit>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#audit>`_
     gives its type. An audit predicts nothing, so what it counted is read
     back with :meth:`rheon.polars.ModelBank.audit`, one row per column (and
     with ``table="pairs"`` and ``table="clock"``), and judged by

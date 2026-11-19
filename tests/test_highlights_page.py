@@ -53,11 +53,11 @@ def test_every_block_runs_in_order_and_prints_what_the_page_shows(tmp_path, monk
 
 
 def test_the_page_shows_the_python_api_alone():
-    """No shell block, and no run of the ``polars-online`` program."""
+    """No shell block, and no run of the ``rheon`` program."""
     blocks = fenced_blocks(PAGE)
     assert {kind for kind, _, _ in blocks} <= {"python", "text"}, {k for k, _, _ in blocks}
     text = PAGE.read_text(encoding="utf-8")
-    for word in ("polars-online --", "command line", "command-line", "TOML"):
+    for word in ("rheon --", "command line", "command-line", "TOML"):
         assert word not in text, word
 
 

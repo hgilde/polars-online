@@ -385,7 +385,7 @@ def _online() -> bool:
     is PyPI saying the package is gone, so only what a retry could fix reads
     as offline (`data.is_transient`, review 2026-10-05, TA3)."""
     try:
-        urllib.request.urlopen("https://pypi.org/simple/polars-online/", timeout=15).close()
+        urllib.request.urlopen("https://pypi.org/simple/rheon/", timeout=15).close()
     except (urllib.error.URLError, TimeoutError, OSError) as e:
         if not is_transient(e):
             raise
@@ -473,7 +473,7 @@ def test_a_pre_1_0_state_is_refused_by_its_version(refused):
         with pytest.raises(ValueError) as e:
             rp.ModelBank.load(states / f"{name}.state", specs=specs)
         message = str(e.value)
-        assert "written by a version of polars-online older than this one reads" in message, message
+        assert "written by a version of rheon older than this one reads" in message, message
         assert "fit it on its input" in message, message
 
 

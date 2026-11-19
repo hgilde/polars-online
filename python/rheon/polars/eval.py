@@ -49,7 +49,7 @@ pair with. So scoring the file a bank's output was written to,
 ``pl.scan_parquet("out.parquet")``, holds one chunk and the sums, not the
 file, and Polars what it reads of the file ahead of them, which
 `Cut what Polars reads ahead
-<https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+<https://github.com/rheon-dev/rheon/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
 bounds. A call whose result has a row for each row of the output returns a
 query of that result, as Polars' own calls on a query return a query:
 :func:`unpack`, :func:`seqtest`, and :func:`diebold_mariano` and
@@ -100,7 +100,7 @@ refuses ``window_size`` the same way, naming ``every``. ``spec_name``
 (``spec_names`` in :func:`compare_specs`) is refused the same way, naming
 ``spec`` (``specs``), as is a spec's name given beside the spec dict.
 
-`docs/DIAGNOSTICS.md <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_
+`docs/DIAGNOSTICS.md <https://github.com/rheon-dev/rheon/blob/main/docs/DIAGNOSTICS.md>`_
 says which question each call and each diagnostic answers, with its
 threshold, its false-alarm rate as measured, and a recipe that runs.
 """
@@ -379,7 +379,7 @@ def unpack(
     under :func:`metrics`' bounded settings, and 656, 1,137
     and 1,469 MiB under Polars' defaults, which read the scan ahead of the
     writing: `Cut what Polars reads ahead
-    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
     bounds that. Those figures hold while the disk keeps up: Polars'
     writer queues what a slower disk has not taken yet, and the queue
     grows with the length of the output. Reading the long form in
@@ -408,7 +408,7 @@ def unpack(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -855,7 +855,7 @@ def metrics(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -878,7 +878,7 @@ def metrics(
     - :func:`compare_specs`, the same scores for several specs in one table.
     - :func:`sums` and :func:`from_sums`, the same scores one chunk at a time.
     - `Is the model working?
-      <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/DIAGNOSTICS.md>`_,
       the diagnostics a spec writes beside its predictions.
 
     .. rubric:: Notes
@@ -893,7 +893,7 @@ def metrics(
     it, its row groups, ahead of a slower consumer, as many as Polars'
     thread count sizes, and under Polars' defaults that read-ahead is most
     of what the process holds: `Cut what Polars reads ahead
-    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
     bounds it. Measured on macOS (an M4 Pro, py-polars 2.0.0) as the most
     memory the process held, 47 MiB of it Python and Polars before the
     call, scoring a scan of a 20-slot output written in row groups of
@@ -1123,7 +1123,7 @@ def window_metrics(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1183,7 +1183,7 @@ def window_metrics(
     it has seen,** ten numbers per slot, key and window, read as
     :func:`metrics` reads a query, and Polars holds what it has read ahead
     of them, which `Cut what Polars reads ahead
-    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
     bounds. Scoring a scan of a two-spec output by the day and by a key of
     four values held 102 MiB at a million rows, 108 MiB at four million and
     110 MiB at sixteen million under :func:`metrics`' bounded
@@ -1481,7 +1481,7 @@ def compare_specs(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1505,7 +1505,7 @@ def compare_specs(
     - :func:`seqtest`, evidence that one spec predicts closer on more rows,
       to read at every row.
     - `Compare two models
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/compare-two-models.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/compare-two-models.md>`_,
       with a recipe that compares two models on 200 streams.
 
     .. rubric:: Notes
@@ -1516,7 +1516,7 @@ def compare_specs(
     the rows where both specs have a residual. Given a query, every spec's
     sums are read in the one run of it, beside what Polars reads ahead of
     the call, which `Cut what Polars reads ahead
-    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
     bounds: scoring two specs of a scan by a key of four values held 91
     MiB at a million rows, 106 MiB at four million and 108 MiB at sixteen
     million under :func:`metrics`' bounded settings, and 242,
@@ -1555,7 +1555,7 @@ def compare_specs(
     every row instead, exponentially weighted.
 
     :func:`seqtest`, and the `seqtest
-    <https://github.com/hgilde/polars-online/blob/main/docs/MODELS.md#seqtest--a-sequential-test-of-a-sign-by-betting>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/MODELS.md#seqtest--a-sequential-test-of-a-sign-by-betting>`_
     model a bank runs, give evidence
     that one spec predicts closer on more rows, by betting on the sign of
     ``|resid_b| − |resid_a|``. That is not the question the two tests
@@ -2087,7 +2087,7 @@ def grid_search(
     .. rubric:: Examples
 
     This code reads ``ticks.parquet`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -2114,7 +2114,7 @@ def grid_search(
 
     - :func:`compare_specs`, the scores of specs already run, side by side.
     - `Choose a model's settings from the stream's own errors
-      <https://github.com/hgilde/polars-online/blob/main/docs/CALIBRATION.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/CALIBRATION.md>`_,
       the pattern this follows, for every setting.
 
     .. rubric:: Notes
@@ -2560,7 +2560,7 @@ def seqtest(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -2624,7 +2624,7 @@ def seqtest(
     file reads its row groups ahead of a slower consumer, as many as
     Polars' thread count sizes, and under Polars' defaults that read-ahead
     is most of what the process holds: `Cut what Polars reads ahead
-    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
     bounds it. Written to a file with ``sink_parquet``, the test of two
     specs of a scan by a key of four values, the file in row groups of
     100,000 rows, held at most 149 MiB at a million rows, 159 MiB at four
@@ -3028,7 +3028,7 @@ def sums(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -3071,7 +3071,7 @@ def sums(
     rows, each reduced as a frame is and added as :func:`merge_sums` adds
     them, so they hold what :func:`metrics`' Notes measure, and Polars what
     it reads ahead of them, which `Cut what Polars reads ahead
-    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
     bounds: 204, 208 and 212 MiB at one, four and sixteen million rows under
     its bounded settings, 493, 990 and 1,072 MiB under Polars'
     defaults. While the query gives one chunk, they are the frame's to the
@@ -3382,7 +3382,7 @@ def merge_sums(first: pl.DataFrame, *rest: pl.DataFrame) -> pl.DataFrame:
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -3591,7 +3591,7 @@ def from_sums(s: pl.DataFrame, *, min_samples: int = 30, binary: bool = False) -
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -4523,7 +4523,7 @@ def diebold_mariano(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -4573,7 +4573,7 @@ def diebold_mariano(
     A scan of a parquet file reads its row groups ahead of a slower
     consumer, as many as Polars' thread count sizes, and under Polars'
     defaults that read-ahead is most of what the process holds: `Cut what Polars reads ahead
-    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
     bounds it. Measured on macOS (an M4 Pro, py-polars 2.0.0) as the most
     memory the process held, about 48 MiB of it Python and Polars before
     the call, testing two specs of a scan, a file in row groups of 100,000
@@ -4798,7 +4798,7 @@ def clark_west(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -4837,7 +4837,7 @@ def clark_west(
     does for one, of ``f`` in place of ``d``, with the same agreement with
     the frame, beside what Polars reads of the query ahead of it, which
     `Cut what Polars reads ahead
-    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
+    <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`__
     bounds. Scoring a scan of two specs, a file in row groups of 100,000
     rows, by a key of four values with ``lags=5`` held at most 97 MiB at a
     million rows, 100 MiB at four million and 100 MiB at sixteen million

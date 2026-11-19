@@ -417,8 +417,8 @@ impl RefreshTime {
         if file.version != REFRESH_VERSION && file.version != REFRESH_VERSION_HELD {
             return Err(format!(
                 "rp.stream.refresh_time: the state's version is {}, but this version of \
-                 polars-online reads versions {REFRESH_VERSION} and {REFRESH_VERSION_HELD}. Load \
-                 the state with the version of polars-online that saved it, or leave out \
+                 rheon reads versions {REFRESH_VERSION} and {REFRESH_VERSION_HELD}. Load \
+                 the state with the version of rheon that saved it, or leave out \
                  load_state to start over.",
                 file.version
             ));
@@ -1990,8 +1990,8 @@ mod tests {
             load(&file(REFRESH_MAGIC, REFRESH_VERSION_HELD + 1)).err(),
             Some(format!(
                 "rp.stream.refresh_time: the state's version is {}, but this version of \
-                 polars-online reads versions {REFRESH_VERSION} and {REFRESH_VERSION_HELD}. Load \
-                 the state with the version of polars-online that saved it, or leave out \
+                 rheon reads versions {REFRESH_VERSION} and {REFRESH_VERSION_HELD}. Load \
+                 the state with the version of rheon that saved it, or leave out \
                  load_state to start over.",
                 REFRESH_VERSION_HELD + 1
             ))

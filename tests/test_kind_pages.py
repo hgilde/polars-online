@@ -9,7 +9,7 @@ block reads what an earlier block of the page built. A block followed by a
 ```text block is held to it with ``tests/doc_recipes.py``'s
 ``differences``, a line that starts with ``time`` held to its words alone
 (``untimed``). Each ```sh block followed by a ```text block runs through the
-built ``polars-online`` in a directory of its own, as the runner guide's do.
+built ``rheon`` in a directory of its own, as the runner guide's do.
 
 A page is found by its directory, so a page a later stage adds is held from
 the change that adds it.

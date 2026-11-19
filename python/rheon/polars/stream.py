@@ -257,7 +257,7 @@ def embargo(
     A bank fed the doubled stream learns each row's target 5 rows late, and the
     predict rows carry its predictions. This code reads ``lf`` from
     `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -279,7 +279,7 @@ def embargo(
       which delay the learning inside the bank.
     -
       `Learn targets known late
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/learn-targets-known-late.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/learn-targets-known-late.md>`_,
       the how-to: each of the three ways, with a check that it worked.
 
     .. rubric:: Notes
@@ -596,7 +596,7 @@ def refresh_time(
         column of nulls are numbers), is an ``Int128``, wider than the
         ``Int64`` an integer clock is held in, or is a ``Time``, which starts
         again at midnight; the ``value`` column is not numeric; or a column,
-        read or not, is ``UInt128``, which polars-online cannot read (the
+        read or not, is ``UInt128``, which rheon cannot read (the
         message names a cast to make). It is both a ``TypeError`` and a
         ``ValueError``.
     ``ValueError``
@@ -653,7 +653,7 @@ def refresh_time(
       the Epps effect instead.
     -
       `Align series that tick at their own times
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/align-series-that-tick-at-their-own-times.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/align-series-that-tick-at-their-own-times.md>`_,
       the how-to.
 
     .. rubric:: Notes
@@ -1040,7 +1040,7 @@ def with_windows(
     :class:`~rheon.WrongTypeError`
         When the query is built, a window operator's input is not a number,
         or an increment's is neither a number nor temporal; or a column, read
-        or not, is ``UInt128``, which polars-online cannot read (the message
+        or not, is ``UInt128``, which rheon cannot read (the message
         names a cast to make). It is both a ``TypeError`` and a
         ``ValueError``.
     ``ValueError``
@@ -1102,7 +1102,7 @@ def with_windows(
     ``side``, a ``quantity`` and a ``price``, a trailing mean of the mid and
     forward VWAPs of all trades and of the buys. This code reads ``trades``
     from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1132,11 +1132,11 @@ def with_windows(
       on a frame's ``rheon`` namespace.
     -
       `Make features that look back over the stream
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/make-window-features.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/make-window-features.md>`_,
       `Make a target that looks ahead
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/make-a-target-that-looks-ahead.md>`_
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/make-a-target-that-looks-ahead.md>`_
       and `Resume a window run
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/resume-a-window-run.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/resume-a-window-run.md>`_,
       the guides.
 
     .. rubric:: Notes

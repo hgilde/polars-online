@@ -357,15 +357,15 @@ fn a_schema_refusal_says_which_side_of_the_range_the_file_is_on() {
         .expect("a newer file loaded");
     assert_eq!(
         newer,
-        "state file: it was written by a newer version of polars-online than this one reads. \
-         Upgrade polars-online to load it."
+        "state file: it was written by a newer version of rheon than this one reads. \
+         Upgrade rheon to load it."
     );
     let older = Bank::load_bytes(&at(super::MIN_BANK_SCHEMA_VERSION - 1), Some(&specs))
         .err()
         .expect("an older file loaded");
     assert_eq!(
         older,
-        "state file: it was written by a version of polars-online older than this one reads, \
+        "state file: it was written by a version of rheon older than this one reads, \
          and keeps settings and diagnostics this version no longer has. Build the bank again \
          from its specs and fit it on its input."
     );
@@ -776,7 +776,7 @@ fn a_file_of_a_newer_format_is_refused_by_number() {
         err,
         format!(
             "state file: its format version is {newer}, newer than the {} this build of \
-             polars-online reads. Upgrade polars-online to load it.",
+             rheon reads. Upgrade rheon to load it.",
             super::BANK_FORMAT_VERSION
         )
     );
@@ -837,7 +837,7 @@ fn a_json_export_that_is_not_the_state_is_refused_with_its_place() {
         err.starts_with("ModelBank.write_json: the export dropped a value the state holds")
             && err.contains(", at:\n")
             && err.contains("\n  >   \"package_version\": null,")
-            && err.contains("which is a defect in polars-online"),
+            && err.contains("which is a defect in rheon"),
         "{err}"
     );
     assert_eq!(super::near(&broken, 0), "", "no line, no context");
@@ -913,7 +913,7 @@ fn the_decoders_own_failures_are_said_in_plain_words() {
         .to_string();
     assert_eq!(
         cut,
-        "state file: these bytes are not a polars-online bank state file, or the file is cut \
+        "state file: these bytes are not a rheon bank state file, or the file is cut \
          short. Load a whole file that ModelBank.save or the command line's save_state wrote."
     );
 }

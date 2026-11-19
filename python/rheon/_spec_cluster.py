@@ -130,7 +130,7 @@ def kmeans(
 
     One output column, named after the spec, whose value in each row is a
     record of these fields. `docs/OUTPUTS.md#kmeans
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#kmeans>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#kmeans>`_
     gives each field's type and when it is null:
 
     ``cluster``
@@ -413,7 +413,7 @@ def micro(
     One output column, named after the spec, whose value in each row is a
     record of these fields, all read before the row is learned.
     `docs/OUTPUTS.md#micro
-    <https://github.com/hgilde/polars-online/blob/main/docs/OUTPUTS.md#micro>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/OUTPUTS.md#micro>`_
     gives each field's type and when it is null:
 
     ``cluster``

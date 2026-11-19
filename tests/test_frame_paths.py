@@ -134,5 +134,5 @@ def test_a_polars_without_explain_name_gets_no_explain_keywords(monkeypatch):
     assert _frame._explain_named("anything") == {}
     monkeypatch.undo()
     if "explain_name" in inspect.signature(_frame.register_io_source).parameters:
-        want = {"explain_name": "polars-online", "explain_detail": "x"}
+        want = {"explain_name": "rheon", "explain_detail": "x"}
         assert _frame._explain_named("x") == want

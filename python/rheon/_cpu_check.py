@@ -1,18 +1,18 @@
 """Warn, before the compiled module loads, that the CPU lacks a feature the wheel needs.
 
-The x86-64 wheels of ``polars-online`` are compiled for CPUs with AVX2, FMA
+The x86-64 wheels of ``rheon`` are compiled for CPUs with AVX2, FMA
 and the rest of the feature set in ``BUILD_FEATURE_FLAGS``; the compiler may
 use any of them anywhere. On a CPU without one the first such instruction
 kills the process with an illegal-instruction signal, and no Python frame
 says why. This module reads the CPU's features with the ``cpuid``
 instruction and, when one is missing, issues a ``RuntimeWarning`` that names
-it and the package to install instead (``polars-online-compat``, the same
+it and the package to install instead (``rheon-compat``, the same
 code built for every x86-64 CPU). It runs in pure Python, first in the
 package's ``__init__``: a check inside the extension would run after the
 compiler had already emitted instructions it cannot execute.
 
 The check does nothing, and loads nothing, where there is nothing to check:
-on ARM, in ``polars-online-compat``, in a build from source with no
+on ARM, in ``rheon-compat``, in a build from source with no
 ``target-feature`` flag (all of which record an empty ``BUILD_FEATURE_FLAGS``),
 and when ``RHEON_SKIP_CPU_CHECK`` is set. A CPU it cannot read
 (an operating system that refuses executable memory, say) is not a reason to
@@ -43,7 +43,7 @@ from rheon import _env
 SKIP_ENV = "RHEON_SKIP_CPU_CHECK"
 
 #: The other package, built for every x86-64 CPU.
-COMPAT_PACKAGE = "polars-online-compat"
+COMPAT_PACKAGE = "rheon-compat"
 
 #: Each feature the check can read: the ``cpuid`` leaf, the register and the
 #: bit, from the Intel SDM (vol. 2A, ``CPUID``) and AMD's APM (vol. 3).
@@ -237,14 +237,14 @@ def message(missing: list[str]) -> str:
     return (
         "Missing required CPU features.\n"
         "\n"
-        "The following CPU features, which this build of polars-online needs, were not "
+        "The following CPU features, which this build of rheon needs, were not "
         "detected:\n"
         f"    {', '.join(missing)}\n"
         "Continuing to use this build on this processor will likely crash it with an "
         "illegal instruction.\n"
-        f"Install `{COMPAT_PACKAGE}` instead of `polars-online`: it is the same code, built "
+        f"Install `{COMPAT_PACKAGE}` instead of `rheon`: it is the same code, built "
         "for every x86-64 CPU, and it is imported as `rheon` too. Install one or the "
-        "other: run `pip uninstall polars-online` first.\n"
+        "other: run `pip uninstall rheon` first.\n"
         "\n"
         "Hint: If you are on an Apple silicon Mac (M1 or later), this is likely due to "
         "running Python under Rosetta. Install a native Python that does not run under "

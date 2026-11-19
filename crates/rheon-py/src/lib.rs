@@ -410,7 +410,7 @@ fn busy(what: &str) -> PyErr {
 /// .. rubric:: Examples
 ///
 /// This code reads ``df`` from `Example data
-/// <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+/// <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 ///
 /// .. code-block:: python
 ///

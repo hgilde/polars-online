@@ -10,7 +10,7 @@ early stopping and callbacks. Each function requires its library
 (``pip install xgboost`` or ``lightgbm``), which is not a dependency of this
 package, and numpy, which both libraries require. This code reads the training
 rows by a glob from the two parquet files that `Example data
-<https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_ writes:
+<https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_ writes:
 
 .. code-block:: python
 
@@ -467,7 +467,7 @@ class _Columns:
                 )
         raise AssertionError(  # pragma: no cover
             f"{who}: internal: a margin was refused with nothing wrong, which is a defect in "
-            "polars-online. Open an issue at https://github.com/hgilde/polars-online/issues "
+            "rheon. Open an issue at https://github.com/rheon-dev/rheon/issues "
             "with this message."
         )
 
@@ -821,7 +821,7 @@ def xgboost_matrix(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_, and writes it
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_, and writes it
     to Arrow IPC files, which the native engine reads itself:
 
     .. code-block:: python
@@ -847,7 +847,7 @@ def xgboost_matrix(
     - :func:`lightgbm_dataset`, LightGBM's training input from the same
       sources.
     - `Training XGBoost and LightGBM
-      <https://github.com/hgilde/polars-online/blob/main/docs/GBDT.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/GBDT.md>`_,
       the guide: training around an online model's prediction as the
       margin, and serving with it.
 
@@ -893,7 +893,7 @@ def xgboost_matrix(
     of 50 features: the time before the first round, and the peak memory.
     Reading ahead, Polars holds 7.2 GB at the peak on the query route, and
     `Bound a run's memory
-    <https://github.com/hgilde/polars-online/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/bound-memory.md#cut-what-polars-reads-ahead>`_
     cuts it.
 
     .. list-table::
@@ -1314,7 +1314,7 @@ def lightgbm_dataset(
 
     This code reads ``ticks/*.parquet`` and ``today.parquet`` from
     `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_, the training
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_, the training
     rows by a glob:
 
     .. code-block:: python
@@ -1341,7 +1341,7 @@ def lightgbm_dataset(
     - :func:`xgboost_matrix`, XGBoost's training input from the same
       sources.
     - `Training XGBoost and LightGBM
-      <https://github.com/hgilde/polars-online/blob/main/docs/GBDT.md>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/GBDT.md>`_,
       the guide: training around an online model's prediction as the
       margin, and serving with it.
 

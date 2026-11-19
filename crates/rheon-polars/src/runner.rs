@@ -139,7 +139,7 @@ impl Format {
                     format!("its extension, {ext:?}, names none")
                 };
                 Err(format!(
-                    "{who} \"{}\": polars-online cannot tell its format, since {why}. Name the \
+                    "{who} \"{}\": rheon cannot tell its format, since {why}. Name the \
                      file with one of the extensions parquet, pq, ipc, arrow, feather, csv, \
                      ndjson or jsonl{or}.",
                     path.display()
@@ -889,7 +889,7 @@ const CHUNK_SIZE_ZERO: &str =
     "config: chunk_size must be at least 1, but it is 0. Set chunk_size to 1 or more.";
 
 /// Where an internal error sends its reader: the project's issues.
-const ISSUES: &str = "https://github.com/hgilde/polars-online/issues";
+const ISSUES: &str = "https://github.com/rheon-dev/rheon/issues";
 
 /// What the reader hands the run: frames in stream order, then how the
 /// query ended.
@@ -1037,7 +1037,7 @@ fn run_with(
                     // The reader thread is gone without a word: a panic.
                     Err(_) => polars_bail!(
                         ComputeError: "internal: the reader thread stopped without an error, \
-                         which is a defect in polars-online. Open an issue at {ISSUES} with this \
+                         which is a defect in rheon. Open an issue at {ISSUES} with this \
                          message."
                     ),
                 };
@@ -1399,7 +1399,7 @@ pub fn write_frame(path: &Path, format: Format, df: DataFrame, who: &str) -> Pol
         .and_then(|()| tx.send(Write_::End))
         .map_err(|_| {
             polars_err!(ComputeError: "internal: the writer's channel closed, which is a defect \
-             in polars-online. Open an issue at {ISSUES} with this message.")
+             in rheon. Open an issue at {ISSUES} with this message.")
         })?;
     drop(tx);
     write_file(path, format, OutputLayout::Struct, rx, who).map(|_| ())
@@ -1496,7 +1496,7 @@ fn write_frames(
     let first = match rx.recv() {
         Ok(Write_::Chunk(df)) => laid_out(df)?,
         Ok(Write_::End) => polars_bail!(
-            ComputeError: "internal: a run with no frames, which is a defect in polars-online. \
+            ComputeError: "internal: a run with no frames, which is a defect in rheon. \
              Open an issue at {ISSUES} with this message."
         ),
         Err(_) => return Ok(busy),

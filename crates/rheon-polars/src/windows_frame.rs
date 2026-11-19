@@ -1422,8 +1422,8 @@ impl WindowsRun {
         polars_ensure!(
             rows.len() == df.height() && df.get_column_names().iter().any(|c| c.as_str() == "@po:row"),
             ComputeError: "internal: feed_resolving: the chunk must carry a row number for each row and an \
-                @po:row column, which is a defect in polars-online. Open an issue at \
-                https://github.com/hgilde/polars-online/issues with this message."
+                @po:row column, which is a defect in rheon. Open an issue at \
+                https://github.com/rheon-dev/rheon/issues with this message."
         );
         self.feed_inner(df, None, Some(rows), None, false)
     }
@@ -1451,8 +1451,8 @@ impl WindowsRun {
         polars_ensure!(
             rows.len() == df.height() && df.get_column_names().iter().any(|c| c.as_str() == "@po:row"),
             ComputeError: "internal: feed_resolving: the chunk must carry a row number for each row and an \
-                @po:row column, which is a defect in polars-online. Open an issue at \
-                https://github.com/hgilde/polars-online/issues with this message."
+                @po:row column, which is a defect in rheon. Open an issue at \
+                https://github.com/rheon-dev/rheon/issues with this message."
         );
         if let Some(given) = &given {
             let inputs_fit = given.inputs.as_ref().is_none_or(|all| {
@@ -1462,8 +1462,8 @@ impl WindowsRun {
             polars_ensure!(
                 inputs_fit && incr_fits,
                 ComputeError: "internal: feed_resolving: the operator inputs handed over must be \
-                    one value a row for each input, which is a defect in polars-online. Open an \
-                    issue at https://github.com/hgilde/polars-online/issues with this message."
+                    one value a row for each input, which is a defect in rheon. Open an \
+                    issue at https://github.com/rheon-dev/rheon/issues with this message."
             );
         }
         self.feed_inner(df, None, Some(rows), given, true)
@@ -2724,9 +2724,9 @@ impl WindowsRun {
         }
         if !(MIN_WINDOWS_VERSION..=WINDOWS_VERSION).contains(&header.version) {
             return Err(format!(
-                "{WHO}: the state's version is {}, but this version of polars-online reads \
+                "{WHO}: the state's version is {}, but this version of rheon reads \
                  versions {MIN_WINDOWS_VERSION} to {WINDOWS_VERSION}. Load the state with the \
-                 version of polars-online that saved it, or leave out load_state to start \
+                 version of rheon that saved it, or leave out load_state to start \
                  over.",
                 header.version
             )
@@ -2735,7 +2735,7 @@ impl WindowsRun {
         let file: FileIn = rmp_serde::from_slice(bytes).map_err(|e| {
             format!(
                 "{WHO}: the state cannot be read ({e}), so it is damaged or was saved by \
-                 another version of polars-online. Load it with the version that saved it, or \
+                 another version of rheon. Load it with the version that saved it, or \
                  leave out load_state to start over."
             )
         })?;
@@ -3972,7 +3972,7 @@ mod tests {
             .expect("refused");
         assert!(
             err.contains(
-                "the state's version is 2, but this version of polars-online reads versions 9 \
+                "the state's version is 2, but this version of rheon reads versions 9 \
                  to 10"
             ),
             "{err}"

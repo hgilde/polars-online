@@ -40,8 +40,8 @@ fn to_py(e: GbdtError) -> PyErr {
 /// it: a defect if met, or a direct call of the private native module.
 fn internal(what: String) -> PyErr {
     PyValueError::new_err(format!(
-        "rheon.polars._gbdt: internal: {what}, which is a defect in polars-online. Open an issue at \
-         https://github.com/hgilde/polars-online/issues with this message."
+        "rheon.polars._gbdt: internal: {what}, which is a defect in rheon. Open an issue at \
+         https://github.com/rheon-dev/rheon/issues with this message."
     ))
 }
 

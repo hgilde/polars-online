@@ -544,7 +544,7 @@ WIDE_UNSIGNED = (
 
 #: What any other ``UInt128`` column gets: the column named, and a cast.
 UNSIGNED_128 = (
-    r"column 'c' is UInt128, which polars-online cannot read\. Cast it to Int64 if its "
+    r"column 'c' is UInt128, which rheon cannot read\. Cast it to Int64 if its "
     r"values fit, or to Float64, or leave it out of the frame\."
 )
 

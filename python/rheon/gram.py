@@ -56,11 +56,11 @@ The paths and :func:`solve_subsets` run in Rust. :func:`lars_paths` and
 ``threads`` gives.
 
 The module needs numpy, an optional extra of this package (``pip install
-polars-online[numpy]``) and not a dependency, since it is not one of
+rheon[numpy]``) and not a dependency, since it is not one of
 Polars' either. Without it, every function raises ``ModuleNotFoundError``.
 Nothing here needs scipy or scikit-learn.
 
-`docs/GRAM.md <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__ is the guide:
+`docs/GRAM.md <https://github.com/rheon-dev/rheon/blob/main/docs/GRAM.md>`__ is the guide:
 the theory behind each function, and a table from each task on weekly blocks from one pass to
 the how-to whose recipe runs it.
 """
@@ -119,7 +119,7 @@ class Gram(TypedDict):
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -175,7 +175,7 @@ def _np() -> Any:
     except ModuleNotFoundError as e:  # pragma: no cover - exercised by a stub
         msg = (
             "rheon.gram: it works in numpy arrays, but numpy is not installed. "
-            "Install it with `pip install numpy` or `pip install polars-online[numpy]`."
+            "Install it with `pip install numpy` or `pip install rheon[numpy]`."
         )
         raise ModuleNotFoundError(msg) from e
     return np
@@ -462,7 +462,7 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -486,9 +486,9 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
       each.
     - :func:`subset`, which keeps some of a Gram's columns.
     - *Pooling blocks* in `docs/GRAM.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/GRAM.md>`__,
       the theory, and `Pool Grams
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/pool-grams.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/pool-grams.md>`__,
       a recipe for pooling, for aging a block first, and for pooling within
       blocks.
 
@@ -570,7 +570,7 @@ def merge(grams: Sequence[Gram], *, within: bool = False) -> Gram:
     scaled, so the sums of squared weights the merge recovers from them
     decay with the weights. For example, this code reads ``df`` from
     `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -951,7 +951,7 @@ def from_row(row: Any) -> Gram:
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -976,7 +976,7 @@ def from_row(row: Any) -> Gram:
 
     - :meth:`~rheon.polars.ModelBank.closed_groups`, which writes the rows.
     - `Read Grams from saved files
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/read-grams-from-saved-files.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/read-grams-from-saved-files.md>`__,
       a recipe that runs, with numpy alone too.
 
     .. rubric:: Notes
@@ -1111,7 +1111,7 @@ def subset(g: Gram, columns: Sequence[str | int]) -> Gram:
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1132,7 +1132,7 @@ def subset(g: Gram, columns: Sequence[str | int]) -> Gram:
 
     - :func:`solve`, whose ``features`` narrows one fit without a new Gram.
     - *Every least-squares fit is a function of the Gram* in `docs/GRAM.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/GRAM.md>`__,
       the theory and a recipe that runs.
 
     .. rubric:: Notes
@@ -1197,7 +1197,7 @@ def correlation(g: Gram) -> Any:
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1221,9 +1221,9 @@ def correlation(g: Gram) -> Any:
     - :mod:`rheon.corr`, which repairs, summarizes and scores a
       correlation matrix.
     - *Is the fit determined?* in `docs/GRAM.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/GRAM.md>`__,
       the theory, and `Check that a fit is determined
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/check-a-fit-is-determined.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/check-a-fit-is-determined.md>`__,
       a recipe that runs.
 
     .. rubric:: Notes
@@ -1314,7 +1314,7 @@ def solve(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1338,9 +1338,9 @@ def solve(
     - :func:`coef_stats`, the standard errors and ``t`` of the fit.
     - :func:`lasso_path` and :func:`lars_path`, the lasso's fits.
     - *A ridge and its t* in `docs/GRAM.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/GRAM.md>`__,
       the theory, and `Fit a ridge from a Gram
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/fit-a-ridge-from-a-gram.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/fit-a-ridge-from-a-gram.md>`__,
       a recipe that runs.
 
     .. rubric:: Notes
@@ -1584,7 +1584,7 @@ def lasso_path(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1606,9 +1606,9 @@ def lasso_path(
     - :func:`lars_path`, the lasso path's knots, exactly.
     - :func:`solve`, a ridge on the same Gram.
     - *Choosing columns on the lasso path* in `docs/GRAM.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/GRAM.md>`__,
       the theory, and `Choose columns on the lasso path
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/choose-columns-on-the-lasso-path.md#choose-columns-on-a-grams-lasso-path>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/choose-columns-on-the-lasso-path.md#choose-columns-on-a-grams-lasso-path>`__,
       a recipe that runs.
 
     .. rubric:: Notes
@@ -1927,7 +1927,7 @@ def lars_path(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -1955,9 +1955,9 @@ def lars_path(
     - :func:`lars_paths`, the same for many Grams and targets at once.
     - :func:`lasso_path`, the lasso at penalties you choose.
     - *Choosing columns on the lasso path* in `docs/GRAM.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/GRAM.md>`__,
       the theory, and `Choose columns on the lasso path
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/choose-columns-on-the-lasso-path.md#choose-columns-on-a-grams-lasso-path>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/choose-columns-on-the-lasso-path.md#choose-columns-on-a-grams-lasso-path>`__,
       a recipe that runs.
 
     .. rubric:: Notes
@@ -2084,7 +2084,7 @@ def lars_paths(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -2331,7 +2331,7 @@ def solve_subsets(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -2355,14 +2355,14 @@ def solve_subsets(
     - *Stability selection over halves of the weeks*, *Per-block
       coefficients*, *A null for the selection, by sign flips* and *A
       screen of its own for each path* in `docs/GRAM.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/GRAM.md>`__,
       the theory, and `Select columns that hold across the weeks
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/select-columns-stably-over-weeks.md>`__
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/select-columns-stably-over-weeks.md>`__
       and `Fit per-block coefficients
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/fit-per-block-coefficients.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/fit-per-block-coefficients.md>`__,
       a recipe of each use.
     - *Pool within blocks to leave their levels out* in `Pool Grams
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/pool-grams.md>`__.
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/pool-grams.md>`__.
 
     .. rubric:: Notes
 
@@ -2971,7 +2971,7 @@ def coef_stats(
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -2993,9 +2993,9 @@ def coef_stats(
     - :func:`solve_subsets`, the fit and these statistics for many merged
       subsets.
     - *A ridge and its t* in `docs/GRAM.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/GRAM.md>`__,
       the theory, and `Fit a ridge from a Gram
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/fit-a-ridge-from-a-gram.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/fit-a-ridge-from-a-gram.md>`__,
       a recipe that runs.
 
     .. rubric:: Notes
@@ -3183,7 +3183,7 @@ def vif(g: Gram, *, features: Sequence[str | int] | None = None) -> Any:
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -3202,9 +3202,9 @@ def vif(g: Gram, *, features: Sequence[str | int] | None = None) -> Any:
 
     - :func:`condition`, which says which columns share a near-dependency.
     - *Is the fit determined?* in `docs/GRAM.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/GRAM.md>`__,
       the theory, and `Check that a fit is determined
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/check-a-fit-is-determined.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/check-a-fit-is-determined.md>`__,
       a recipe that runs.
 
     .. rubric:: Notes
@@ -3302,7 +3302,7 @@ def condition(g: Gram, *, features: Sequence[str | int] | None = None) -> dict[s
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -3322,9 +3322,9 @@ def condition(g: Gram, *, features: Sequence[str | int] | None = None) -> dict[s
 
     - :func:`vif`, each column's variance inflation.
     - *Is the fit determined?* in `docs/GRAM.md
-      <https://github.com/hgilde/polars-online/blob/main/docs/GRAM.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/GRAM.md>`__,
       the theory, and `Check that a fit is determined
-      <https://github.com/hgilde/polars-online/blob/main/docs/how-to/check-a-fit-is-determined.md>`__,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/how-to/check-a-fit-is-determined.md>`__,
       a recipe that runs.
 
     .. rubric:: Notes

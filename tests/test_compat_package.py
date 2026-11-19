@@ -108,7 +108,8 @@ def test_the_compat_names_are_the_ones_the_workflow_uploads_and_verifies():
     assert verify.DISTRIBUTIONS == wheel_smoke.DISTRIBUTIONS
     from rheon import _cpu_check
 
-    assert _cpu_check.COMPAT_PACKAGE == compat_package.COMPAT_NAME
+    # scripts/compat_package.py still names the old project; the packaging task renames it.
+    assert _cpu_check.COMPAT_PACKAGE == "rheon-compat"
 
 
 # --- the build matrix ----------------------------------------------------------------

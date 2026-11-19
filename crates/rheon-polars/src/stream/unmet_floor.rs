@@ -11,7 +11,7 @@ use crate::spec::{ModelKind, Spec};
 /// Where a readiness warning sends its reader: the reference section on
 /// the gates, which a message keeps linking once it has shipped.
 const READY_LINK: &str =
-    "https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready";
+    "https://github.com/rheon-dev/rheon/blob/main/docs/DIAGNOSTICS.md#is-it-ready";
 
 /// What a "min_weight has not been met" notice projects from: the weight
 /// the target's rows top out at, at their spacing and weight so far

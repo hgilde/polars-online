@@ -235,5 +235,5 @@ def test_json_is_an_export_and_not_a_load_format(tmp_path):
     bank.fit_predict(_df())
     p = tmp_path / "state.json"
     bank.write_json(p)
-    with pytest.raises(ValueError, match="not a polars-online bank state file"):
+    with pytest.raises(ValueError, match="not a rheon bank state file"):
         rp.ModelBank.load(p)

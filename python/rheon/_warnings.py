@@ -212,7 +212,7 @@ class ReadinessWarning(RheonWarning, UserWarning):
     act before reading the output. Where the finding is intended, filter it
     out with ``warnings.simplefilter("ignore", rheon.ReadinessWarning)``.
     `Is it ready?
-    <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`_
+    <https://github.com/rheon-dev/rheon/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`_
     sets each finding beside the gates that withhold a prediction.
 
     The learning calls issue it: :meth:`ModelBank.fit`,
@@ -281,7 +281,7 @@ class ReadinessWarning(RheonWarning, UserWarning):
     .. rubric:: Examples
 
     This code reads ``df`` from `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_:
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_:
 
     .. code-block:: python
 
@@ -305,7 +305,7 @@ class ReadinessWarning(RheonWarning, UserWarning):
     .. rubric:: See also
 
     - `Is it ready?
-      <https://github.com/hgilde/polars-online/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`_,
+      <https://github.com/rheon-dev/rheon/blob/main/docs/DIAGNOSTICS.md#is-it-ready>`_,
       the gates and what each finding means for the output.
     - :meth:`ModelBank.summary`, whose ``weight_sum_settled`` is the
       ceiling the ``min_weight`` finding names.

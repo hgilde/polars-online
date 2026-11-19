@@ -224,13 +224,13 @@ def test_a_python_scan_with_rows_is_recognised_and_a_parquet_scan_is_not(tmp_pat
     "line",
     [
         pytest.param("PYTHON SCAN []", id="polars-1.x"),
-        pytest.param("PYTHON[polars-online] SCAN []", id="polars-2.0-named"),
+        pytest.param("PYTHON[rheon] SCAN []", id="polars-2.0-named"),
     ],
 )
 def test_both_spellings_of_a_python_scan_are_recognised(line):
     """polars 2.0 renders a source given an ``explain_name`` as
     ``PYTHON[<name>] SCAN``, and ``_explain_kwargs`` names this package's own
-    plan form ``polars-online``. A literal ``"PYTHON SCAN" in text`` missed
+    plan form ``rheon``. A literal ``"PYTHON SCAN" in text`` missed
     that, and the release run's 2.0 leg failed on it.
 
     Measured on 2.0.0-rc.1: ``scan_arrow_c_stream`` over a polars frame *and*

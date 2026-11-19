@@ -208,7 +208,7 @@ def spec_toml(spec: dict) -> str:
 
 
 def run_online(exe, tmp_path, specs, *, args=(), check=True, **top):
-    """Run the `polars-online` binary over `specs`, from a TOML config written here.
+    """Run the `rheon` binary over `specs`, from a TOML config written here.
 
     `top` are the config's top-level keys (`input`, `output`, `save_state`,
     `load_state`, `closed_groups`, `chunk_size`, `predict`); paths are taken

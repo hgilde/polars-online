@@ -97,7 +97,7 @@ def test_a_transposed_pair_is_refused_by_default_and_names_the_row():
 
 #: The how-to a step-back error links, at the heading that stays.
 CLOCK_ORDER = (
-    "https://github.com/hgilde/polars-online/blob/main/docs/how-to/put-rows-in-clock-order.md"
+    "https://github.com/rheon-dev/rheon/blob/main/docs/how-to/put-rows-in-clock-order.md"
     "#fix-a-chunk-the-bank-refused"
 )
 

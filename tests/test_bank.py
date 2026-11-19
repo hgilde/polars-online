@@ -89,7 +89,7 @@ class TestChunkInvariance:
             rp.ModelBank.load(tmp_path / "nope.state")
         garbage = tmp_path / "garbage.state"
         garbage.write_bytes(b"not a bank")
-        with pytest.raises(ValueError, match="not a polars-online bank state file"):
+        with pytest.raises(ValueError, match="not a rheon bank state file"):
             rp.ModelBank.load(garbage)
         # A directory is the OSError the platform gives for reading one --
         # IsADirectoryError on macOS/Linux, PermissionError on Windows --

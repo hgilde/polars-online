@@ -29,7 +29,7 @@ Everything is drawn from ``numpy.random.default_rng(seed)`` in one order, so
 two calls with the same seed give byte-identical frames under one numpy
 version. numpy's ``Generator`` makes no promise across versions. The module
 needs numpy, an optional extra of this package
-(``pip install polars-online[numpy]``), and nothing else.
+(``pip install rheon[numpy]``), and nothing else.
 
 .. warning::
     This module is considered **unstable**: its keywords, its frames and the
@@ -57,7 +57,7 @@ def _np() -> Any:
     except ModuleNotFoundError as e:  # pragma: no cover - exercised by a stub
         msg = (
             "rp.sim: it draws with numpy, but numpy is not installed. "
-            "Install it with `pip install numpy` or `pip install polars-online[numpy]`."
+            "Install it with `pip install numpy` or `pip install rheon[numpy]`."
         )
         raise ModuleNotFoundError(msg) from e
     return np
@@ -196,7 +196,7 @@ def regimes(
     ``hmm``, ``corrchange`` or ``bocpd``, against data whose regimes are known.
     For a stream with a planted relation to a target, build the frame with
     numpy, as `Example data
-    <https://github.com/hgilde/polars-online/blob/main/docs/EXAMPLE-DATA.md>`_ does.
+    <https://github.com/rheon-dev/rheon/blob/main/docs/EXAMPLE-DATA.md>`_ does.
 
     .. rubric:: Parameters
 
@@ -325,7 +325,7 @@ def regimes(
       refresh grid: under ``async_rates``, unpivot ``rows`` to long form and drop the
       nulls to feed it.
     - `Regimes: what the detectors find, measured
-      <https://github.com/hgilde/polars-online/blob/main/docs/REGIMES.md>`_.
+      <https://github.com/rheon-dev/rheon/blob/main/docs/REGIMES.md>`_.
 
     .. rubric:: Notes
 

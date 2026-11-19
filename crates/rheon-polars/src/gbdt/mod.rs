@@ -161,7 +161,7 @@ impl Layout {
         if self.names.len() != self.kinds.len() {
             return Err(GbdtError::msg(format!(
                 "rheon.polars._gbdt: internal: {} feature names for {} kinds, which is a defect in \
-                 polars-online. Open an issue at https://github.com/hgilde/polars-online/issues with this message.",
+                 rheon. Open an issue at https://github.com/rheon-dev/rheon/issues with this message.",
                 self.names.len(),
                 self.kinds.len()
             )));

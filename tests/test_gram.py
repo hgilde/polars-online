@@ -208,7 +208,7 @@ def test_missing_numpy_says_what_to_do(monkeypatch):
         return real_import(name, *a, **kw)
 
     monkeypatch.setattr(builtins, "__import__", no_numpy)
-    with pytest.raises(ModuleNotFoundError, match=r"polars-online\[numpy\]"):
+    with pytest.raises(ModuleNotFoundError, match=r"rheon\[numpy\]"):
         bank.gram("m")
 
 
