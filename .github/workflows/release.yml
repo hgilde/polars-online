@@ -114,8 +114,8 @@ jobs:
         python: ["3.12", "3.14"]
     env:
       PYTHONUTF8: "1"
-      NEW_ENV: ${{ runner.temp }}/new
-      OLD_ENV: ${{ runner.temp }}/old
+      NEW_ENV: ${{ github.workspace }}/.envs/new
+      OLD_ENV: ${{ github.workspace }}/.envs/old
     defaults:
       run:
         shell: bash
@@ -265,7 +265,7 @@ jobs:
         package: [polars-online, polars-online-compat]
     env:
       PYTHONUTF8: "1"
-      ENV_DIR: ${{ runner.temp }}/published
+      ENV_DIR: ${{ github.workspace }}/.envs/published
     defaults:
       run:
         shell: bash

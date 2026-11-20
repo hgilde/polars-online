@@ -10,3 +10,4 @@ build/
 
 # Long-lived worktree slots
 /.claude/slots/
+.envs/
