@@ -21,6 +21,10 @@ classifiers = [
 ]
 dependencies = ["rheon[polars]>=2.0.0,<3"]
 
+[project.optional-dependencies]
+# Only the Gram, correlation and simulation tools need NumPy.
+numpy = ["rheon[numpy]"]
+
 [project.urls]
 Repository = "https://github.com/rheon-dev/rheon"
 

@@ -18,57 +18,67 @@ from __future__ import annotations
 import importlib
 import importlib.abc
 import importlib.util
+import os
 import sys
 import warnings
 from types import ModuleType
 
-#: Old module name (the part after ``polars_online.``) -> the rheon module that
-#: now holds it. A module that imports Polars lives in ``rheon.polars``; the
-#: rest in ``rheon``, which imports without Polars installed. The test for
-#: "imports Polars" is ``grep -l "import polars\|from polars"`` on the 1.6.0
-#: rename; it looks at each file only, not what the file imports in turn.
+#: Old module name (the part after ``polars_online.``) -> the rheon 2.0.0 module
+#: that now holds it, checked against rheon 2.0.0's tree (``python/rheon``).
+#: rheon splits by one rule: what needs Polars lives in ``rheon.polars``, and
+#: what does not lives in ``rheon``, which imports without Polars installed.
+#: ``tests/test_forwarder.py`` runs every row against an installed rheon.
 _MODULES: dict[str, str] = {
-    # Polars-bound.
+    # Needs Polars: ``rheon.polars``.
     "_bank": "rheon.polars._bank",
     "_check": "rheon.polars._check",
-    "_duration": "rheon.polars._duration",
+    # 1.x's errors were the Polars-parented classes; rheon keeps those here
+    # (``rheon._errors`` has the same four names without the Polars parent).
     "_errors": "rheon.polars._errors",
     "_formula": "rheon.polars._formula",
     "_frame": "rheon.polars._frame",
-    "_spec": "rheon.polars._spec",
-    "_spec_fields": "rheon.polars._spec_fields",
-    "_warnings": "rheon.polars._warnings",
     "eval": "rheon.polars.eval",
-    # TODO(2.0.0): rheon leaves gbdt out until it is fixed. If 2.0.0 does not
-    # ship it, `polars_online.gbdt` is an ImportError; if it ships it, this is
-    # where it is expected.
-    "gbdt": "rheon.polars.gbdt",
-    "gram": "rheon.polars.gram",
+    # 2.0.0 keeps ``gbdt`` out of its public names; the module is still there,
+    # private, and still raises ``UnstableWarning`` from its two functions.
+    "gbdt": "rheon.polars._gbdt",
     "ops": "rheon.polars.ops",
     "sim": "rheon.polars.sim",
     "stream": "rheon.polars.stream",
-    # No Polars import of their own, by the same test. TODO(2.0.0): each of the
-    # following imports a Polars-bound module above, so rheon's split may have
-    # put it in ``rheon.polars`` instead: _kwargs (_duration), _renamed
-    # (_warnings), corr (_errors, _warnings, gram), spec (_spec), and
-    # _spec_audit/_spec_changepoint/_spec_class/_spec_cluster/_spec_gradient/
-    # _spec_regimes/_spec_robust/_spec_trend (_spec, some _duration).
+    # Needs no Polars: ``rheon``.
+    "_build_flags": "rheon._build_flags",
     "_cpu_check": "rheon._cpu_check",
+    "_duration": "rheon._duration",
     "_kwargs": "rheon._kwargs",
     "_renamed": "rheon._renamed",
+    "_spec": "rheon._spec",
     "_spec_audit": "rheon._spec_audit",
     "_spec_changepoint": "rheon._spec_changepoint",
     "_spec_class": "rheon._spec_class",
     "_spec_cluster": "rheon._spec_cluster",
+    "_spec_fields": "rheon._spec_fields",
     "_spec_gradient": "rheon._spec_gradient",
     "_spec_regimes": "rheon._spec_regimes",
     "_spec_robust": "rheon._spec_robust",
     "_spec_trend": "rheon._spec_trend",
     "_spec_words": "rheon._spec_words",
+    # 1.x's `_warnings` held every warning and the `unstable` helpers; rheon's
+    # `_warnings` holds them, and `rheon.polars._warnings` only the
+    # Polars-parented `UnstableWarning`.
+    "_warnings": "rheon._warnings",
     "corr": "rheon.corr",
+    "gram": "rheon.gram",
     "spec": "rheon.spec",
     # The compiled module, renamed with the package.
     "_polars_online": "rheon._rheon",
+}
+
+#: The 1.x warning classes whose names carried the old project's, and the rheon
+#: class each one is now. Set on this package as the same class objects, so a
+#: 1.x ``filterwarnings(..., category=PolarsOnlineWarning)`` matches the
+#: warnings rheon raises. Every other name 1.x exported keeps its name in rheon.
+_ALIASES: dict[str, str] = {
+    "PolarsOnlineWarning": "RheonWarning",
+    "PolarsOnlineDeprecationWarning": "RheonDeprecationWarning",
 }
 
 #: The public modules, aliased as soon as this package is imported; every other
@@ -90,12 +100,32 @@ __version__ = "2.0.0"
 
 _warned: set[str] = set()
 
+#: The files whose frames a warning is not attributed to: this package's and the
+#: standard library's ``importlib``.
+_SKIPPED_FRAMES = (
+    os.path.dirname(os.path.abspath(__file__)) + os.sep,
+    os.path.dirname(os.path.abspath(importlib.__file__)) + os.sep,
+)
 
-def _warn_once(key: str, message: str, stacklevel: int) -> None:
+
+def _warn_once(key: str, message: str) -> None:
+    """Warn ``message`` the first time ``key`` is seen, attributed to user code.
+
+    Python's default filters show a ``DeprecationWarning`` only when it is
+    attributed to ``__main__``. The frames of this package, and of the import
+    system (``importlib.import_module`` included), are skipped, so the warning
+    is attributed to the line that imported ``polars_online`` (or called
+    ``.online``) and not to this file, where the default filter would hide it.
+    """
     if key in _warned:
         return
     _warned.add(key)
-    warnings.warn(message, DeprecationWarning, stacklevel=stacklevel)
+    warnings.warn(
+        message,
+        DeprecationWarning,
+        stacklevel=2,
+        skip_file_prefixes=_SKIPPED_FRAMES,
+    )
 
 
 def _exists(name: str) -> bool:
@@ -178,7 +208,11 @@ def _forward(target: ModuleType) -> None:
         if module is not None:
             here[suffix] = module
     exported = set(names)
-    here["__all__"] = sorted({n for n in here if n in exported} | {"__version__"})
+    for old_name, new_name in _ALIASES.items():
+        here[old_name] = getattr(target, new_name)
+    # `gbdt` is a public module of 1.x that rheon.polars no longer exports.
+    exported |= set(_PUBLIC_MODULES) | set(_ALIASES) | {"__version__"}
+    here["__all__"] = sorted(n for n in here if n in exported)
 
 
 class _OnlineNamespace:
@@ -190,7 +224,7 @@ class _OnlineNamespace:
     def __getattr__(self, name: str):
         if name.startswith("_"):
             raise AttributeError(name)
-        _warn_once("namespace", _NAMESPACE_MESSAGE, stacklevel=2)
+        _warn_once("namespace", _NAMESPACE_MESSAGE)
         return getattr(getattr(self._frame, _NAMESPACE), name)
 
     def __dir__(self):
@@ -213,4 +247,4 @@ def _register_namespace() -> None:
 _install()
 _forward(_load_target())
 _register_namespace()
-_warn_once("import", _MESSAGE, stacklevel=2)
+_warn_once("import", _MESSAGE)

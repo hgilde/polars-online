@@ -1,1 +1,0 @@
-NAME = "rheon.polars.gram"

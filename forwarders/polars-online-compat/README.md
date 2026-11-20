@@ -5,7 +5,7 @@
 x86-64 CPUs without AVX2 and FMA. This 2.0.0 release holds no code of its own:
 it depends on `rheon-compat[polars]` and `import polars_online` forwards to
 it, so existing imports and saved pickles keep working. Importing it warns
-once.
+once, from the line that imported it.
 
 Install `rheon-compat[polars]` directly, or leave `polars-online-compat`
 installed and upgrade it. It is imported as `polars_online`, like
@@ -15,3 +15,10 @@ To migrate, replace `import polars_online as po` with
 `from rheon import polars as rp` and call `rp.` where you called `po.`.
 The `df.online` and `lf.online` namespaces are now `df.rheon` and
 `lf.rheon`; `polars_online` keeps `.online` as an alias until you move.
+
+`polars-online-compat[numpy]` installs `rheon-compat[numpy]`, the NumPy the Gram, correlation and
+simulation tools need. The 1.x warning classes `PolarsOnlineWarning` and
+`PolarsOnlineDeprecationWarning` are kept as names for `RheonWarning` and
+`RheonDeprecationWarning`, so a warnings filter written for 1.x still matches.
+`polars_online.gbdt` is `rheon.polars._gbdt`: 2.0 keeps that module out of
+its public names, so it can change without a major release.

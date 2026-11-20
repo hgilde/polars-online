@@ -24,7 +24,7 @@ from pathlib import Path
 
 # Runs in the environment under test and prints {check: [ok, reason]} as JSON.
 # `polars_online` is imported first, before rheon, so that nothing it warns is missed.
-PROBE = r'''
+PROBE = r"""
 import json, warnings
 from importlib import metadata
 
@@ -33,7 +33,8 @@ out = {}
 def check(name, fn):
     try:
         reason = fn()
-        out[name] = [reason is None or reason is True, "" if reason in (None, True) else str(reason)]
+        passed = reason is None or reason is True
+        out[name] = [passed, "" if passed else str(reason)]
     except Exception as e:  # a failed check, with its reason
         out[name] = [False, f"{type(e).__name__}: {e}"]
 
@@ -49,18 +50,65 @@ def installed():
 with warnings.catch_warnings(record=True) as caught:
     warnings.simplefilter("always")
     import polars_online
-ours = [w for w in caught if issubclass(w.category, DeprecationWarning) and "polars_online" in str(w.message)]
+ours = [
+    w for w in caught
+    if issubclass(w.category, DeprecationWarning) and "polars_online" in str(w.message)
+]
 check("installed", installed)
-check("one DeprecationWarning", lambda: None if len(ours) == 1 else f"{len(ours)} DeprecationWarnings on import")
+check(
+    "one DeprecationWarning",
+    lambda: None if len(ours) == 1 else f"{len(ours)} DeprecationWarnings on import",
+)
 
 import polars as pl
 import rheon.polars as rp
-check("ModelBank identity", lambda: None if polars_online.ModelBank is rp.ModelBank else "polars_online.ModelBank is not rheon.polars.ModelBank")
+check(
+    "ModelBank identity",
+    lambda: None if polars_online.ModelBank is rp.ModelBank else "not rheon.polars.ModelBank",
+)
+
+
+def old_module_paths():
+    import importlib
+    import rheon
+    from polars_online import _MODULES
+
+    wrong = []
+    for old, new in _MODULES.items():
+        try:
+            same = importlib.import_module("polars_online." + old) is importlib.import_module(new)
+        except ImportError as e:
+            wrong.append(f"{old}: {e}")
+        else:
+            if not same:
+                wrong.append(f"{old}: not {new}")
+    from polars_online.gram import solve
+    if solve is not rheon.gram.solve:
+        wrong.append("gram.solve")
+    return "; ".join(wrong) or None
+
+
+check("every old module path imports as its rheon module", old_module_paths)
+
+
+def old_warning_names():
+    import rheon
+    ok = (
+        polars_online.PolarsOnlineWarning is rheon.RheonWarning
+        and polars_online.PolarsOnlineDeprecationWarning is rheon.RheonDeprecationWarning
+    )
+    return None if ok else "PolarsOnline* warning classes are not rheon's Rheon* classes"
+
+
+check("PolarsOnline* warning classes alias Rheon*", old_warning_names)
 
 def same_fit():
     from polars.testing import assert_frame_equal
     spec = polars_online.spec.ewridge("m", targets=["y"], features=["x"], half_life=float("inf"))
-    df = pl.DataFrame({"x": [float(i % 7) for i in range(60)], "y": [0.5 * (i % 7) + (i % 3) for i in range(60)]})
+    df = pl.DataFrame({
+        "x": [float(i % 7) for i in range(60)],
+        "y": [0.5 * (i % 7) + (i % 3) for i in range(60)],
+    })
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         old = df.online.fit_predict([spec])
@@ -71,7 +119,7 @@ def same_fit():
 
 check(".online fit equals .rheon fit", same_fit)
 print(json.dumps(out))
-'''
+"""
 
 
 def run(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -85,7 +133,9 @@ def last_line(text: str) -> str:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    ap.add_argument("--wheel", type=Path, help="a built forwarder wheel to install into a fresh environment")
+    ap.add_argument(
+        "--wheel", type=Path, help="a built forwarder wheel to install into a fresh environment"
+    )
     args = ap.parse_args()
 
     results: dict[str, list] = {}
@@ -96,9 +146,14 @@ def main() -> int:
                 print(f"FAIL install: no such file {args.wheel}")
                 return 1
             venv.create(Path(tmp) / "env", with_pip=True)
-            python = str(Path(tmp) / "env" / ("Scripts" if sys.platform == "win32" else "bin") / "python")
+            python = str(
+                Path(tmp) / "env" / ("Scripts" if sys.platform == "win32" else "bin") / "python"
+            )
             done = run([python, "-m", "pip", "install", "--quiet", str(args.wheel)])
-            results["install"] = [done.returncode == 0, last_line(done.stderr + done.stdout) if done.returncode else ""]
+            results["install"] = [
+                done.returncode == 0,
+                last_line(done.stderr + done.stdout) if done.returncode else "",
+            ]
             if done.returncode:  # nothing to import
                 return report(results)
         probe = run([python, "-c", PROBE])
