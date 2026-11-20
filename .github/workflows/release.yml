@@ -10,8 +10,8 @@ name: Release
 # `main`, never tagged by hand. With `publish` off it is a rehearsal (both
 # distributions are built and tested on Linux, macOS and Windows, nothing is
 # uploaded). With `publish` on, the run waits for approval on the `pypi`
-# environment and uploads, and then installs each forwarder from PyPI on the
-# three systems and checks it.
+# environment and uploads, then tags `v2.0.0` and, separately, installs each
+# forwarder from PyPI on the three systems and checks it.
 on:
   workflow_dispatch:
     inputs:
@@ -75,6 +75,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: publishing is from main only
+        if: inputs.publish && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::a release is published from main, not ${{ github.ref }}"
+          exit 1
       - name: rheon and rheon-compat at the forwarders' version
         run: |
           for project in rheon rheon-compat; do
@@ -191,6 +196,53 @@ jobs:
         with:
           packages-dir: dist
           skip-existing: true
+
+  # The tag, once what it names is on PyPI: on the sha this run was dispatched
+  # on and every job above tested, never a moving `HEAD`. Annotated. There is no
+  # GitHub release and no release assets: the files are on PyPI. `verify` does not
+  # wait for it. The push is tried three times, with a pause between, because a
+  # push whose answer was lost may have landed: after each failure the remote is
+  # asked, and the tag there on this sha is success, on another sha a failure no
+  # retry can fix. `v*` tags are immutable by the repository's ruleset.
+  tag:
+    name: tag v2.0.0
+    needs: publish
+    if: inputs.publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # pushing the tag, and nothing else
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: create and push the tag
+        run: |
+          TAG="v${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf '%s\n' "polars-online ${VERSION}" "" \
+            "polars-online and polars-online-compat ${VERSION}: forwarding packages for rheon." \
+            "The library is rheon, https://github.com/rheon-dev/rheon." \
+            "The 1.x source is the tag v1.6.0." > notes.md
+          git tag -a --cleanup=verbatim "$TAG" -F notes.md "$GITHUB_SHA"
+          pause="${RETRY_PAUSE:-15}"
+          for attempt in 1 2 3; do
+            if git push origin "refs/tags/$TAG"; then exit 0; fi
+            there="$(git ls-remote origin "refs/tags/$TAG^{}" | cut -f1 || true)"
+            if [ -z "$there" ]; then
+              there="$(git ls-remote origin "refs/tags/$TAG" | cut -f1 || true)"
+            fi
+            if [ "$there" = "$GITHUB_SHA" ]; then
+              echo "the tag $TAG is on the remote at $GITHUB_SHA already"
+              exit 0
+            elif [ -n "$there" ]; then
+              echo "::error::the tag $TAG is on the remote at $there, not $GITHUB_SHA"
+              exit 1
+            fi
+            if [ "$attempt" != 3 ]; then sleep $((pause * attempt)); fi
+          done
+          echo "::error::the tag $TAG could not be pushed in three attempts"
+          exit 1
 
   # What PyPI serves, not what was built: each forwarder installed by name from
   # the index, with its rheon dependency, on the three systems, and checked.

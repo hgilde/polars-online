@@ -1,54 +1,18 @@
 # Security policy
 
-## Supported versions
+This repository holds only the `polars-online` and `polars-online-compat`
+2.0.0 packages, each a few hundred lines of Python that forward
+`import polars_online` to rheon. The library itself, and any vulnerability in it,
+belongs to [rheon](https://github.com/rheon-dev/rheon).
 
-| version | receives fixes |
-|---|---|
-| before 1.0 | the latest release only |
-| from 1.0 | the latest minor release, as a patch release on it (with 1.4.2 current, a fix ships as 1.4.3) |
+To report a vulnerability in rheon, do **not** open a public issue. Use
+the private advisory form at
+<https://github.com/rheon-dev/rheon/security/advisories/new>.
 
-A fix is not backported to an older release. From 1.0, upgrading to the
-latest minor release of your major version is the way to receive one,
-since a minor release breaks nothing the README calls stable
-([This package's own versioning](docs/VERSIONS.md#this-packages-own-versioning)).
+A problem in the forwarding packages themselves (for example in how they
+register modules or load a pickle) can be reported privately in the
+**Security** tab of this repository, or at
+<https://github.com/hgilde/polars-online/security/advisories/new>.
 
-## Reporting a vulnerability
-
-Please **do not open a public issue** for a security problem.
-
-Use GitHub's private reporting: the **Security** tab of this repository →
-**Report a vulnerability**, or go straight to
-<https://github.com/hgilde/polars-online/security/advisories/new>. That
-opens a private advisory visible only to the maintainers.
-
-Expect an acknowledgement within a week. If a fix is warranted, it ships as a
-patch release with the advisory published alongside it.
-
-## Scope
-
-This is a numerical library with no network access. There is no `unsafe`
-code in `online-core`, enforced by `unsafe_code = "forbid"`.
-
-This library parses two kinds of file itself, rather than through Polars:
-its own state files, and the command line's TOML configuration. The command
-line reads its input data through Polars' readers, as parquet, IPC, CSV or
-NDJSON.
-
-**Treat a state file like a pickle: load only ones you produced.** Each
-loader checks a magic string and a version, but none is a hardened parser.
-There are three state formats, each versioned msgpack:
-
-| state | written by | read by |
-|---|---|---|
-| a bank's | `ModelBank.save` and `save_bytes`, `save_state=` on a query, the command line's `--save-state` | `ModelBank.load` and `load_bytes`, `load_state=` on a query, the command line's `--load-state` or its TOML's `load_state` |
-| a window run's | `po.stream.with_windows(save_state=)` | `po.stream.with_windows(load_state=)`, also inside a query |
-| a refresh-time grid's | `po.stream.refresh_time(save_state=)` | `po.stream.refresh_time(load_state=)` |
-
-A window run's state carries the rows it holds as Arrow IPC, which Polars'
-IPC reader reads back. A bank file with a window target embeds one window
-state per group, and the expression the target is built from. That
-expression is rebuilt from a fixed set of element-wise node kinds, and any
-other node is refused.
-
-**The CLI's TOML config** names input and output paths, which the process
-then reads and writes.
+The 1.x releases of polars-online no longer receive fixes. Move to rheon
+2.0.0 or later.

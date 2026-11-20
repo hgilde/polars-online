@@ -1,443 +1,71 @@
 name: CI
 
-# COST POLICY. Actions minutes are metered while this repo is private, and not
-# evenly: macOS bills at 10x and Windows at 2x. This repo spent 2,270 billed
-# minutes in a single day (docs/records/RELEASE-HISTORY.md) -- more than the Free
-# tier's entire month, and three quarters of Pro's 3,000 -- so the matrix is
-# deliberately small and *widens by itself* when the repo goes public:
-#
-#   private, push / pull_request  ->  ubuntu only
-#   private, weekly schedule      ->  ubuntu + windows
-#   private, manual dispatch      ->  all three (an explicit human decision)
-#   public, anything              ->  all three
-#
-# Windows is two images wherever it runs, Server 2025 and Server 2022 (see
-# the matrix), so the public matrix is nine legs.
-#
-# The switch is `github.event.repository.private`, tested with `== false` so a
-# missing field -- an event whose payload has no repository -- falls to the
-# CHEAP side rather than the expensive one: only an explicit `private == false`
-# (a known-public repo) takes the expensive branch, and `null == false` is
-# false, so a missing field does not. tests/test_ci_cost_policy.py pins
-# every clause of this, because the previous version of this expression read
-# `event_name == 'push' && cheap || expensive` and so quietly handed the full
-# macOS matrix to every pull request: 830 billed minutes, 37% of the month, on
-# one dependabot PR.
-#
-# `paths-ignore` is gone (2026-09-02, the repo is public). It saved metered
-# minutes on doc-only pushes, and it cost exactly what it was warned it would:
-# the first push to the public repo ended in two doc commits, the filter
-# swallowed it, and no CI ran at all on 163 commits. A required status check
-# has the same failure in the mergeable direction -- a doc-only pull request
-# would never run it and so could never merge. Minutes are free here now, so
-# every push and every pull request runs.
-#
-# PYTHON. Every version pyproject.toml declares, from `requires-python`'s floor
-# to the newest classifier, runs on Linux; macOS and Windows run the floor and
-# the newest, since a Python version rarely behaves differently by OS, or an OS
-# by Python version. `UV_PYTHON` picks each leg's interpreter. Before it,
-# `uv sync` took whatever the runner had, so macOS tested 3.14 by accident
-# while the classifiers stopped at 3.13 (2026-09-24).
-# tests/test_ci_cost_policy.py holds the matrix to the classifiers.
+# This repository ships two forwarding packages, `polars-online` and
+# `polars-online-compat` (forwarders/). CI runs their tests: in stub mode, which
+# needs no network and no wheel, on the three systems and both ends of the
+# supported Python range; and in real mode, against rheon from PyPI and
+# polars-online 1.6.0 from PyPI (which writes the 1.x pickle the forwarder loads).
+# release.yml runs the real mode on three systems, and checks the built wheels.
 on:
   push:
     branches: [main]
   pull_request:
-  schedule:
-    - cron: "23 5 * * 1"
-  workflow_dispatch:
-  # release.yml runs this whole workflow before it publishes; a call takes
-  # the caller's event, so a dispatched release gets the macOS and Windows
-  # legs.
-  workflow_call:
+    branches: [main]
 
-# Least privilege: no token scope by default, granted per job. This matters more
-# once the repo is public, when a fork's pull request can trigger these.
-permissions: {}
+permissions:
+  contents: read
 
-# Per calling workflow as well as per ref: called from release.yml,
-# `github.workflow` is "Release", so a release on main and a push's CI on
-# main are two groups, and neither cancels the other. Per event too, as in
-# mutants.yml: the Monday run and a push to main must not cancel each other,
-# since only a push run publishes the reference (task 160, CI8).
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
-  # Incremental compilation is pure disk cost in CI: every job starts cold, so
-  # nothing is ever reused, and the artifacts are large.
-  CARGO_INCREMENTAL: 0
+  # The rheon the forwarders depend on.
+  RHEON: "2.0.0"
+  PYTHONUTF8: "1"
 
-# `cargo` is invoked through `uv run` everywhere: online-py is built with pyo3's
-# abi3-py312, which needs an interpreter >= 3.12 at build time. `uv run` puts the
-# project's venv on VIRTUAL_ENV, which is what pyo3's build script picks up; in
-# the test job, that venv is the leg's `UV_PYTHON`.
 jobs:
-  # Linux only, public or not. `cargo fmt`, `clippy` and `ruff` inspect source,
-  # not platform behaviour, so the other two runners were re-checking a result
-  # that cannot differ -- 35 minutes a run on Windows (70 billed) for nothing.
-  # Anything genuinely platform-specific still has to compile in `test`, which
-  # does run everywhere.
-  lint:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-    env:
-      # The floor, named: uv 0.13 (2026-10-09) downloads 3.15 where no
-      # interpreter is found, and the locked pyarrow 25.0.1 has no cp315
-      # wheel (PLAN task 117), so a runner image without a 3.12 would fail
-      # the sync rather than lint.
-      UV_PYTHON: "3.12"
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          # A cold Windows job spends ~70 of its ~80 minutes compiling, and by
-          # default rust-cache skips its save step when the job fails -- so a
-          # single red test threw away the whole compile and the next run
-          # started cold again. Every Windows run to date logged "No cache
-          # found." Build artifacts from a failed test run are still valid.
-          cache-on-failure: true
-      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          enable-cache: true
-
-      # --no-install-project skips building the extension, which lint never
-      # imports; that build is the single most expensive step in the job (18
-      # min on Linux, 39 on Windows). UV_NO_SYNC then stops `uv run` from
-      # silently reinstalling it. --locked fails where uv.lock no longer
-      # matches pyproject.toml, where a plain sync would rewrite it.
-      - run: uv sync --locked --no-install-project
-
-      - name: cargo fmt
-        run: cargo fmt --all -- --check
-      # `--locked` here and in `test`: a `Cargo.lock` that no longer matches
-      # the manifests fails the step rather than being re-resolved silently
-      # (review 2026-10-06, CI12).
-      - name: cargo clippy
-        run: uv run cargo clippy --workspace --all-targets --locked -- -D warnings
-        env:
-          UV_NO_SYNC: "1"
-      - name: ruff format
-        run: uv run ruff format --check .
-        env:
-          UV_NO_SYNC: "1"
-      - name: ruff check
-        run: uv run ruff check .
-        env:
-          UV_NO_SYNC: "1"
-      # Checks the package against its own pyo3 stub, so it needs no build.
-      - name: mypy
-        run: uv run mypy
-        env:
-          UV_NO_SYNC: "1"
-
-  # The first-ever CI run died here with `ld terminated with signal 7 [Bus
-  # error]` on ubuntu, on two test binaries linking one second apart. That is
-  # resource exhaustion during concurrent linking, not a code fault: this
-  # workspace links polars into ~10 separate test binaries, and GNU ld (the
-  # default `cc` linker on the Ubuntu image) is both memory-hungry and, when
-  # the disk fills under an mmap'd write, prone to SIGBUS rather than a clean
-  # ENOSPC.
-  #
-  # The `df -h` instrumentation answered it: **it was disk.** The runner starts
-  # with 9.3 GB free (72G, 88% used) against a ~20 GB debug build of this
-  # workspace, so `ld` took SIGBUS on an mmap write to a full filesystem rather
-  # than a clean ENOSPC. Removing the unused Android SDK, .NET and GHC recovers
-  # 21 GB (9.3 -> 30 GB free) and the build passes. `lld` stays because it also
-  # links large Rust binaries faster and in less RSS, but it was not the fix.
-  test:
-    name: test (${{ matrix.os }}, Python ${{ matrix.python }})
+  stub:
+    name: stub mode, ${{ matrix.os }}, Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
-    permissions:
-      contents: read
-      # The oracle runs' dataset artifact (.github/actions/last-datasets).
-      actions: read
-    # 300 minutes while the repository is public, where minutes are free; 120
-    # if it is ever private again, where Windows bills twice and macOS ten
-    # times. The Windows legs' Rust build alone took 33 to 78 minutes on
-    # 2026-10-13 from a warm cache (one cancelled at 120 after its tests had
-    # passed), uv sync about 18 and pytest 10 to 18. `windows-2022` runs its
-    # Rust tests at two threads and took 2.4 to 2.9 hours a run by 2026-10-28,
-    # when one leg was cancelled at 180 with its Rust tests passed and pytest
-    # 28 minutes into a 30-minute run; GitHub's own limit is 360.
-    timeout-minutes: ${{ github.event.repository.private && 120 || 300 }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
-        # See COST POLICY at the top. Reads: public -> all three; else manual
-        # dispatch -> all three; else weekly -> add Windows, the platform that
-        # cannot be checked locally; else (push, pull_request) -> Linux only.
-        #
-        # Windows twice, wherever it runs: `windows-latest` (Server 2025)
-        # and `windows-2022` (Server 2022). On Windows `exp`, `log`, `pow`
-        # and the rest come from `ucrtbase.dll`, for Rust, CPython and NumPy
-        # alike, and that DLL is part of the OS, so each Windows build has
-        # its own and their last bits can differ (a Rust test measured 1.7
-        # times its bound on Server 2025 where glibc's and Apple's `exp`
-        # gave 0.9). Two builds test the bounds against two of those
-        # libraries; glibc and Apple's library are fixed per image.
-        os: >-
-          ${{ github.event.repository.private == false
-              && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest", "windows-2022"]')
-           || github.event_name == 'workflow_dispatch'
-              && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest", "windows-2022"]')
-           || github.event_name == 'schedule'
-              && fromJSON('["ubuntu-latest", "windows-latest", "windows-2022"]')
-           || fromJSON('["ubuntu-latest"]') }}
-        # PYTHON, at the top: the floor and the newest everywhere, and every
-        # version between on Linux. Quoted, since YAML reads 3.10 as 3.1.
+        os: [ubuntu-latest, macos-latest, windows-latest]
         python: ["3.12", "3.14"]
-        include:
-          - os: ubuntu-latest
-            python: "3.13"
-    env:
-      UV_PYTHON: ${{ matrix.python }}
-      # What the suite downloads (tests/data.py, tests/public_benchmarks.py):
-      # Binance's days, NIST, Rdatasets and the benchmark sets. The quotes'
-      # CSVs are left out: the parquet beside them is what a test reads.
-      DATASET_PATHS: |
-        .cache/BTCUSDT-1m-*.parquet
-        .cache/microstructure/*.parquet
-        .cache/benchmarks
-        .cache/strd
-        .cache/rdatasets
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # First, so a failure names its machine: a runner label is a pool of
-      # CPUs (AVX-512 or not, any L3), and on Windows the math library
-      # changes with the OS build. The CPU model, its caches and features,
-      # the cores, the OS build and its math library, into the log and the
-      # job summary (docs/TESTING.md, "The machines and the CPU paths").
-      - name: the machine this job ran on
-        uses: ./.github/actions/machine-report
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-      # MUST precede the cache restore. The Ubuntu image starts with 9.3 GB
-      # free, and the restored `target/` does not fit: the job died with
-      # "No space left on device" *inside* rust-cache, so hard that the runner
-      # could not write its own log -- which is why it looked like flaky
-      # infrastructure until the annotations API gave up the real error. It
-      # only began failing once a cache existed to restore. Removing the unused
-      # Android SDK, .NET and GHC recovers 21 GB.
-      #
-      # It must also precede `uv sync`, for a different reason: rustflags are
-      # part of cargo's fingerprint, so writing them later invalidated that
-      # build and made `maturin develop --release` recompile the workspace --
-      # 18 minutes of duplication, against Windows' 31 seconds for the same
-      # step. One position satisfies both.
-      - name: free disk and use a leaner linker (Linux)
-        if: runner.os == 'Linux'
-        uses: ./.github/actions/linux-build-prep
-
-      # Also before the cache: real-time scanning inspects every file the
-      # restore unpacks and every one of the ~100k a cargo build writes.
-      # Best-effort; never fail the job over it.
-      - name: exclude the build from Defender (Windows)
-        if: runner.os == 'Windows'
-        continue-on-error: true
-        run: |
-          Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE","$env:USERPROFILE\.cargo","$env:USERPROFILE\.rustup"
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
-        with:
-          # A cold Windows job spends ~70 of its ~80 minutes compiling, and by
-          # default rust-cache skips its save step when the job fails -- so a
-          # single red test threw away the whole compile and the next run
-          # started cold again. Every Windows run to date logged "No cache
-          # found." Build artifacts from a failed test run are still valid.
-          cache-on-failure: true
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
-        with:
-          enable-cache: true
-
-      - run: uv sync --locked
-
-      # The public datasets the suite reads, before it runs, so a test does
-      # not skip for an outage at a source. Fränti's server timed out from
-      # the runners on nearly every leg of the 25 runs before 2026-11-05,
-      # and the two oracle guards that read its sets skipped on each. The
-      # same three copies as oracles.yml's `datasets` job: this OS's cache,
-      # keyed on the list of sets alone (`oracles.py datasets --suite
-      # --digest`); on a miss, the oracle runs' artifact, which holds the
-      # ledger's sets (only they are in it: nothing new is published); then
-      # `fetch --suite` downloads what is still missing. A set it cannot get
-      # warns by name, and its tests fail rather than skip (the pytest
-      # step's POLARS_ONLINE_DATASETS_RESTORED); the cache is saved only
-      # once every set is in hand, so an entry is never short of one.
-      - name: the datasets' key
-        id: data-key
-        shell: bash
-        # `tr`: Python's print ends the line with CR LF on Windows.
-        run: echo "key=test-data-${{ runner.os }}-$(uv run --no-sync python scripts/oracles.py datasets --suite --digest | tr -d '\r')" >> "$GITHUB_OUTPUT"
-      - name: the cached datasets
-        id: data-cache
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ env.DATASET_PATHS }}
-          key: ${{ steps.data-key.outputs.key }}
-      - name: the datasets the newest oracle run kept
-        if: steps.data-cache.outputs.cache-hit != 'true'
-        uses: ./.github/actions/last-datasets
-      - name: fetch every dataset the suite reads
-        id: data-fetch
-        if: steps.data-cache.outputs.cache-hit != 'true'
-        continue-on-error: true
-        run: uv run --no-sync python scripts/oracles.py fetch --suite --rounds 1 --annotate warning
-      - name: keep them for the next run
-        if: steps.data-fetch.outcome == 'success'
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ${{ env.DATASET_PATHS }}
-          key: ${{ steps.data-key.outputs.key }}
-
-      # XGBoost's and LightGBM's macOS wheels load `@rpath/libomp.dylib` from
-      # Homebrew's prefix, and tests/test_gbdt.py imports both (task 242).
-      # Without it, tests/_site/libomp.py loads scikit-learn's bundled copy
-      # under that name; Homebrew's is the runtime a user installs.
-      - name: OpenMP for XGBoost and LightGBM (macOS)
-        if: runner.os == 'macOS'
-        run: brew install libomp
-
-      # Every package but online-py. With it in the build, pyo3-polars turns
-      # on polars-error's `python` feature, so every test binary that links
-      # polars links libpython as well. On Linux a system Python's libpython
-      # is on the loader's path and a uv-managed one's is not, so the legs for
-      # 3.13 and 3.14 could not start the CLI's tests: "libpython3.13.so.1.0:
-      # cannot open shared object file", exit code 127 (2026-09-24). No test
-      # is lost. online-py has no Rust tests, and pytest tests it below,
-      # through the extension. The CLI is also tested as it ships, since
-      # `cargo build -p online-cli` has no Python in it either.
-      # tests/test_ci_cost_policy.py holds every workflow and the gate to this.
-      # `--no-fail-fast`: one failing test binary stopped the step there, so
-      # on the 0.11.0 tag a unit test that failed on Linux and Windows hid
-      # every integration test after it, and Windows never reached pytest.
-      # `--include-ignored`: CI runs the extended tier, everything. A Rust
-      # test of that tier is `#[ignore = "extended: ..."]`, which a plain
-      # `cargo test` skips (docs/TESTING.md, "Two tiers").
-      # `--test-threads=2` on Windows: on x86 each thread that runs one of
-      # faer's larger matrix products keeps a packing buffer of twice the
-      # L3 cache, 960 MiB on the Windows runners, and Windows commits all
-      # of it, so tests multiplying on many threads at once ran out of
-      # commit ("memory allocation of 1006632960 bytes failed", online-core's
-      # unit tests, 2026-10-13, twice). Two at a time fits; the tests are the
-      # same. Beside it, online-core's tests that run one computation in
-      # pools of several sizes take their pools from `src/test_pool.rs`,
-      # which on Windows x86-64 caps a pool at four threads and all of them
-      # together at four: on an Intel Xeon 6973P runner (480 MiB of L3)
-      # pools of 1, 3, 8 and 14 held at once ran out of commit at two test
-      # threads (2026-11-08, PLAN task 362). Every x86 build keeps that kernel, the faster product (PLAN
-      # task 264); the Windows alternatives are measured in PLAN task 263.
-      - name: cargo test
-        run: uv run cargo test --workspace --exclude online-py --no-fail-fast --locked -- --include-ignored ${{ runner.os == 'Windows' && '--test-threads=2' || '' }}
-
-      - name: disk after the build
-        if: always() && runner.os == 'Linux'
-        run: df -h /
-
-      - name: build the extension
-        run: uv run maturin develop --release -m crates/online-py/Cargo.toml
-
-      # Coverage is measured on one leg's own run, Linux at the floor Python,
-      # and reported, never gating (docs/records/TESTING-LOG.md T-D4): a step of its own
-      # ran the whole suite a second time on every OS, `continue-on-error`
-      # (review 2026-10-06, CI17). The run itself gates as on every leg.
-      #
-      # The extended tier, everything: pyproject's addopts leave out the
-      # soak alone, and the Hypothesis profile is `extended` unless
-      # HYPOTHESIS_PROFILE says otherwise (tests/tiers.py). CI runs no
-      # essentials of its own: the gate times them locally, where they run
-      # (the user, 2026-10-08: "Do the work before the push just to save ci
-      # time").
-      #
-      # The memory budgets (budgets.toml) are held here: the bytes of every
-      # output field on every leg, and each platform's peak resident memory
-      # on its floor Python (reported on the others). Their measurements go
-      # to the job summary and, as JSON, to the artifact below, for
-      # `scripts/budgets.py apply`.
-      #
-      # Windows' peak is held on `windows-latest` alone, the newer image,
-      # and reported on `windows-2022`. Both wrote the one `rss.*.windows`
-      # budget, and the two images, on two machines, read the six runs up
-      # to 8% apart on one build (`bocpd_runs` 15.6 MiB on 2022 against 17.0
-      # on 2025, the streaming case 143.9 against 148.7; 2026-10-24), so
-      # each would tighten the budget below the other.
-      # The second image is there for its math library, not its memory.
-      - name: pytest
-        env:
-          POLARS_ONLINE_BUDGETS_OUT: ${{ runner.temp }}/budgets
-          POLARS_ONLINE_RSS_HELD: ${{ matrix.os != 'windows-2022' }}
-          # The datasets were restored above, so a test skipped as offline
-          # means every copy failed: it fails, naming the set
-          # (tests/offline_skips.py).
-          POLARS_ONLINE_DATASETS_RESTORED: "1"
-        run: uv run pytest ${{ runner.os == 'Linux' && matrix.python == '3.12' && '--cov=polars_online --cov-report=term' || '' }}
-
-      - name: keep the memory measurements
-        if: always()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: budgets-memory-${{ matrix.os }}-python-${{ matrix.python }}
-          path: ${{ runner.temp }}/budgets
-          if-no-files-found: warn
-
-      # The API reference (docs/reference): Sphinx over the docstrings, -W so
-      # a docstring that is not valid reStructuredText fails the job. It
-      # imports the package, hence here, after the extension is built, and
-      # once, on Linux at the floor Python: the Pages artifact can be
-      # uploaded only once a run. The HTML is what the `docs` job publishes.
-      - name: sphinx (warnings are errors)
-        if: runner.os == 'Linux' && matrix.python == '3.12'
-        run: uv run --group docs sphinx-build -W docs/reference docs/_build/html
-      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
-        if: runner.os == 'Linux' && matrix.python == '3.12'
-        with:
-          path: docs/_build/html
-
-      # Every output against the newest release's, bit for bit: a commit that
-      # moves a number shows it here, not first at release time. Reported,
-      # never gating: a change between releases may be intended, and the
-      # release step decides (docs/contributing/cut-a-release.md, step 1).
-      - name: outputs against the newest release (report only)
-        if: runner.os == 'Linux' && matrix.python == '3.12'
-        continue-on-error: true
-        run: uv run python scripts/compare_release.py --report
-
-  # Publishes the reference the test job built to GitHub Pages, on every
-  # push to main that passed, at https://hgilde.github.io/polars-online/.
-  # It needs Pages switched on for the repository (Settings > Pages >
-  # Source: GitHub Actions — no starter workflow); if it is not, the site
-  # lookup fails and the job skips the deploy with a notice rather than
-  # failing a green run over a setting. The build itself was checked above.
-  docs:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: test
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - name: is Pages enabled?
-        id: pages
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: the environment, pytest only (the stubs stand in for rheon and Polars)
         run: |
-          if gh api "repos/${{ github.repository }}/pages" --silent; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "::notice::GitHub Pages is not enabled for this repository: the API reference was built and checked, not published."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          fi
-      - uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5
-        if: steps.pages.outputs.enabled == 'true'
-        id: deploy
+          uv venv --python "${{ matrix.python }}" "${{ runner.temp }}/env"
+          bindir=bin; exe=python
+          if [ "$RUNNER_OS" = Windows ]; then bindir=Scripts; exe=python.exe; fi
+          echo "PY=${{ runner.temp }}/env/$bindir/$exe" >> "$GITHUB_ENV"
+          uv pip install --python "${{ runner.temp }}/env/$bindir/$exe" pytest
+      - name: forwarders/tests, stub mode
+        run: '"$PY" -m pytest forwarders/tests -v -p no:cacheprovider'
+
+  real:
+    name: real mode, rheon and polars-online 1.6.0 from PyPI
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: the environments, from PyPI
+        run: |
+          uv venv --python 3.12 "${{ runner.temp }}/new"
+          uv venv --python 3.12 "${{ runner.temp }}/old"
+          uv pip install --python "${{ runner.temp }}/new/bin/python" "rheon[polars,numpy]==${RHEON}" pytest
+          uv pip install --python "${{ runner.temp }}/old/bin/python" "polars-online[numpy]==1.6.0"
+          uv pip list --python "${{ runner.temp }}/new/bin/python"
+      - name: forwarders/tests, real mode
+        run: |
+          export FORWARDER_REAL_PYTHON="${{ runner.temp }}/new/bin/python"
+          export FORWARDER_OLD_PYTHON="${{ runner.temp }}/old/bin/python"
+          "$FORWARDER_REAL_PYTHON" -m pytest forwarders/tests -v -p no:cacheprovider
