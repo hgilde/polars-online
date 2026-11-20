@@ -8,15 +8,18 @@ name: Release
 #
 # The trigger and the gate are the ones this file always had: dispatched on
 # `main`, never tagged by hand. With `publish` off it is a rehearsal (both
-# distributions are built and checked, nothing is uploaded). With `publish`
-# on, the run waits for approval on the `pypi` environment and uploads.
+# distributions are built and tested on Linux, macOS and Windows, nothing is
+# uploaded). With `publish` on, the run waits for approval on the `pypi`
+# environment and uploads, and then installs each forwarder from PyPI on the
+# three systems and checks it.
 on:
   workflow_dispatch:
     inputs:
       publish:
         description: >-
-          Publish: after the build and the rheon check pass, upload to PyPI
-          (on approval). Off: a rehearsal.
+          Publish: after the build, the rheon check and the tests on three
+          systems pass, upload to PyPI (on approval), then verify the upload.
+          Off: a rehearsal.
         type: boolean
         default: false
 
@@ -82,6 +85,75 @@ jobs:
             fi
           done
 
+  # The forwarders against rheon 2.0.0 as it is on PyPI, on the three systems
+  # the library ships for, in two parts. The test suite in its real mode: one
+  # environment with `rheon[polars,numpy]` (the forwarder's Python) and one with
+  # polars-online 1.6.0 (which writes the 1.x pickle the forwarder must load).
+  # The compat pair runs the same suite against rheon-compat and
+  # polars-online-compat 1.6.0, the build the compat forwarder forwards to. And
+  # `scripts/verify_forwarder.py` on each built wheel, the very files `publish`
+  # uploads (a forwarder is pure Python, so the wheel built on Linux is the
+  # wheel every system installs).
+  test:
+    name: test ${{ matrix.flavour }} on ${{ matrix.os }}, Python ${{ matrix.python }}
+    needs: [build, rheon-on-pypi]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        flavour: [rheon, compat]
+        python: ["3.12", "3.14"]
+    env:
+      PYTHONUTF8: "1"
+      NEW_ENV: ${{ runner.temp }}/new
+      OLD_ENV: ${{ runner.temp }}/old
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: the environments, from PyPI
+        run: |
+          if [ "${{ matrix.flavour }}" = compat ]; then
+            new="rheon-compat[polars,numpy]==${VERSION}"
+            old="polars-online-compat[numpy]==1.6.0"
+          else
+            new="rheon[polars,numpy]==${VERSION}"
+            old="polars-online[numpy]==1.6.0"
+          fi
+          uv venv --python "${{ matrix.python }}" "$NEW_ENV"
+          uv venv --python "${{ matrix.python }}" "$OLD_ENV"
+          bindir=bin; exe=python
+          if [ "$RUNNER_OS" = Windows ]; then bindir=Scripts; exe=python.exe; fi
+          echo "NEW_PY=$NEW_ENV/$bindir/$exe" >> "$GITHUB_ENV"
+          echo "OLD_PY=$OLD_ENV/$bindir/$exe" >> "$GITHUB_ENV"
+          uv pip install --python "$NEW_ENV/$bindir/$exe" "$new" pytest
+          uv pip install --python "$OLD_ENV/$bindir/$exe" "$old"
+          uv pip list --python "$NEW_ENV/$bindir/$exe"
+          uv pip list --python "$OLD_ENV/$bindir/$exe"
+      - name: the test suite, real mode
+        run: |
+          export FORWARDER_REAL_PYTHON="$NEW_PY" FORWARDER_OLD_PYTHON="$OLD_PY"
+          "$NEW_PY" -m pytest forwarders/tests -v -p no:cacheprovider
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: built
+      - name: verify each built wheel in a fresh environment
+        run: |
+          ls -R built
+          for package in polars-online polars-online-compat; do
+            name="${package//-/_}"
+            echo "::group::$package"
+            "$NEW_PY" scripts/verify_forwarder.py --wheel "built/dist-${package}/${name}-${VERSION}-py3-none-any.whl"
+            echo "::endgroup::"
+          done
+
   # THE HUMAN GATE IS HERE: the `pypi` environment has the owner as a required
   # reviewer, so this job parks on "Review deployments" until someone approves,
   # and only asks once the jobs above are green.
@@ -92,7 +164,7 @@ jobs:
   # again after a failure between the two uploads.
   publish:
     name: publish to PyPI
-    needs: [build, rheon-on-pypi]
+    needs: [build, rheon-on-pypi, test]
     if: inputs.publish
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -119,3 +191,52 @@ jobs:
         with:
           packages-dir: dist
           skip-existing: true
+
+  # What PyPI serves, not what was built: each forwarder installed by name from
+  # the index, with its rheon dependency, on the three systems, and checked.
+  # The index and its CDN take a little while to show a new upload (and a
+  # resolver may cache the answer "no such version"), so the install retries,
+  # refreshing, for about fifteen minutes. The two forwarders each provide the
+  # module `polars_online`, so each has its own environment.
+  verify:
+    name: verify ${{ matrix.package }} from PyPI on ${{ matrix.os }}
+    needs: publish
+    if: inputs.publish
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        package: [polars-online, polars-online-compat]
+    env:
+      PYTHONUTF8: "1"
+      ENV_DIR: ${{ runner.temp }}/published
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+      - name: install from PyPI, retrying while the index catches up
+        run: |
+          uv venv --python 3.12 "$ENV_DIR"
+          bindir=bin; exe=python
+          if [ "$RUNNER_OS" = Windows ]; then bindir=Scripts; exe=python.exe; fi
+          echo "PUBLISHED_PY=$ENV_DIR/$bindir/$exe" >> "$GITHUB_ENV"
+          for attempt in $(seq 1 30); do
+            if uv pip install --refresh --python "$ENV_DIR/$bindir/$exe" \
+                "${{ matrix.package }}[numpy]==${VERSION}"; then
+              exit 0
+            fi
+            echo "attempt $attempt: ${{ matrix.package }}==${VERSION} is not installable yet"
+            sleep 30
+          done
+          echo "::error::${{ matrix.package }}==${VERSION} never became installable from PyPI"
+          exit 1
+      - name: what was installed
+        run: uv pip list --python "$PUBLISHED_PY"
+      - name: verify the installed forwarder
+        run: '"$PUBLISHED_PY" scripts/verify_forwarder.py'

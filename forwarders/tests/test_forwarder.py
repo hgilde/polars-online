@@ -13,6 +13,10 @@ of each forwarder is put on the path. It needs no network and no wheel.
   from PyPI, which writes the 1.x pickle the forwarder must load, and says what
   1.6.0 exported.
 
+The same suite runs against `rheon-compat` (with `polars-online-compat==1.6.0` as
+the old Python): both forwarders are tested in either environment, and the
+release workflow runs both pairs.
+
 Each check runs in a fresh interpreter, because what is under test is what
 happens on first import (a warning once, modules registered once). Written as
 `unittest` cases so both pytest and `python3 -m unittest` run it.
